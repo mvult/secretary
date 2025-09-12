@@ -1,0 +1,21 @@
+*.pyc
+*.wav
+
+# Dependencies
+**/node_modules/
+
+# Builds / caches
+dist/
+build/
+coverage/
+.out/
+.next/
+.cache/
+.tmp/
+
+# Env & misc
+.env
+.env*.local
+*.log
+.DS_Store
+.vscode/
