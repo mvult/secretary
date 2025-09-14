@@ -2,6 +2,7 @@ from tortoise.models import Model
 from tortoise import fields
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 
 class Recording(Model):
@@ -35,8 +36,10 @@ class Recording(Model):
 
     @property
     def created_at_formatted(self) -> str:
-        """Return formatted creation time"""
+        """Return formatted creation time in CDMX timezone"""
         if not self.created_at:
             return "Unknown"
-        return self.created_at.strftime("%Y-%m-%d %H:%M:%S")
+        # Convert to CDMX timezone
+        cdmx_time = self.created_at.astimezone(ZoneInfo("America/Mexico_City"))
+        return cdmx_time.strftime("%b %d %H:%M")
 

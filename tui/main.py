@@ -11,13 +11,11 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ui.main_app import RecordingApp
-from ui.test_app import TestApp
 
 
 def main():
     """Main entry point for the TUI application"""
-    # app = RecordingApp()
-    app = TestApp()
+    app = RecordingApp()
     app.run()
 
 
