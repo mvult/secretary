@@ -8,18 +8,20 @@ from datetime import datetime
 from typing import Optional, Callable
 import os
 from db.service import RecordingService
+from recording.audio_saver import analyze_and_save, compute_channel_diagnostics
 
 # Audio recording settings
-RATE = 44100
+RATE = 48000  # Updated to match device capabilities
 CHUNK = 4096  # Increased buffer size to reduce potential underruns
 FORMAT = pyaudio.paInt16
-CHANNELS = 2
+CHANNELS = 3  # Updated for 3-channel aggregate device
 MAX_RECORD_HOURS = 3
 
 
 class AudioRecorder:
-    def __init__(self, recordings_dir: str = "recordings"):
+    def __init__(self, recordings_dir: str = "recordings", nas_dir: str = "/Volumes/s3/sec-recordings"):
         self.recordings_dir = recordings_dir
+        self.nas_dir = nas_dir
         self.recording = False
         self.stream = None
         self.p = None
@@ -28,13 +30,25 @@ class AudioRecorder:
         self.start_time = None
         self.filename = None
 
-        # Ensure recordings directory exists
+        # Ensure recordings directories exist
         os.makedirs(self.recordings_dir, exist_ok=True)
+        os.makedirs(self.nas_dir, exist_ok=True)
 
     def generate_filename(self) -> str:
         """Generate a timestamped filename"""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"recording_{timestamp}.wav"
+
+    def get_device_params(self, idx: int) -> dict:
+        """Get device parameters for debugging"""
+        p = pyaudio.PyAudio()
+        info = p.get_device_info_by_host_api_device_index(0, idx)
+        p.terminate()
+        return {
+            "name": info.get("name"),
+            "channels_in": info.get("maxInputChannels"),
+            "default_rate": int(info.get("defaultSampleRate")),
+        }
 
     def find_aggregate_device_index(self) -> int:
         """Find the aggregate device index"""
@@ -54,39 +68,54 @@ class AudioRecorder:
         p.terminate()
         return aggregate_index
 
-    def save_recording(self, frames: list, filename: str) -> bool:
-        """Save recorded frames to a WAV file"""
+    def save_recording(self, frames: list, filename: str) -> dict:
+        """Save recorded frames using the new audio_saver module"""
+        import shutil
+        
+        result = {"local": False, "nas": False, "local_path": None, "nas_path": None}
+        
         try:
-            filepath = os.path.join(self.recordings_dir, filename)
+            base = filename.rsplit(".", 1)[0]  # drop .wav for bundle of outputs
+            
+            # (Optional) inspect channels first for debugging
+            diags = compute_channel_diagnostics(frames, rate=RATE, channels=CHANNELS)
+            print("RMS:", diags["rms"])
+            print("Corr:\n", diags["corr"])
 
-            # Convert stereo to mono
-            if CHANNELS == 2:
-                audio_data = b"".join(frames)
-                audio_array = np.frombuffer(audio_data, dtype=np.int16)
-                stereo_array = audio_array.reshape(-1, 2)
-                mono_array = np.mean(stereo_array, axis=1, dtype=np.int16)
-                mono_data = mono_array.tobytes()
-
-                # Save as mono
-                wf = wave.open(filepath, "wb")
-                wf.setnchannels(1)
-                wf.setsampwidth(self.p.get_sample_size(FORMAT))
-                wf.setframerate(RATE)
-                wf.writeframes(mono_data)
-                wf.close()
-            else:
-                # Save as-is
-                wf = wave.open(filepath, "wb")
-                wf.setnchannels(CHANNELS)
-                wf.setsampwidth(self.p.get_sample_size(FORMAT))
-                wf.setframerate(RATE)
-                wf.writeframes(b"".join(frames))
-                wf.close()
-
-            return True
+            # Save to local directory first
+            written = analyze_and_save(
+                frames,
+                rate=RATE,
+                channels=CHANNELS,
+                out_dir=self.recordings_dir,
+                basename=base,
+                want_full_multichannel=False,
+                want_system_stereo=False,
+                want_mic_mono=False,
+                want_combined_mono=True,
+                system_pair=(1, 2),  # system channels
+                mic_index=0,  # mic channel
+            )
+            
+            result["local"] = True
+            result["local_path"] = written.get("combined_mono")
+            print(f"Local audio saved: {written}")
+            
+            # Copy to NAS if available
+            if os.path.exists(self.nas_dir) and result["local_path"]:
+                try:
+                    nas_path = os.path.join(self.nas_dir, os.path.basename(result["local_path"]))
+                    shutil.copy2(result["local_path"], nas_path)
+                    result["nas"] = True
+                    result["nas_path"] = nas_path
+                    print(f"Copied to NAS: {nas_path}")
+                except Exception as e:
+                    print(f"Error copying to NAS: {e}")
+            
+            return result
         except Exception as e:
             print(f"Error saving recording: {e}")
-            return False
+            return result
 
     async def start_recording(self, name: str = None) -> Optional[int]:
         """Start recording audio"""
@@ -115,6 +144,10 @@ class AudioRecorder:
         self.recording = True
         self.start_time = time.time()
 
+        # Get device parameters for debugging
+        params = self.get_device_params(aggregate_device_index)
+        print("PARAMS", params)
+
         try:
             self.stream = self.p.open(
                 format=FORMAT,
@@ -140,7 +173,7 @@ class AudioRecorder:
             return False
 
         try:
-            data = self.stream.read(CHUNK)  # Removed exception_on_overflow=False to see errors
+            data = self.stream.read(CHUNK, exception_on_overflow=True)  # Show overflow errors
             self.frames.append(data)
             return True
         except Exception as e:
@@ -165,15 +198,20 @@ class AudioRecorder:
         # Save recording
         success = False
         if self.frames and self.filename:
-            success = self.save_recording(self.frames, self.filename)
+            result = self.save_recording(self.frames, self.filename)
+            success = result["local"]  # Consider successful if local save worked
 
             if success and self.recording_id:
-                # Update database with duration
+                # Update database with duration and NAS path
                 duration = (
                     int(time.time() - self.start_time) if self.start_time else None
                 )
+                update_data = {"duration": duration}
+                if result["nas_path"]:
+                    update_data["nas_audio"] = result["nas_path"]
+                
                 await RecordingService.update_recording(
-                    self.recording_id, duration=duration
+                    self.recording_id, **update_data
                 )
 
         self.cleanup()

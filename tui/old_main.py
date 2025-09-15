@@ -30,7 +30,7 @@ def generate_filename():
 
 # Audio recording settings (should match BlackHole's capabilities)
 RATE = 48000  # Sample rate (common standard) - BlackHole supports many
-CHUNK = 2048  # Buffer size
+CHUNK = 4096  # Buffer size
 FORMAT = pyaudio.paInt16  # 16-bit audio
 CHANNELS = 3  # Use 2 channels (stereo) as BlackHole 2ch is stereo by default
 

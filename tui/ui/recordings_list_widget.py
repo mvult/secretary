@@ -36,7 +36,7 @@ class RecordingsListWidget(Container):
     def on_mount(self):
         """Initialize the table"""
         table = self.query_one("#recordings-table", DataTable)
-        table.add_columns("ID", "Name", "Duration", "Created", "Status")
+        table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Status")
         table.cursor_type = "row"
         table.zebra_stripes = True
         table.focus()
@@ -90,7 +90,7 @@ class RecordingsListWidget(Container):
 
         # Ensure columns are set up
         if len(table.columns) == 0:
-            table.add_columns("ID", "Name", "Duration", "Created", "Status")
+            table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Status")
             table.cursor_type = "row"
             table.zebra_stripes = True
 
@@ -105,11 +105,12 @@ class RecordingsListWidget(Container):
             created_str = (
                 recording.created_at_formatted if recording.created_at else "Unknown"
             )
+            storage_str = recording.storage_status
             status = "Archived" if recording.archived else "Active"
 
             try:
                 table.add_row(
-                    str(recording.id), recording.name, duration_str, created_str, status
+                    str(recording.id), recording.name, duration_str, created_str, storage_str, status
                 )
             except Exception as e:
                 logging.error(f"Error adding row to table: {e}")

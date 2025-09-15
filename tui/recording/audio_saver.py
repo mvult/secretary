@@ -135,7 +135,7 @@ def analyze_and_save(
     # 5) Combined clean mono (optional)
     if want_combined_mono and channels >= 1:
         mono = _downmix_to_mono_int16(x)
-        p = os.path.join(out_dir, f"{basename}_combined_mono.wav")
+        p = os.path.join(out_dir, f"{basename}.wav")
         _write_wav_int16(p, mono, rate)
         results["combined_mono"] = p
 
