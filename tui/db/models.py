@@ -59,3 +59,36 @@ class Recording(Model):
         
         return f"{'t' if has_local else 'f'}/{'t' if has_nas else 'f'}/{'t' if has_cloud else 'f'}"
 
+
+class User(Model):
+    id = fields.IntField(pk=True, generated=True)
+    first_name = fields.TextField()
+    last_name = fields.TextField()
+    role = fields.TextField(null=True)
+
+    class Meta:
+        table = "user"
+
+    def __str__(self):
+        return f"User({self.id}, {self.first_name} {self.last_name})"
+
+    @property
+    def full_name(self) -> str:
+        """Return full name"""
+        return f"{self.first_name} {self.last_name}"
+
+
+class SpeakerToUser(Model):
+    speaker_id = fields.TextField()  # e.g., "Speaker 0", "Speaker 1"
+    
+    # Foreign key relationships (these automatically create the ID fields)
+    recording = fields.ForeignKeyField("models.Recording", related_name="speaker_mappings")
+    user = fields.ForeignKeyField("models.User", related_name="speaker_mappings")
+
+    class Meta:
+        table = "speaker_to_user"
+        unique_together = (("recording_id", "speaker_id"),)  # One speaker per recording
+
+    def __str__(self):
+        return f"SpeakerToUser(recording={self.recording_id}, speaker={self.speaker_id}, user={self.user_id})"
+

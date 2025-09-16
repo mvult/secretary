@@ -47,6 +47,24 @@ class StorageManager:
         
         return None
     
+    def count_storage_locations(self, recording) -> int:
+        """Count how many storage locations have the recording"""
+        count = 0
+        
+        # Check local
+        if recording.local_audio and os.path.exists(recording.local_audio):
+            count += 1
+            
+        # Check NAS
+        if recording.nas_audio and os.path.exists(recording.nas_audio):
+            count += 1
+            
+        # Check cloud
+        if recording.audio_url and recording.audio_url.startswith('https://'):
+            count += 1
+            
+        return count
+    
     async def copy_from_source(self, source_info: Dict[str, str], dest_path: str) -> bool:
         """Copy file from source to destination"""
         if source_info["type"] == "cloud":
@@ -65,6 +83,10 @@ class StorageManager:
         has_local = recording.local_audio and os.path.exists(recording.local_audio)
         
         if has_local:
+            # Check if this is the only storage location
+            if self.count_storage_locations(recording) <= 1:
+                return {"success": False, "error": "Cannot delete the only remaining copy"}
+            
             # Delete local file
             try:
                 os.remove(recording.local_audio)
@@ -98,6 +120,10 @@ class StorageManager:
         has_nas = recording.nas_audio and os.path.exists(recording.nas_audio)
         
         if has_nas:
+            # Check if this is the only storage location
+            if self.count_storage_locations(recording) <= 1:
+                return {"success": False, "error": "Cannot delete the only remaining copy"}
+            
             # Delete NAS file
             try:
                 os.remove(recording.nas_audio)
@@ -130,6 +156,10 @@ class StorageManager:
         has_cloud = recording.audio_url and recording.audio_url.startswith('https://')
         
         if has_cloud:
+            # Check if this is the only storage location
+            if self.count_storage_locations(recording) <= 1:
+                return {"success": False, "error": "Cannot delete the only remaining copy"}
+            
             # Delete cloud file
             try:
                 blob_name = f"{recording.id}_{recording.name}.wav"
@@ -165,3 +195,42 @@ class StorageManager:
                     return {"success": False, "error": result.get('error', 'Upload failed')}
             except Exception as e:
                 return {"success": False, "error": f"Failed to upload to cloud: {e}"}
+    
+    async def delete_from_all_storage(self, recording) -> Dict[str, Any]:
+        """Delete recording from all storage locations"""
+        deleted_locations = []
+        errors = []
+        
+        # Delete from local
+        if recording.local_audio and os.path.exists(recording.local_audio):
+            try:
+                os.remove(recording.local_audio)
+                deleted_locations.append("local")
+            except Exception as e:
+                errors.append(f"Failed to delete local file: {e}")
+        
+        # Delete from NAS
+        if recording.nas_audio and os.path.exists(recording.nas_audio):
+            try:
+                os.remove(recording.nas_audio)
+                deleted_locations.append("NAS")
+            except Exception as e:
+                errors.append(f"Failed to delete NAS file: {e}")
+        
+        # Delete from cloud
+        if recording.audio_url and recording.audio_url.startswith('https://'):
+            try:
+                blob_name = f"{recording.id}_{recording.name}.wav"
+                result = await self.azure_storage.delete_file(blob_name)
+                if result['success']:
+                    deleted_locations.append("cloud")
+                else:
+                    errors.append(f"Failed to delete cloud file: {result.get('error', 'Unknown error')}")
+            except Exception as e:
+                errors.append(f"Failed to delete cloud file: {e}")
+        
+        return {
+            "deleted_locations": deleted_locations,
+            "errors": errors,
+            "success": len(deleted_locations) > 0
+        }

@@ -5,7 +5,9 @@ from textual.screen import Screen, ModalScreen
 import logging
 from db.service import RecordingService
 from services.storage_manager import StorageManager
-from services.deepgram_service import transcribe_from_url, transcribe_from_file
+from services.transcription_service import TranscriptionService
+from services.analysis_service import analyze_transcript
+from components.analysis_modal import AnalysisModal
 
 
 class RenameModal(ModalScreen):
@@ -102,9 +104,10 @@ class RecordingDetailScreen(Screen):
     BINDINGS = [
         ("escape,q,left", "back", "Back to List"),
         ("ctrl+t", "transcribe", "Generate transcription for recording"),
+        ("ctrl+a", "analyze", "Analyze transcript"),
         ("ctrl+d", "delete_recording", "Delete recording"),
         ("a", "archive_recording", "Archive recording"),
-        ("u", "toggle_cloud", "Toggle Cloud Storage"),
+        ("c", "toggle_cloud", "Toggle Cloud Storage"),
         ("n", "toggle_nas", "Toggle NAS Storage"),
         ("l", "toggle_local", "Toggle Local Storage"),
         # Override main app bindings to disable them
@@ -172,7 +175,9 @@ class RecordingDetailScreen(Screen):
 
         title_widget.update(self.recording.name)
         date_widget.update(f"Created: {self.recording.created_at_formatted}")
-        storage_widget.update(f"Storage: {self.recording.storage_status} (local/NAS/cloud)")
+        storage_widget.update(
+            f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
+        )
 
         transcript_text = self.recording.transcript or "No transcript available"
         transcript_widget.text = transcript_text
@@ -228,41 +233,41 @@ class RecordingDetailScreen(Screen):
         """Generate transcription using Deepgram"""
         if not self.recording:
             return
-        
+
         try:
             title_widget = self.query_one("#recording-title", Static)
             transcript_widget = self.query_one("#transcript", TextArea)
             original_title = self.recording.name
-            
+
             title_widget.update(f"{original_title} - Transcribing...")
-            
+
             # Try to get first available source
-            source_info = await self.storage_manager.get_first_available_source(self.recording)
+            source_info = await self.storage_manager.get_first_available_source(
+                self.recording
+            )
             if not source_info:
                 title_widget.update(f"{original_title} - No audio source available ✗")
                 return
-            
-            # Transcribe based on source type
-            if source_info["type"] == "cloud":
-                result = await transcribe_from_url(source_info["path"])
-            else:
-                result = await transcribe_from_file(source_info["path"])
-            
+
+            # Run full transcription workflow (includes speaker identification)
+            result = await TranscriptionService.transcribe_recording(self.recording, source_info)
+
             if result["success"]:
-                # Update database with transcript
-                await RecordingService.update_recording(
-                    self.recording_id, transcript=result["transcript"]
-                )
+                # Update recording object and UI
                 self.recording.transcript = result["transcript"]
-                
-                # Update UI
                 transcript_widget.text = result["transcript"]
-                title_widget.update(f"{original_title} - Transcribed ✓")
-                logging.info(f"Transcribed recording {self.recording_id}")
+                
+                # Show results
+                if result.get("speaker_identification_success"):
+                    title_widget.update(f"{original_title} - Transcribed & Speakers Identified ✓")
+                    logging.info(f"Transcribed recording {self.recording_id} with {len(result.get('speaker_mappings', []))} speaker mappings")
+                else:
+                    title_widget.update(f"{original_title} - Transcribed ✓")
+                    logging.info(f"Transcribed recording {self.recording_id} (no speaker identification)")
             else:
                 title_widget.update(f"{original_title} - Transcription failed ✗")
                 logging.error(f"Transcription failed: {result.get('error', 'Unknown error')}")
-                
+
         except Exception as e:
             logging.error(f"Error transcribing recording: {e}")
             title_widget = self.query_one("#recording-title", Static)
@@ -272,26 +277,34 @@ class RecordingDetailScreen(Screen):
         """Toggle cloud storage for recording"""
         if not self.recording:
             return
-        
+
         try:
             title_widget = self.query_one("#recording-title", Static)
             storage_widget = self.query_one("#storage-status", Static)
             original_title = self.recording.name
-            
+
             title_widget.update(f"{original_title} - Processing...")
-            
+
             result = await self.storage_manager.toggle_cloud_storage(self.recording)
-            
-            if result['success']:
+
+            if result["success"]:
                 # Reload recording to get updated data
-                self.recording = await RecordingService.get_recording_by_id(self.recording_id)
+                self.recording = await RecordingService.get_recording_by_id(
+                    self.recording_id
+                )
                 title_widget.update(f"{original_title} - {result['action'].title()} ✓")
-                storage_widget.update(f"Storage: {self.recording.storage_status} (local/NAS/cloud)")
-                logging.info(f"Cloud storage {result['action']} for recording {self.recording_id}")
+                storage_widget.update(
+                    f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
+                )
+                logging.info(
+                    f"Cloud storage {result['action']} for recording {self.recording_id}"
+                )
             else:
                 title_widget.update(f"{original_title} - Error ✗")
-                logging.error(f"Failed to toggle cloud storage: {result.get('error', 'Unknown error')}")
-                
+                logging.error(
+                    f"Failed to toggle cloud storage: {result.get('error', 'Unknown error')}"
+                )
+
         except Exception as e:
             logging.error(f"Error toggling cloud storage: {e}")
             title_widget = self.query_one("#recording-title", Static)
@@ -301,26 +314,34 @@ class RecordingDetailScreen(Screen):
         """Toggle NAS storage for recording"""
         if not self.recording:
             return
-        
+
         try:
             title_widget = self.query_one("#recording-title", Static)
             storage_widget = self.query_one("#storage-status", Static)
             original_title = self.recording.name
-            
+
             title_widget.update(f"{original_title} - Processing...")
-            
+
             result = await self.storage_manager.toggle_nas_storage(self.recording)
-            
-            if result['success']:
+
+            if result["success"]:
                 # Reload recording to get updated data
-                self.recording = await RecordingService.get_recording_by_id(self.recording_id)
+                self.recording = await RecordingService.get_recording_by_id(
+                    self.recording_id
+                )
                 title_widget.update(f"{original_title} - {result['action'].title()} ✓")
-                storage_widget.update(f"Storage: {self.recording.storage_status} (local/NAS/cloud)")
-                logging.info(f"NAS storage {result['action']} for recording {self.recording_id}")
+                storage_widget.update(
+                    f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
+                )
+                logging.info(
+                    f"NAS storage {result['action']} for recording {self.recording_id}"
+                )
             else:
                 title_widget.update(f"{original_title} - Error ✗")
-                logging.error(f"Failed to toggle NAS storage: {result.get('error', 'Unknown error')}")
-                
+                logging.error(
+                    f"Failed to toggle NAS storage: {result.get('error', 'Unknown error')}"
+                )
+
         except Exception as e:
             logging.error(f"Error toggling NAS storage: {e}")
             title_widget = self.query_one("#recording-title", Static)
@@ -330,28 +351,85 @@ class RecordingDetailScreen(Screen):
         """Toggle local storage for recording"""
         if not self.recording:
             return
-        
+
         try:
             title_widget = self.query_one("#recording-title", Static)
             storage_widget = self.query_one("#storage-status", Static)
             original_title = self.recording.name
-            
+
             title_widget.update(f"{original_title} - Processing...")
-            
+
             result = await self.storage_manager.toggle_local_storage(self.recording)
-            
-            if result['success']:
+
+            if result["success"]:
                 # Reload recording to get updated data
-                self.recording = await RecordingService.get_recording_by_id(self.recording_id)
+                self.recording = await RecordingService.get_recording_by_id(
+                    self.recording_id
+                )
                 title_widget.update(f"{original_title} - {result['action'].title()} ✓")
-                storage_widget.update(f"Storage: {self.recording.storage_status} (local/NAS/cloud)")
-                logging.info(f"Local storage {result['action']} for recording {self.recording_id}")
+                storage_widget.update(
+                    f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
+                )
+                logging.info(
+                    f"Local storage {result['action']} for recording {self.recording_id}"
+                )
             else:
                 title_widget.update(f"{original_title} - Error ✗")
-                logging.error(f"Failed to toggle local storage: {result.get('error', 'Unknown error')}")
-                
+                logging.error(
+                    f"Failed to toggle local storage: {result.get('error', 'Unknown error')}"
+                )
+
         except Exception as e:
             logging.error(f"Error toggling local storage: {e}")
+            title_widget = self.query_one("#recording-title", Static)
+            title_widget.update(f"{self.recording.name} - Error ✗")
+
+    def action_analyze(self):
+        """Show analysis menu for transcript"""
+        logging.info("action_analyze called")
+        if not self.recording:
+            logging.warning("No recording available")
+            return
+        if not self.recording.transcript:
+            logging.warning("No transcript available for analysis")
+            return
+        
+        logging.info("Opening analysis modal")
+        modal = AnalysisModal(self.recording.transcript)
+        self.app.push_screen(modal, callback=self.handle_analysis_result)
+
+    async def handle_analysis_result(self, analysis_type):
+        """Handle the result from the analysis modal"""
+        if not analysis_type or not self.recording or not self.recording.transcript:
+            return
+        
+        try:
+            title_widget = self.query_one("#recording-title", Static)
+            original_title = self.recording.name
+            
+            title_widget.update(f"{original_title} - Analyzing...")
+            
+            result = await analyze_transcript(
+                self.recording.transcript, 
+                analysis_type, 
+                self.recording_id
+            )
+            
+            if result.get("success"):
+                title_widget.update(f"{original_title} - Analysis complete ✓")
+                
+                if analysis_type == "todos" and result.get("todos"):
+                    # TODO: Save todos to database
+                    logging.info(f"Extracted {len(result['todos'])} TODOs from recording {self.recording_id}")
+                    
+                logging.info(f"Analysis '{analysis_type}' completed for recording {self.recording_id}")
+                # TODO: Show analysis results in a modal or update UI
+            else:
+                title_widget.update(f"{original_title} - Analysis failed ✗")
+                logging.error(f"Analysis failed: {result.get('content', 'Unknown error')}")
+                
+        except Exception as e:
+            logging.error(f"Error during analysis: {e}")
             title_widget = self.query_one("#recording-title", Static)
             title_widget.update(f"{self.recording.name} - Error ✗")
 
