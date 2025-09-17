@@ -16,6 +16,9 @@ logging.basicConfig(
     handlers=[logging.FileHandler("tui_debug.log")],
 )
 
+# Disable tortoise db_client debug logs
+logging.getLogger("tortoise.db_client").setLevel(logging.INFO)
+
 
 class RecordingApp(App):
     """Main TUI application for recording management"""

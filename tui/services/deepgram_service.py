@@ -37,6 +37,8 @@ async def transcribe_from_url(audio_url: str) -> Dict[str, Any]:
         
         if response.status_code == 200:
             result = response.json()
+            logging.info(f"Deepgram response structure: {result.keys()}")
+            logging.info(f"Full Deepgram response: {result}")
             transcript = result['results']['channels'][0]['alternatives'][0]['paragraphs']['transcript']
             return {
                 "success": True,
@@ -81,6 +83,8 @@ async def transcribe_from_file(file_path: str) -> Dict[str, Any]:
         
         if response.status_code == 200:
             result = response.json()
+            logging.info(f"Deepgram response structure: {result.keys()}")
+            logging.info(f"Full Deepgram response: {result}")
             transcript = result['results']['channels'][0]['alternatives'][0]['paragraphs']['transcript']
             return {
                 "success": True,

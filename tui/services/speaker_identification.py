@@ -55,14 +55,13 @@ If you cannot confidently identify a speaker, do not include them in the mapping
 """
         
         client = get_openai_client()
-        result = client.responses.create(
-            model="gpt-5",
-            input=prompt,
-            reasoning={"effort": "medium"},
-            text={"verbosity": "low"},
+        result = client.chat.completions.create(
+            model="openai/gpt-5",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1
         )
         
-        content = result.text.content
+        content = result.choices[0].message.content
         
         try:
             # Parse JSON response

@@ -79,16 +79,31 @@ class User(Model):
 
 
 class SpeakerToUser(Model):
-    speaker_id = fields.TextField()  # e.g., "Speaker 0", "Speaker 1"
-    
-    # Foreign key relationships (these automatically create the ID fields)
-    recording = fields.ForeignKeyField("models.Recording", related_name="speaker_mappings")
-    user = fields.ForeignKeyField("models.User", related_name="speaker_mappings")
+    recording_id = fields.IntField()
+    speaker_id = fields.IntField()  # e.g., 0, 1, 2
+    user_id = fields.IntField()
 
     class Meta:
         table = "speaker_to_user"
-        unique_together = (("recording_id", "speaker_id"),)  # One speaker per recording
+        # Don't use any primary key field
+        ordering = ["recording_id", "speaker_id"]
 
     def __str__(self):
         return f"SpeakerToUser(recording={self.recording_id}, speaker={self.speaker_id}, user={self.user_id})"
+
+
+class Todo(Model):
+    id = fields.IntField(pk=True, generated=True)
+    name = fields.TextField()
+    desc = fields.TextField(null=True)
+    status = fields.TextField(null=True)
+    user_id = fields.IntField(null=True)
+    created_at_recording_id = fields.IntField(null=True)
+    updated_at_recording_id = fields.IntField(null=True)
+
+    class Meta:
+        table = "todo"
+
+    def __str__(self):
+        return f"Todo({self.id}, {self.name})"
 

@@ -3,63 +3,12 @@ from textual.containers import Container, Vertical, Horizontal, Center, Middle
 from textual.widgets import Header, Static, Footer, Input, TextArea, Button
 from textual.screen import Screen, ModalScreen
 import logging
-from db.service import RecordingService
+from db.service import RecordingService, AnalysisService, SpeakerService, TodoService, UserService
 from services.storage_manager import StorageManager
 from services.transcription_service import TranscriptionService
 from services.analysis_service import analyze_transcript
 from components.analysis_modal import AnalysisModal
-
-
-class RenameModal(ModalScreen):
-    """Modal for renaming a recording"""
-
-    CSS = """
-    RenameModal {
-        align: center middle;
-    }
-    
-    .rename-dialog {
-        width: 60;
-        height: 9;
-        background: $surface;
-        border: solid $primary;
-        padding: 2;
-    }
-    
-    #rename-input {
-        width: 100%;
-        height: 13;
-        margin: 1 0;
-        padding: 1;
-        border: solid $primary;
-    }
-    """
-
-    def __init__(self, current_name: str):
-        super().__init__()
-        self.current_name = current_name
-        self.new_name = None
-
-    def compose(self) -> ComposeResult:
-        with Container(classes="rename-dialog"):
-            yield Static("Rename Recording:", classes="dialog-title")
-            yield Input(value=self.current_name, id="rename-input")
-            with Horizontal():
-                yield Button("Save", variant="primary", id="save-btn")
-                yield Button("Cancel", variant="default", id="cancel-btn")
-
-    async def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "save-btn":
-            input_widget = self.query_one("#rename-input", Input)
-            self.new_name = input_widget.value.strip()
-            self.dismiss(self.new_name)
-        else:
-            self.dismiss(None)
-
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "rename-input":
-            self.new_name = event.input.value.strip()
-            self.dismiss(self.new_name)
+from components.rename_modal import RenameModal
 
 
 class RecordingDetailScreen(Screen):
@@ -74,7 +23,7 @@ class RecordingDetailScreen(Screen):
     }
     
     .title-section {
-        height: 3;
+        height: 4;
         margin-bottom: 1;
     }
     
@@ -89,14 +38,43 @@ class RecordingDetailScreen(Screen):
         height: 1;
     }
     
-    .transcript-container {
+    .content-container {
         height: 1fr;
-        border: solid $primary;
         margin: 1 0;
+        layout: horizontal;
     }
     
     .transcript-area {
         height: 100%;
+        border: solid $primary;
+        margin-right: 1;
+        width: 1fr;
+    }
+    
+    .todos-container {
+        width: 30;
+        height: 100%;
+        border: solid $primary;
+        margin-left: 1;
+    }
+    
+    .todos-title {
+        height: 1;
+        text-style: bold;
+        color: $primary;
+        padding: 0 1;
+    }
+    
+    .todos-list {
+        height: 1fr;
+        padding: 0 1;
+    }
+    
+    .todo-item {
+        margin-bottom: 1;
+        padding: 1;
+        background: $surface;
+        border: solid gray;
     }
     
     """
@@ -143,8 +121,9 @@ class RecordingDetailScreen(Screen):
                 )
                 yield Static("", id="recording-date", classes="recording-date")
                 yield Static("", id="storage-status", classes="recording-date")
+                yield Static("", id="analysis-status", classes="recording-date")
 
-            with Container(classes="transcript-container"):
+            with Container(id="content-wrapper", classes="content-container"):
                 yield TextArea(
                     "No transcript available",
                     id="transcript",
@@ -157,13 +136,13 @@ class RecordingDetailScreen(Screen):
     async def on_screen_resume(self):
         """Update display when screen becomes active"""
         if self.recording:
-            self.update_display()
+            await self.update_display()
         # Focus the main container so it can receive key events
         main_container = self.query_one("#main-container")
         main_container.can_focus = True
         main_container.focus()
 
-    def update_display(self):
+    async def update_display(self):
         """Update all display elements with recording data"""
         if not self.recording:
             return
@@ -171,6 +150,7 @@ class RecordingDetailScreen(Screen):
         title_widget = self.query_one("#recording-title", Static)
         date_widget = self.query_one("#recording-date", Static)
         storage_widget = self.query_one("#storage-status", Static)
+        analysis_widget = self.query_one("#analysis-status", Static)
         transcript_widget = self.query_one("#transcript", TextArea)
 
         title_widget.update(self.recording.name)
@@ -179,12 +159,64 @@ class RecordingDetailScreen(Screen):
             f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
         )
 
+        # Update analysis status - always show even if no analyses completed
+        analysis_status = await AnalysisService.get_analysis_status(self.recording)
+        analysis_widget.update(f"Analysis: {analysis_status}")
+        logging.debug(
+            f"Analysis status for recording {self.recording_id}: '{analysis_status}'"
+        )
+
         transcript_text = self.recording.transcript or "No transcript available"
         transcript_widget.text = transcript_text
+        
+        # Update TODOs display
+        await self.update_todos_display()
+
+    async def update_todos_display(self):
+        """Update the TODOs display based on available TODOs"""
+        if not self.recording:
+            return
+            
+        # Get TODOs for this recording
+        todos = await TodoService.get_todos_by_recording(self.recording_id)
+        
+        # Remove existing todos container if it exists
+        try:
+            existing_todos = self.query_one("#todos-container")
+            existing_todos.remove()
+        except:
+            pass
+        
+        if todos:
+            content_wrapper = self.query_one("#content-wrapper")
+            
+            # Create TODO widgets
+            todo_widgets = [Static("TODOs", classes="todos-title")]
+            
+            for todo in todos:
+                # Get user name if available
+                user_name = ""
+                if todo.get("user_id"):
+                    try:
+                        users = await UserService.get_all_users()
+                        user = next((u for u in users if u.id == todo["user_id"]), None)
+                        if user:
+                            user_name = f" (@{user.first_name})"
+                    except:
+                        pass
+                
+                todo_text = f"• {todo['name']}{user_name}"
+                if todo.get('desc'):
+                    todo_text += f"\n  {todo['desc']}"
+                
+                todo_widgets.append(Static(todo_text, classes="todo-item"))
+            
+            # Create and mount TODOs container with all widgets
+            todos_container = Vertical(*todo_widgets, id="todos-container", classes="todos-container")
+            await content_wrapper.mount(todos_container)
 
     def action_back(self):
         """Go back to the main screen"""
-        logging.info("Going back")
         self.app.pop_screen()
 
     async def action_delete_recording(self):
@@ -250,23 +282,33 @@ class RecordingDetailScreen(Screen):
                 return
 
             # Run full transcription workflow (includes speaker identification)
-            result = await TranscriptionService.transcribe_recording(self.recording, source_info)
+            result = await TranscriptionService.transcribe_recording(
+                self.recording, source_info
+            )
 
             if result["success"]:
                 # Update recording object and UI
                 self.recording.transcript = result["transcript"]
                 transcript_widget.text = result["transcript"]
-                
+
                 # Show results
                 if result.get("speaker_identification_success"):
-                    title_widget.update(f"{original_title} - Transcribed & Speakers Identified ✓")
-                    logging.info(f"Transcribed recording {self.recording_id} with {len(result.get('speaker_mappings', []))} speaker mappings")
+                    title_widget.update(
+                        f"{original_title} - Transcribed & Speakers Identified ✓"
+                    )
+                    logging.info(
+                        f"Transcribed recording {self.recording_id} with {len(result.get('speaker_mappings', []))} speaker mappings"
+                    )
                 else:
                     title_widget.update(f"{original_title} - Transcribed ✓")
-                    logging.info(f"Transcribed recording {self.recording_id} (no speaker identification)")
+                    logging.info(
+                        f"Transcribed recording {self.recording_id} (no speaker identification)"
+                    )
             else:
                 title_widget.update(f"{original_title} - Transcription failed ✗")
-                logging.error(f"Transcription failed: {result.get('error', 'Unknown error')}")
+                logging.error(
+                    f"Transcription failed: {result.get('error', 'Unknown error')}"
+                )
 
         except Exception as e:
             logging.error(f"Error transcribing recording: {e}")
@@ -393,41 +435,70 @@ class RecordingDetailScreen(Screen):
         if not self.recording.transcript:
             logging.warning("No transcript available for analysis")
             return
-        
+
         logging.info("Opening analysis modal")
         modal = AnalysisModal(self.recording.transcript)
         self.app.push_screen(modal, callback=self.handle_analysis_result)
 
     async def handle_analysis_result(self, analysis_type):
         """Handle the result from the analysis modal"""
-        if not analysis_type or not self.recording or not self.recording.transcript:
+        logging.info(
+            f"handle_analysis_result called with analysis_type: {analysis_type}"
+        )
+
+        if not analysis_type:
+            logging.info("No analysis type selected, returning")
             return
-        
+
+        if not self.recording:
+            logging.warning("No recording available for analysis")
+            return
+
+        if not self.recording.transcript:
+            logging.warning("No transcript available for analysis")
+            return
+
         try:
             title_widget = self.query_one("#recording-title", Static)
             original_title = self.recording.name
-            
+
             title_widget.update(f"{original_title} - Analyzing...")
+            logging.info(
+                f"Starting {analysis_type} analysis for recording {self.recording_id}"
+            )
+
+            # Get speaker mappings for TODO analysis
+            speaker_mappings = []
+            if analysis_type == "todos":
+                speaker_mappings = await SpeakerService.get_speaker_mappings(self.recording_id)
             
             result = await analyze_transcript(
-                self.recording.transcript, 
-                analysis_type, 
-                self.recording_id
+                self.recording.transcript, analysis_type, self.recording_id, speaker_mappings
             )
-            
+
+            logging.info(f"Analysis result: {result}")
+
             if result.get("success"):
                 title_widget.update(f"{original_title} - Analysis complete ✓")
-                
+
                 if analysis_type == "todos" and result.get("todos"):
                     # TODO: Save todos to database
-                    logging.info(f"Extracted {len(result['todos'])} TODOs from recording {self.recording_id}")
-                    
-                logging.info(f"Analysis '{analysis_type}' completed for recording {self.recording_id}")
-                # TODO: Show analysis results in a modal or update UI
+                    logging.info(
+                        f"Extracted {len(result['todos'])} TODOs from recording {self.recording_id}"
+                    )
+
+                # Refresh the analysis status display
+                await self.update_display()
+
+                logging.info(
+                    f"Analysis '{analysis_type}' completed for recording {self.recording_id}"
+                )
             else:
                 title_widget.update(f"{original_title} - Analysis failed ✗")
-                logging.error(f"Analysis failed: {result.get('content', 'Unknown error')}")
-                
+                logging.error(
+                    f"Analysis failed: {result.get('content', 'Unknown error')}"
+                )
+
         except Exception as e:
             logging.error(f"Error during analysis: {e}")
             title_widget = self.query_one("#recording-title", Static)

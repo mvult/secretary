@@ -133,15 +133,31 @@ class SpeakerService:
     async def save_speaker_mappings(recording_id: int, mappings: List[Dict]) -> bool:
         """Save speaker to user mappings for a recording"""
         try:
+            from tortoise import connections
+            db = connections.get("default")
+            
             # Clear existing mappings for this recording
-            await SpeakerToUser.filter(recording_id=recording_id).delete()
+            await db.execute_query(
+                "DELETE FROM speaker_to_user WHERE recording_id = $1",
+                [recording_id]
+            )
             
             # Create new mappings
             for mapping in mappings:
-                await SpeakerToUser.create(
-                    recording_id=recording_id,
-                    speaker_id=mapping["speaker_id"],
-                    user_id=mapping["user_id"]
+                # Ensure all values are integers
+                # Convert "Speaker 0" to just 0 (integer)
+                speaker_id = mapping["speaker_id"]
+                if speaker_id.startswith("Speaker "):
+                    speaker_id = int(speaker_id.replace("Speaker ", ""))
+                else:
+                    speaker_id = int(speaker_id)
+                
+                user_id = int(mapping["user_id"])
+                recording_id_int = int(recording_id)
+                
+                await db.execute_query(
+                    "INSERT INTO speaker_to_user (recording_id, speaker_id, user_id) VALUES ($1, $2, $3)",
+                    [recording_id_int, speaker_id, user_id]
                 )
             
             return True
@@ -150,10 +166,97 @@ class SpeakerService:
             return False
     
     @staticmethod
-    async def get_speaker_mappings(recording_id: int) -> List[SpeakerToUser]:
+    async def get_speaker_mappings(recording_id: int) -> List[Dict]:
         """Get speaker mappings for a recording"""
         try:
-            return await SpeakerToUser.filter(recording_id=recording_id).prefetch_related("user")
+            from tortoise import connections
+            db = connections.get("default")
+            result = await db.execute_query_dict(
+                "SELECT recording_id, speaker_id, user_id FROM speaker_to_user WHERE recording_id = $1",
+                [recording_id]
+            )
+            return result
         except Exception as e:
             logging.error(f"Error fetching speaker mappings: {e}")
+            return []
+
+
+class AnalysisService:
+    """Service class for analysis status operations"""
+    
+    @staticmethod
+    async def get_analysis_status(recording) -> str:
+        """Get analysis status indicators for a recording"""
+        try:
+            # Check speaker identification
+            speaker_mappings = await SpeakerService.get_speaker_mappings(recording.id)
+            has_speakers = len(speaker_mappings) > 0
+            
+            # Check summary (column in recording table)
+            has_summary = bool(recording.summary)
+            
+            # Check TODOs (separate table with created_at_recording_id)
+            has_todos = False
+            try:
+                from db.models import Todo
+                todos = await Todo.filter(created_at_recording_id=recording.id)
+                has_todos = len(todos) > 0
+            except Exception as e:
+                logging.error(f"Error checking TODOs: {e}")
+            
+            # Build status string
+            status_parts = [
+                f"{'✓' if has_speakers else '✗'} speakers",
+                f"{'✓' if has_todos else '✗'} todos",
+                f"{'✓' if has_summary else '✗'} summary",
+            ]
+            
+            return " | ".join(status_parts)
+            
+        except Exception as e:
+            logging.error(f"Error getting analysis status: {e}")
+            return "✗ speakers | ✗ todos | ✗ summary"
+
+
+class TodoService:
+    """Service class for TODO operations"""
+    
+    @staticmethod
+    async def create_todo(name: str, desc: str = None, status: str = "pending", 
+                         user_id: int = None, created_at_recording_id: int = None,
+                         updated_at_recording_id: int = None) -> bool:
+        """Create a new TODO"""
+        try:
+            from db.models import Todo
+            await Todo.create(
+                name=name,
+                desc=desc,
+                status=status,
+                user_id=user_id,
+                created_at_recording_id=created_at_recording_id,
+                updated_at_recording_id=updated_at_recording_id
+            )
+            return True
+        except Exception as e:
+            logging.error(f"Error creating TODO: {e}")
+            return False
+    
+    @staticmethod
+    async def get_todos_by_recording(recording_id: int) -> List[Dict]:
+        """Get all TODOs for a recording"""
+        try:
+            from db.models import Todo
+            todos = await Todo.filter(created_at_recording_id=recording_id)
+            return [
+                {
+                    "id": todo.id,
+                    "name": todo.name,
+                    "desc": todo.desc,
+                    "status": todo.status,
+                    "user_id": todo.user_id
+                }
+                for todo in todos
+            ]
+        except Exception as e:
+            logging.error(f"Error fetching TODOs: {e}")
             return []

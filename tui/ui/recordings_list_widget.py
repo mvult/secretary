@@ -2,7 +2,7 @@ from textual.widgets import DataTable, Static
 from textual.containers import Container
 from typing import Optional
 import logging
-from db.service import RecordingService
+from db.service import RecordingService, AnalysisService
 
 
 class RecordingsListWidget(Container):
@@ -36,7 +36,7 @@ class RecordingsListWidget(Container):
     def on_mount(self):
         """Initialize the table"""
         table = self.query_one("#recordings-table", DataTable)
-        table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Status")
+        table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Analysis", "Status")
         table.cursor_type = "row"
         table.zebra_stripes = True
         table.focus()
@@ -90,7 +90,7 @@ class RecordingsListWidget(Container):
 
         # Ensure columns are set up
         if len(table.columns) == 0:
-            table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Status")
+            table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Analysis", "Status")
             table.cursor_type = "row"
             table.zebra_stripes = True
 
@@ -106,11 +106,12 @@ class RecordingsListWidget(Container):
                 recording.created_at_formatted if recording.created_at else "Unknown"
             )
             storage_str = recording.storage_status
+            analysis_str = await AnalysisService.get_analysis_status(recording)
             status = "Archived" if recording.archived else "Active"
 
             try:
                 table.add_row(
-                    str(recording.id), recording.name, duration_str, created_str, storage_str, status
+                    str(recording.id), recording.name, duration_str, created_str, storage_str, analysis_str, status
                 )
             except Exception as e:
                 logging.error(f"Error adding row to table: {e}")

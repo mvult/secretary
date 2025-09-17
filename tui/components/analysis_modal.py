@@ -1,8 +1,13 @@
 from textual.app import ComposeResult
+from textual import on
+from textual.events import Mount
 from textual.containers import Container
 from textual.widgets import Static, SelectionList
 from textual.widgets.selection_list import Selection
 from textual.screen import ModalScreen
+
+
+import logging
 
 
 class AnalysisModal(ModalScreen):
@@ -10,7 +15,6 @@ class AnalysisModal(ModalScreen):
 
     BINDINGS = [
         ("escape", "cancel", "Cancel"),
-        ("enter", "select", "Select"),
     ]
 
     CSS = """
@@ -20,7 +24,7 @@ class AnalysisModal(ModalScreen):
     
     .analysis-dialog {
         width: 60;
-        height: 15;
+        height: 20;
         background: $surface;
         border: solid $primary;
         padding: 2;
@@ -47,22 +51,23 @@ class AnalysisModal(ModalScreen):
             yield SelectionList[str](
                 Selection("Extract TODOs", "todos"),
                 Selection("Summarize", "summary"),
-                id="analysis-list"
+                id="analysis-list",
             )
 
-    def on_selection_list_option_selected(self, event: SelectionList.OptionSelected) -> None:
-        """Handle selection from the list"""
-        self.selected_analysis = event.option_id
-        self.dismiss(event.option_id)
-    
-    def action_select(self):
-        """Select the currently highlighted option"""
-        selection_list = self.query_one("#analysis-list", SelectionList)
-        if selection_list.highlighted is not None:
-            option = selection_list.get_option_at_index(selection_list.highlighted)
-            if option:
-                self.dismiss(option.id)
-    
+
+    @on(Mount)
+    @on(SelectionList.SelectedChanged)
+    def update_selection(self) -> None:
+        selected = self.query_one(SelectionList).selected
+        logging.info(f"AnalysisModal: selection changed to: {selected}")
+        
+        # If something is selected and we have exactly one item, trigger analysis
+        if selected and len(selected) == 1:
+            selected_id = list(selected)[0]
+            logging.info(f"AnalysisModal: single item selected, dismissing with: {selected_id}")
+            self.dismiss(selected_id)
+
     def action_cancel(self):
         """Cancel the modal"""
         self.dismiss(None)
+
