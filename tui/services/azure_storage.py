@@ -1,11 +1,13 @@
-import requests
+import asyncio
+import base64
 import hashlib
 import hmac
-import base64
-from datetime import datetime, timezone
-from urllib.parse import quote
 import os
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Dict, Optional
+from urllib.parse import quote
+
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -73,88 +75,97 @@ class AzureBlobStorage:
         
         return f"SharedKey {self.account_name}:{signature}"
     
-    async def upload_file(self, file_path: str, container_name: str = "sec-recordings", 
-                         blob_name: Optional[str] = None) -> dict:
-        """Upload a file to Azure Blob Storage"""
+    def _upload_file_sync(
+        self, file_path: str, container_name: str, blob_name: Optional[str]
+    ) -> Dict[str, object]:
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
-        
+
         if blob_name is None:
             blob_name = os.path.basename(file_path)
-        
-        # URL encode the blob name
+
         encoded_blob_name = quote(blob_name)
         url_path = f"/{container_name}/{encoded_blob_name}"
         url = f"https://{self.account_name}.blob.{self.endpoint_suffix}{url_path}"
-        
-        # Get file content and size
-        with open(file_path, 'rb') as f:
+
+        with open(file_path, "rb") as f:
             file_content = f.read()
-        
+
         file_size = len(file_content)
-        
-        # Prepare headers
+
         utc_now = datetime.now(timezone.utc)
         headers = {
-            'x-ms-date': utc_now.strftime('%a, %d %b %Y %H:%M:%S GMT'),
-            'x-ms-version': '2020-04-08',
-            'x-ms-blob-type': 'BlockBlob',
-            'Content-Length': str(file_size),
-            'Content-Type': 'audio/wav'
+            "x-ms-date": utc_now.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+            "x-ms-version": "2020-04-08",
+            "x-ms-blob-type": "BlockBlob",
+            "Content-Length": str(file_size),
+            "Content-Type": "audio/wav",
         }
-        
-        # Generate authorization header
-        auth_header = self._get_authorization_header('PUT', url_path, headers)
-        headers['Authorization'] = auth_header
-        
-        # Make the request
+
+        auth_header = self._get_authorization_header("PUT", url_path, headers)
+        headers["Authorization"] = auth_header
+
         response = requests.put(url, data=file_content, headers=headers)
-        
+
         if response.status_code in [200, 201]:
             return {
-                'success': True,
-                'url': url,
-                'blob_name': blob_name,
-                'container': container_name,
-                'size': file_size
+                "success": True,
+                "url": url,
+                "blob_name": blob_name,
+                "container": container_name,
+                "size": file_size,
             }
-        else:
-            return {
-                'success': False,
-                'error': f"Upload failed: {response.status_code} - {response.text}",
-                'status_code': response.status_code
-            }
-    
-    async def delete_file(self, blob_name: str, container_name: str = "sec-recordings") -> dict:
-        """Delete a file from Azure Blob Storage"""
-        # URL encode the blob name
+
+        return {
+            "success": False,
+            "error": f"Upload failed: {response.status_code} - {response.text}",
+            "status_code": response.status_code,
+        }
+
+    def _delete_file_sync(self, blob_name: str, container_name: str) -> Dict[str, object]:
         encoded_blob_name = quote(blob_name)
         url_path = f"/{container_name}/{encoded_blob_name}"
         url = f"https://{self.account_name}.blob.{self.endpoint_suffix}{url_path}"
-        
-        # Prepare headers
+
         utc_now = datetime.now(timezone.utc)
         headers = {
-            'x-ms-date': utc_now.strftime('%a, %d %b %Y %H:%M:%S GMT'),
-            'x-ms-version': '2020-04-08',
+            "x-ms-date": utc_now.strftime("%a, %d %b %Y %H:%M:%S GMT"),
+            "x-ms-version": "2020-04-08",
         }
-        
-        # Generate authorization header
-        auth_header = self._get_authorization_header('DELETE', url_path, headers)
-        headers['Authorization'] = auth_header
-        
-        # Make the request
+
+        auth_header = self._get_authorization_header("DELETE", url_path, headers)
+        headers["Authorization"] = auth_header
+
         response = requests.delete(url, headers=headers)
-        
-        if response.status_code in [200, 202, 404]:  # 404 is ok (already deleted)
+
+        if response.status_code in [200, 202, 404]:
             return {
-                'success': True,
-                'blob_name': blob_name,
-                'container': container_name
+                "success": True,
+                "blob_name": blob_name,
+                "container": container_name,
             }
-        else:
-            return {
-                'success': False,
-                'error': f"Delete failed: {response.status_code} - {response.text}",
-                'status_code': response.status_code
-            }
+
+        return {
+            "success": False,
+            "error": f"Delete failed: {response.status_code} - {response.text}",
+            "status_code": response.status_code,
+        }
+
+    async def upload_file(
+        self,
+        file_path: str,
+        container_name: str = "sec-recordings",
+        blob_name: Optional[str] = None,
+    ) -> Dict[str, object]:
+        """Upload a file to Azure Blob Storage"""
+        return await asyncio.to_thread(
+            self._upload_file_sync, file_path, container_name, blob_name
+        )
+
+    async def delete_file(
+        self, blob_name: str, container_name: str = "sec-recordings"
+    ) -> Dict[str, object]:
+        """Delete a file from Azure Blob Storage"""
+        return await asyncio.to_thread(
+            self._delete_file_sync, blob_name, container_name
+        )

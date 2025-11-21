@@ -1,5 +1,7 @@
 *.pyc
 *.wav
+*.m4a
+*.pcm
 
 # Dependencies
 **/node_modules/

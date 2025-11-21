@@ -1,12 +1,23 @@
-from textual.app import ComposeResult
-from textual.containers import Container, Vertical, Horizontal, Center, Middle
-from textual.widgets import Header, Static, Footer, Input, TextArea, Button
-from textual.screen import Screen, ModalScreen
+import asyncio
 import logging
-from db.service import RecordingService, AnalysisService, SpeakerService, TodoService, UserService
+from typing import Dict, List, Optional
+
+from textual.app import ComposeResult
+from textual.containers import Container, Vertical
+from textual.reactive import reactive
+from textual.screen import Screen
+from textual.widgets import Footer, Header, Static, TextArea
+
+from db.service import (
+    AnalysisService,
+    RecordingService,
+    SpeakerService,
+    TodoService,
+    UserService,
+)
+from services.analysis_service import analyze_transcript
 from services.storage_manager import StorageManager
 from services.transcription_service import TranscriptionService
-from services.analysis_service import analyze_transcript
 from components.analysis_modal import AnalysisModal
 from components.rename_modal import RenameModal
 
@@ -15,6 +26,8 @@ class RecordingDetailScreen(Screen):
     """Screen for displaying recording details"""
 
     inherit_bindings = False  # Don't inherit bindings from parent app
+
+    active_view = reactive("transcript")
 
     CSS = """
     .detail-container {
@@ -41,43 +54,34 @@ class RecordingDetailScreen(Screen):
     .content-container {
         height: 1fr;
         margin: 1 0;
-        layout: horizontal;
     }
-    
-    .transcript-area {
-        height: 100%;
-        border: solid $primary;
-        margin-right: 1;
+
+    .analysis-wrapper {
+        height: 1fr;
+        layout: vertical;
         width: 1fr;
     }
-    
-    .todos-container {
-        width: 30;
-        height: 100%;
-        border: solid $primary;
-        margin-left: 1;
-    }
-    
-    .todos-title {
+
+    .view-label {
         height: 1;
+        padding: 0 1;
         text-style: bold;
         color: $primary;
-        padding: 0 1;
     }
-    
-    .todos-list {
+
+    .analysis-text {
         height: 1fr;
-        padding: 0 1;
+        border: solid $primary;
+        width: 1fr;
     }
-    
-    .todo-item {
-        margin-bottom: 1;
-        padding: 1;
-        background: $surface;
-        border: solid gray;
-    }
-    
+
     """
+
+    VIEW_LABELS = {
+        "transcript": "Transcript",
+        "summary": "Summary",
+        "todos": "TODOs",
+    }
 
     BINDINGS = [
         ("escape,q,left", "back", "Back to List"),
@@ -88,6 +92,8 @@ class RecordingDetailScreen(Screen):
         ("c", "toggle_cloud", "Toggle Cloud Storage"),
         ("n", "toggle_nas", "Toggle NAS Storage"),
         ("l", "toggle_local", "Toggle Local Storage"),
+        ("down", "view_next", "Next output view"),
+        ("up", "view_prev", "Previous output view"),
         # Override main app bindings to disable them
         ("r", "rename", "Rename the recording"),
         ("s", "ignore", ""),
@@ -99,6 +105,13 @@ class RecordingDetailScreen(Screen):
         self.recording_id = recording_id
         self.recording = None
         self.storage_manager = StorageManager()
+        self._transcription_task: Optional[asyncio.Task] = None
+        self._analysis_task: Optional[asyncio.Task] = None
+        self._storage_tasks: Dict[str, asyncio.Task] = {}
+        self._available_views: List[str] = ["transcript"]
+        self._transcript_text = "No transcript available."
+        self._summary_text = "No summary available."
+        self._todos_text = "No TODOs available."
 
     async def on_mount(self):
         """Load recording data when screen mounts"""
@@ -108,6 +121,9 @@ class RecordingDetailScreen(Screen):
             )
         except Exception as e:
             logging.error(f"Error loading recording {self.recording_id}: {e}")
+
+        analysis_text = self.query_one("#analysis-text", TextArea)
+        analysis_text.can_focus = False
 
     def compose(self) -> ComposeResult:
         """Create the UI layout"""
@@ -124,12 +140,14 @@ class RecordingDetailScreen(Screen):
                 yield Static("", id="analysis-status", classes="recording-date")
 
             with Container(id="content-wrapper", classes="content-container"):
-                yield TextArea(
-                    "No transcript available",
-                    id="transcript",
-                    classes="transcript-area",
-                    read_only=True,
-                )
+                with Container(classes="analysis-wrapper"):
+                    yield Static("Transcript", id="view-label", classes="view-label")
+                    yield TextArea(
+                        "No transcript available.",
+                        id="analysis-text",
+                        classes="analysis-text",
+                        read_only=True,
+                    )
 
         yield Footer()
 
@@ -151,7 +169,7 @@ class RecordingDetailScreen(Screen):
         date_widget = self.query_one("#recording-date", Static)
         storage_widget = self.query_one("#storage-status", Static)
         analysis_widget = self.query_one("#analysis-status", Static)
-        transcript_widget = self.query_one("#transcript", TextArea)
+        text_widget = self.query_one("#analysis-text", TextArea)
 
         title_widget.update(self.recording.name)
         date_widget.update(f"Created: {self.recording.created_at_formatted}")
@@ -166,54 +184,113 @@ class RecordingDetailScreen(Screen):
             f"Analysis status for recording {self.recording_id}: '{analysis_status}'"
         )
 
-        transcript_text = self.recording.transcript or "No transcript available"
-        transcript_widget.text = transcript_text
-        
-        # Update TODOs display
-        await self.update_todos_display()
+        self._transcript_text = self.recording.transcript or "No transcript available."
+        summary_present = bool(self.recording.summary)
+        self._summary_text = self.recording.summary or "No summary available."
 
-    async def update_todos_display(self):
-        """Update the TODOs display based on available TODOs"""
-        if not self.recording:
+        todos_text, todos_available = await self._build_todos_text()
+        self._todos_text = todos_text
+
+        available_views: List[str] = ["transcript"]
+        if summary_present:
+            available_views.append("summary")
+        if todos_available:
+            available_views.append("todos")
+
+        self._set_available_views(available_views)
+
+        label_widget = self.query_one("#view-label", Static)
+
+        if not self.is_mounted:
+            if self.active_view == "summary" and summary_present:
+                text_widget.text = self._summary_text
+                label_widget.update(self.VIEW_LABELS["summary"])
+            elif self.active_view == "todos" and todos_available:
+                text_widget.text = self._todos_text
+                label_widget.update(self.VIEW_LABELS["todos"])
+            else:
+                text_widget.text = self._transcript_text
+                label_widget.update(self.VIEW_LABELS["transcript"])
+
+    def watch_active_view(self, old_view: str, new_view: str) -> None:
+        if not self.is_mounted:
             return
-            
-        # Get TODOs for this recording
-        todos = await TodoService.get_todos_by_recording(self.recording_id)
-        
-        # Remove existing todos container if it exists
+        self._refresh_active_view()
+
+    def _set_available_views(self, views: List[str]) -> None:
+        if not views:
+            views = ["transcript"]
+        self._available_views = views
+        if self.active_view not in views:
+            self.active_view = views[0]
+        elif self.is_mounted:
+            self._refresh_active_view()
+
+    def _cycle_view(self, step: int) -> None:
+        if not self._available_views:
+            return
         try:
-            existing_todos = self.query_one("#todos-container")
-            existing_todos.remove()
-        except:
-            pass
-        
-        if todos:
-            content_wrapper = self.query_one("#content-wrapper")
-            
-            # Create TODO widgets
-            todo_widgets = [Static("TODOs", classes="todos-title")]
-            
-            for todo in todos:
-                # Get user name if available
-                user_name = ""
-                if todo.get("user_id"):
-                    try:
-                        users = await UserService.get_all_users()
-                        user = next((u for u in users if u.id == todo["user_id"]), None)
-                        if user:
-                            user_name = f" (@{user.first_name})"
-                    except:
-                        pass
-                
-                todo_text = f"• {todo['name']}{user_name}"
-                if todo.get('desc'):
-                    todo_text += f"\n  {todo['desc']}"
-                
-                todo_widgets.append(Static(todo_text, classes="todo-item"))
-            
-            # Create and mount TODOs container with all widgets
-            todos_container = Vertical(*todo_widgets, id="todos-container", classes="todos-container")
-            await content_wrapper.mount(todos_container)
+            index = self._available_views.index(self.active_view)
+        except ValueError:
+            self.active_view = self._available_views[0]
+            return
+        new_index = (index + step) % len(self._available_views)
+        if new_index != index:
+            self.active_view = self._available_views[new_index]
+
+    def _refresh_active_view(self) -> None:
+        if not self._available_views:
+            text_widget = self.query_one("#analysis-text", TextArea)
+            label_widget = self.query_one("#view-label", Static)
+            text_widget.text = self._transcript_text
+            label_widget.update(self.VIEW_LABELS["transcript"])
+            return
+
+        if self.active_view not in self._available_views and self._available_views:
+            self.active_view = self._available_views[0]
+            return
+
+        text_widget = self.query_one("#analysis-text", TextArea)
+        label_widget = self.query_one("#view-label", Static)
+        if self.active_view == "summary":
+            text_widget.text = self._summary_text
+            label_widget.update(self.VIEW_LABELS["summary"])
+        elif self.active_view == "todos":
+            text_widget.text = self._todos_text
+            label_widget.update(self.VIEW_LABELS["todos"])
+        else:
+            text_widget.text = self._transcript_text
+            label_widget.update(self.VIEW_LABELS["transcript"])
+
+    async def _build_todos_text(self) -> tuple[str, bool]:
+        if not self.recording:
+            return "No TODOs available.", False
+
+        todos = await TodoService.get_todos_by_recording(self.recording_id)
+        if not todos:
+            return "No TODOs available.", False
+
+        users = await UserService.get_all_users()
+        user_map = {user.id: user for user in users}
+
+        lines: List[str] = []
+        for todo in todos:
+            user_note = ""
+            user_id = todo.get("user_id")
+            if user_id is not None:
+                user = user_map.get(user_id)
+                if user:
+                    user_note = f" (@{user.first_name})"
+
+            lines.append(f"• {todo['name']}{user_note}")
+            if todo.get("desc"):
+                lines.append(f"  {todo['desc']}")
+            lines.append("")
+
+        if lines and lines[-1] == "":
+            lines.pop()
+
+        return "\n".join(lines), True
 
     def action_back(self):
         """Go back to the main screen"""
@@ -266,165 +343,220 @@ class RecordingDetailScreen(Screen):
         if not self.recording:
             return
 
+        if self._transcription_task and not self._transcription_task.done():
+            logging.info("Transcription already in progress for %s", self.recording_id)
+            return
+
+        title_widget = self.query_one("#recording-title", Static)
+        text_widget = self.query_one("#analysis-text", TextArea)
+        original_title = self.recording.name
+        title_widget.update(f"{original_title} - Transcribing...")
+
         try:
-            title_widget = self.query_one("#recording-title", Static)
-            transcript_widget = self.query_one("#transcript", TextArea)
-            original_title = self.recording.name
-
-            title_widget.update(f"{original_title} - Transcribing...")
-
-            # Try to get first available source
             source_info = await self.storage_manager.get_first_available_source(
                 self.recording
             )
-            if not source_info:
-                title_widget.update(f"{original_title} - No audio source available ✗")
-                return
+        except Exception as exc:
+            logging.error("Error locating audio source: %s", exc)
+            title_widget.update(f"{original_title} - Error ✗")
+            return
 
-            # Run full transcription workflow (includes speaker identification)
-            result = await TranscriptionService.transcribe_recording(
-                self.recording, source_info
-            )
+        if not source_info:
+            title_widget.update(f"{original_title} - No audio source available ✗")
+            return
 
-            if result["success"]:
-                # Update recording object and UI
-                self.recording.transcript = result["transcript"]
-                transcript_widget.text = result["transcript"]
+        task = asyncio.create_task(
+            self._run_transcription(source_info, text_widget)
+        )
+        self._transcription_task = task
+        task.add_done_callback(
+            lambda t, title=original_title: self._on_transcription_done(t, title)
+        )
 
-                # Show results
-                if result.get("speaker_identification_success"):
-                    title_widget.update(
-                        f"{original_title} - Transcribed & Speakers Identified ✓"
-                    )
-                    logging.info(
-                        f"Transcribed recording {self.recording_id} with {len(result.get('speaker_mappings', []))} speaker mappings"
-                    )
-                else:
-                    title_widget.update(f"{original_title} - Transcribed ✓")
-                    logging.info(
-                        f"Transcribed recording {self.recording_id} (no speaker identification)"
-                    )
+    async def _run_transcription(self, source_info, text_widget: TextArea) -> Dict[str, object]:
+        result = await TranscriptionService.transcribe_recording(
+            self.recording, source_info
+        )
+        if result.get("success"):
+            transcript_text = result.get("transcript", "")
+            updated = await RecordingService.get_recording_by_id(self.recording_id)
+            if updated:
+                self.recording = updated
             else:
-                title_widget.update(f"{original_title} - Transcription failed ✗")
-                logging.error(
-                    f"Transcription failed: {result.get('error', 'Unknown error')}"
-                )
+                self.recording.transcript = transcript_text
+            display_text = transcript_text or "No transcript available."
+            self._transcript_text = display_text
+            if self.active_view == "transcript":
+                text_widget.text = display_text
+        return result
 
-        except Exception as e:
-            logging.error(f"Error transcribing recording: {e}")
-            title_widget = self.query_one("#recording-title", Static)
-            title_widget.update(f"{self.recording.name} - Error ✗")
+    def _on_transcription_done(
+        self, task: asyncio.Task, original_title: str
+    ) -> None:
+        self._transcription_task = None
+
+        if not self.is_mounted:
+            return
+
+        title_widget = self.query_one("#recording-title", Static)
+
+        try:
+            result = task.result()
+        except Exception as exc:
+            logging.error("Error transcribing recording %s: %s", self.recording_id, exc)
+            title_widget.update(f"{original_title} - Error ✗")
+            return
+
+        if result.get("success"):
+            if result.get("speaker_identification_success"):
+                title_widget.update(
+                    f"{original_title} - Transcribed & Speakers Identified ✓"
+                )
+                logging.info(
+                    "Transcribed recording %s with %d speaker mappings",
+                    self.recording_id,
+                    len(result.get("speaker_mappings", [])),
+                )
+            else:
+                title_widget.update(f"{original_title} - Transcribed ✓")
+                logging.info(
+                    "Transcribed recording %s (no speaker identification)",
+                    self.recording_id,
+                )
+            asyncio.create_task(self.update_display())
+        else:
+            title_widget.update(f"{original_title} - Transcription failed ✗")
+            logging.error(
+                "Transcription failed: %s", result.get("error", "Unknown error")
+            )
 
     async def action_toggle_cloud(self):
         """Toggle cloud storage for recording"""
         if not self.recording:
             return
 
-        try:
-            title_widget = self.query_one("#recording-title", Static)
-            storage_widget = self.query_one("#storage-status", Static)
-            original_title = self.recording.name
+        if self._storage_tasks.get("cloud") and not self._storage_tasks["cloud"].done():
+            logging.info("Cloud toggle already in progress for %s", self.recording_id)
+            return
 
-            title_widget.update(f"{original_title} - Processing...")
+        title_widget = self.query_one("#recording-title", Static)
+        original_title = self.recording.name
+        title_widget.update(f"{original_title} - Processing...")
 
-            result = await self.storage_manager.toggle_cloud_storage(self.recording)
-
-            if result["success"]:
-                # Reload recording to get updated data
-                self.recording = await RecordingService.get_recording_by_id(
-                    self.recording_id
-                )
-                title_widget.update(f"{original_title} - {result['action'].title()} ✓")
-                storage_widget.update(
-                    f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
-                )
-                logging.info(
-                    f"Cloud storage {result['action']} for recording {self.recording_id}"
-                )
-            else:
-                title_widget.update(f"{original_title} - Error ✗")
-                logging.error(
-                    f"Failed to toggle cloud storage: {result.get('error', 'Unknown error')}"
-                )
-
-        except Exception as e:
-            logging.error(f"Error toggling cloud storage: {e}")
-            title_widget = self.query_one("#recording-title", Static)
-            title_widget.update(f"{self.recording.name} - Error ✗")
+        task = asyncio.create_task(self._toggle_cloud_backend())
+        self._storage_tasks["cloud"] = task
+        task.add_done_callback(
+            lambda t, title=original_title, key="cloud": self._on_storage_toggle_done(
+                key, t, title
+            )
+        )
 
     async def action_toggle_nas(self):
         """Toggle NAS storage for recording"""
         if not self.recording:
             return
 
-        try:
-            title_widget = self.query_one("#recording-title", Static)
-            storage_widget = self.query_one("#storage-status", Static)
-            original_title = self.recording.name
+        if self._storage_tasks.get("nas") and not self._storage_tasks["nas"].done():
+            logging.info("NAS toggle already in progress for %s", self.recording_id)
+            return
 
-            title_widget.update(f"{original_title} - Processing...")
+        title_widget = self.query_one("#recording-title", Static)
+        original_title = self.recording.name
+        title_widget.update(f"{original_title} - Processing...")
 
-            result = await self.storage_manager.toggle_nas_storage(self.recording)
-
-            if result["success"]:
-                # Reload recording to get updated data
-                self.recording = await RecordingService.get_recording_by_id(
-                    self.recording_id
-                )
-                title_widget.update(f"{original_title} - {result['action'].title()} ✓")
-                storage_widget.update(
-                    f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
-                )
-                logging.info(
-                    f"NAS storage {result['action']} for recording {self.recording_id}"
-                )
-            else:
-                title_widget.update(f"{original_title} - Error ✗")
-                logging.error(
-                    f"Failed to toggle NAS storage: {result.get('error', 'Unknown error')}"
-                )
-
-        except Exception as e:
-            logging.error(f"Error toggling NAS storage: {e}")
-            title_widget = self.query_one("#recording-title", Static)
-            title_widget.update(f"{self.recording.name} - Error ✗")
+        task = asyncio.create_task(self._toggle_nas_backend())
+        self._storage_tasks["nas"] = task
+        task.add_done_callback(
+            lambda t, title=original_title, key="nas": self._on_storage_toggle_done(
+                key, t, title
+            )
+        )
 
     async def action_toggle_local(self):
         """Toggle local storage for recording"""
         if not self.recording:
             return
 
+        if self._storage_tasks.get("local") and not self._storage_tasks["local"].done():
+            logging.info("Local toggle already in progress for %s", self.recording_id)
+            return
+
+        title_widget = self.query_one("#recording-title", Static)
+        original_title = self.recording.name
+        title_widget.update(f"{original_title} - Processing...")
+
+        task = asyncio.create_task(self._toggle_local_backend())
+        self._storage_tasks["local"] = task
+        task.add_done_callback(
+            lambda t, title=original_title, key="local": self._on_storage_toggle_done(
+                key, t, title
+            )
+        )
+
+    async def _toggle_cloud_backend(self) -> Dict[str, object]:
+        result = await self.storage_manager.toggle_cloud_storage(self.recording)
+        if result.get("success"):
+            updated = await RecordingService.get_recording_by_id(self.recording_id)
+            if updated:
+                self.recording = updated
+        return result
+
+    async def _toggle_nas_backend(self) -> Dict[str, object]:
+        result = await self.storage_manager.toggle_nas_storage(self.recording)
+        if result.get("success"):
+            updated = await RecordingService.get_recording_by_id(self.recording_id)
+            if updated:
+                self.recording = updated
+        return result
+
+    async def _toggle_local_backend(self) -> Dict[str, object]:
+        result = await self.storage_manager.toggle_local_storage(self.recording)
+        if result.get("success"):
+            updated = await RecordingService.get_recording_by_id(self.recording_id)
+            if updated:
+                self.recording = updated
+        return result
+
+    def _on_storage_toggle_done(
+        self, key: str, task: asyncio.Task, original_title: str
+    ) -> None:
+        stored_task = self._storage_tasks.get(key)
+        if stored_task is task:
+            self._storage_tasks.pop(key, None)
+
+        if not self.is_mounted:
+            return
+
+        title_widget = self.query_one("#recording-title", Static)
+        storage_widget = self.query_one("#storage-status", Static)
+
         try:
-            title_widget = self.query_one("#recording-title", Static)
-            storage_widget = self.query_one("#storage-status", Static)
-            original_title = self.recording.name
+            result = task.result()
+        except Exception as exc:
+            logging.error("Error toggling %s storage: %s", key, exc)
+            title_widget.update(f"{original_title} - Error ✗")
+            return
 
-            title_widget.update(f"{original_title} - Processing...")
-
-            result = await self.storage_manager.toggle_local_storage(self.recording)
-
-            if result["success"]:
-                # Reload recording to get updated data
-                self.recording = await RecordingService.get_recording_by_id(
-                    self.recording_id
-                )
-                title_widget.update(f"{original_title} - {result['action'].title()} ✓")
+        if result.get("success"):
+            action = result.get("action", "updated").title()
+            title_widget.update(f"{original_title} - {action} ✓")
+            if self.recording:
                 storage_widget.update(
                     f"Storage: {self.recording.storage_status} (local/NAS/cloud)"
                 )
-                logging.info(
-                    f"Local storage {result['action']} for recording {self.recording_id}"
-                )
-            else:
-                title_widget.update(f"{original_title} - Error ✗")
-                logging.error(
-                    f"Failed to toggle local storage: {result.get('error', 'Unknown error')}"
-                )
-
-        except Exception as e:
-            logging.error(f"Error toggling local storage: {e}")
-            title_widget = self.query_one("#recording-title", Static)
-            title_widget.update(f"{self.recording.name} - Error ✗")
+            logging.info(
+                "%s storage %s for recording %s",
+                key.upper(),
+                result.get("action", "updated"),
+                self.recording_id,
+            )
+        else:
+            title_widget.update(f"{original_title} - Error ✗")
+            logging.error(
+                "Failed to toggle %s storage: %s",
+                key,
+                result.get("error", "Unknown error"),
+            )
 
     def action_analyze(self):
         """Show analysis menu for transcript"""
@@ -458,52 +590,91 @@ class RecordingDetailScreen(Screen):
             logging.warning("No transcript available for analysis")
             return
 
+        if self._analysis_task and not self._analysis_task.done():
+            logging.info("Analysis already running for %s", self.recording_id)
+            return
+
+        title_widget = self.query_one("#recording-title", Static)
+        original_title = self.recording.name
+        title_widget.update(f"{original_title} - Analyzing...")
+        logging.info(
+            "Starting %s analysis for recording %s", analysis_type, self.recording_id
+        )
+
+        task = asyncio.create_task(
+            self._run_analysis(analysis_type)
+        )
+        self._analysis_task = task
+        task.add_done_callback(
+            lambda t, title=original_title, a_type=analysis_type: self._on_analysis_done(
+                t, title, a_type
+            )
+        )
+
+    async def _run_analysis(self, analysis_type: str) -> Dict[str, object]:
+        speaker_mappings = []
+        if analysis_type == "todos":
+            speaker_mappings = await SpeakerService.get_speaker_mappings(self.recording_id)
+
+        result = await analyze_transcript(
+            self.recording.transcript,
+            analysis_type,
+            self.recording_id,
+            speaker_mappings,
+        )
+
+        if result.get("success"):
+            updated = await RecordingService.get_recording_by_id(self.recording_id)
+            if updated:
+                self.recording = updated
+
+        return result
+
+    def _on_analysis_done(
+        self, task: asyncio.Task, original_title: str, analysis_type: str
+    ) -> None:
+        self._analysis_task = None
+
+        if not self.is_mounted:
+            return
+
+        title_widget = self.query_one("#recording-title", Static)
+
         try:
-            title_widget = self.query_one("#recording-title", Static)
-            original_title = self.recording.name
+            result = task.result()
+        except Exception as exc:
+            logging.error("Error during analysis: %s", exc)
+            title_widget.update(f"{original_title} - Error ✗")
+            return
 
-            title_widget.update(f"{original_title} - Analyzing...")
-            logging.info(
-                f"Starting {analysis_type} analysis for recording {self.recording_id}"
-            )
-
-            # Get speaker mappings for TODO analysis
-            speaker_mappings = []
-            if analysis_type == "todos":
-                speaker_mappings = await SpeakerService.get_speaker_mappings(self.recording_id)
-            
-            result = await analyze_transcript(
-                self.recording.transcript, analysis_type, self.recording_id, speaker_mappings
-            )
-
-            logging.info(f"Analysis result: {result}")
-
-            if result.get("success"):
-                title_widget.update(f"{original_title} - Analysis complete ✓")
-
-                if analysis_type == "todos" and result.get("todos"):
-                    # TODO: Save todos to database
-                    logging.info(
-                        f"Extracted {len(result['todos'])} TODOs from recording {self.recording_id}"
-                    )
-
-                # Refresh the analysis status display
-                await self.update_display()
-
+        if result.get("success"):
+            title_widget.update(f"{original_title} - Analysis complete ✓")
+            if analysis_type == "todos" and result.get("todos"):
                 logging.info(
-                    f"Analysis '{analysis_type}' completed for recording {self.recording_id}"
-                )
-            else:
-                title_widget.update(f"{original_title} - Analysis failed ✗")
-                logging.error(
-                    f"Analysis failed: {result.get('content', 'Unknown error')}"
+                    "Extracted %d TODOs from recording %s",
+                    len(result.get("todos", [])),
+                    self.recording_id,
                 )
 
-        except Exception as e:
-            logging.error(f"Error during analysis: {e}")
-            title_widget = self.query_one("#recording-title", Static)
-            title_widget.update(f"{self.recording.name} - Error ✗")
+            asyncio.create_task(self.update_display())
+            logging.info(
+                "Analysis '%s' completed for recording %s",
+                analysis_type,
+                self.recording_id,
+            )
+        else:
+            title_widget.update(f"{original_title} - Analysis failed ✗")
+            logging.error(
+                "Analysis failed: %s",
+                result.get("content", result.get("error", "Unknown error")),
+            )
 
     def action_ignore(self):
         """Do nothing - used to override parent bindings"""
         pass
+
+    def action_view_next(self) -> None:
+        self._cycle_view(1)
+
+    def action_view_prev(self) -> None:
+        self._cycle_view(-1)

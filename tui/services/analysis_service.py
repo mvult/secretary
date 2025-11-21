@@ -1,7 +1,30 @@
-from typing import Dict, Any, List
-import logging
+import asyncio
 import json
+import logging
+from typing import Any, Dict, List, Tuple
+
 from .openai_client import get_openai_client, is_openai_configured
+
+
+def _run_completion_sync(prompt: str) -> Tuple[Any, Dict[str, str]]:
+    client = get_openai_client()
+    result = client.chat.completions.create(
+        model="openai/gpt-5",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+    )
+
+    meta: Dict[str, str] = {}
+    if hasattr(result, "_request_id"):
+        meta["request_id"] = result._request_id  # type: ignore[attr-defined]
+    if hasattr(result, "model"):
+        meta["model"] = result.model  # type: ignore[attr-defined]
+    if hasattr(result, "_raw_response"):
+        headers = getattr(result._raw_response, "headers", {})
+        if "x-or-model" in headers:
+            meta["header_model"] = headers["x-or-model"]
+
+    return result, meta
 
 
 async def analyze_transcript(transcript: str, analysis_type: str, recording_id: int = None, speaker_mappings: List[Dict] = None) -> Dict[str, Any]:
@@ -82,23 +105,15 @@ Transcript:
                 "error": True
             }
         
-        client = get_openai_client()
-        result = client.chat.completions.create(
-            model="openai/gpt-5",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        
-        # Log what model OpenRouter actually used
-        if hasattr(result, '_request_id'):
-            logging.info(f"OpenRouter request ID: {result._request_id}")
-        if hasattr(result, 'model'):
-            logging.info(f"OpenRouter actual model used: {result.model}")
-        if hasattr(result, '_raw_response'):
-            headers = getattr(result._raw_response, 'headers', {})
-            if 'x-or-model' in headers:
-                logging.info(f"OpenRouter model header: {headers['x-or-model']}")
-        
+        result, meta = await asyncio.to_thread(_run_completion_sync, prompt)
+
+        if meta.get("request_id"):
+            logging.info("OpenRouter request ID: %s", meta["request_id"])
+        if meta.get("model"):
+            logging.info("OpenRouter actual model used: %s", meta["model"])
+        if meta.get("header_model"):
+            logging.info("OpenRouter model header: %s", meta["header_model"])
+
         content = result.choices[0].message.content
         
         if analysis_type == "todos":

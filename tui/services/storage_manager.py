@@ -1,7 +1,10 @@
+import asyncio
 import os
 import shutil
+from typing import Any, Dict, Optional
+
 import requests
-from typing import Optional, Dict, Any
+
 from services.azure_storage import AzureBlobStorage
 from db.service import RecordingService
 import logging
@@ -13,20 +16,32 @@ class StorageManager:
         self.azure_storage = AzureBlobStorage(
             os.getenv("AZURE_CONNECTION_STRING")
         )
+
+    def _download_from_cloud_sync(self, url: str, dest_path: str) -> bool:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+        with open(dest_path, "wb") as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        return True
+
+    def _copy_file_sync(self, source: str, dest: str) -> bool:
+        shutil.copy2(source, dest)
+        return True
+
+    def _remove_file_sync(self, path: str) -> None:
+        os.remove(path)
     
     async def download_from_cloud(self, url: str, dest_path: str) -> bool:
         """Download file from cloud URL to local path"""
         try:
-            response = requests.get(url, stream=True)
-            response.raise_for_status()
-            
-            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-            
-            with open(dest_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            
-            return True
+            return await asyncio.to_thread(
+                self._download_from_cloud_sync, url, dest_path
+            )
         except Exception as e:
             logging.error(f"Failed to download from {url}: {e}")
             return False
@@ -72,8 +87,9 @@ class StorageManager:
         else:
             # Local or NAS - use regular file copy
             try:
-                shutil.copy2(source_info["path"], dest_path)
-                return True
+                return await asyncio.to_thread(
+                    self._copy_file_sync, source_info["path"], dest_path
+                )
             except Exception as e:
                 logging.error(f"Failed to copy from {source_info['path']}: {e}")
                 return False
@@ -89,7 +105,7 @@ class StorageManager:
             
             # Delete local file
             try:
-                os.remove(recording.local_audio)
+                await asyncio.to_thread(self._remove_file_sync, recording.local_audio)
                 await RecordingService.update_recording(recording.id, local_audio=None)
                 return {"success": True, "action": "deleted", "message": "Deleted local file"}
             except Exception as e:
@@ -126,7 +142,7 @@ class StorageManager:
             
             # Delete NAS file
             try:
-                os.remove(recording.nas_audio)
+                await asyncio.to_thread(self._remove_file_sync, recording.nas_audio)
                 await RecordingService.update_recording(recording.id, nas_audio=None)
                 return {"success": True, "action": "deleted", "message": "Deleted NAS file"}
             except Exception as e:

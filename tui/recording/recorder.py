@@ -14,6 +14,7 @@ from db.service import RecordingService
 
 RATE = 48000
 CHUNK = 4096
+STREAM_BUFFER_FRAMES = CHUNK * 4
 FORMAT = pyaudio.paInt16
 CHANNELS = 3
 SAMPLE_WIDTH = 2
@@ -93,7 +94,7 @@ class AudioRecorder:
                 channels=CHANNELS,
                 rate=RATE,
                 input=True,
-                frames_per_buffer=CHUNK,
+                frames_per_buffer=STREAM_BUFFER_FRAMES,
                 input_device_index=aggregate_device_index,
             )
         except Exception as e:
@@ -111,7 +112,7 @@ class AudioRecorder:
             return False
 
         try:
-            data = self.stream.read(CHUNK, exception_on_overflow=True)
+            data = self.stream.read(CHUNK, exception_on_overflow=False)
         except Exception as exc:
             logging.error("Error recording chunk: %s", exc, exc_info=True)
             return False

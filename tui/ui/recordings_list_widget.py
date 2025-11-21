@@ -1,8 +1,11 @@
+import asyncio
+import logging
+from typing import Optional
+
 from textual.widgets import DataTable, Static
 from textual.containers import Container
-from typing import Optional
-import logging
-from db.service import RecordingService, AnalysisService
+
+from db.service import RecordingService
 
 
 class RecordingsListWidget(Container):
@@ -98,7 +101,7 @@ class RecordingsListWidget(Container):
         table.clear(columns=False)
 
         # Add recordings
-        for recording in recordings:
+        for idx, recording in enumerate(recordings, start=1):
             duration_str = (
                 recording.duration_formatted if recording.duration else "Unknown"
             )
@@ -106,7 +109,7 @@ class RecordingsListWidget(Container):
                 recording.created_at_formatted if recording.created_at else "Unknown"
             )
             storage_str = recording.storage_status
-            analysis_str = await AnalysisService.get_analysis_status(recording)
+            analysis_str = getattr(recording, "analysis_status", "")
             status = "Archived" if recording.archived else "Active"
 
             try:
@@ -115,6 +118,9 @@ class RecordingsListWidget(Container):
                 )
             except Exception as e:
                 logging.error(f"Error adding row to table: {e}")
+
+            if idx % 25 == 0:
+                await asyncio.sleep(0)
 
     async def archive_recording(self, recording_id: int):
         """Archive the specified recording"""
@@ -142,4 +148,3 @@ class RecordingsListWidget(Container):
             from ui.recording_detail_screen import RecordingDetailScreen
 
             self.app.push_screen(RecordingDetailScreen(recording_id))
-

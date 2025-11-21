@@ -1,4 +1,4 @@
-from db.models import Recording, User, SpeakerToUser
+from db.models import Recording, User, SpeakerToUser, Todo
 import logging
 from typing import List, Optional, Dict
 
@@ -23,15 +23,46 @@ class RecordingService:
     
     @staticmethod
     async def get_all_recordings(include_archived: bool = False) -> List[Recording]:
-        """Get all recordings ordered by creation time (newest first)"""
+        """Get all recordings ordered by creation time with analysis metadata"""
         try:
-            if include_archived:
-                return await Recording.all()
-            else:
-                return await Recording.filter(archived=False)
+            where_clause = "" if include_archived else "WHERE r.archived = FALSE"
+            query = f"""
+                SELECT r.*,
+                       COALESCE(s.has_speakers, FALSE) AS has_speakers,
+                       COALESCE(t.has_todos, FALSE) AS has_todos
+                FROM recording r
+                LEFT JOIN (
+                    SELECT recording_id, TRUE AS has_speakers
+                    FROM speaker_to_user
+                    GROUP BY recording_id
+                ) s ON s.recording_id = r.id
+                LEFT JOIN (
+                    SELECT created_at_recording_id AS recording_id, TRUE AS has_todos
+                    FROM todo
+                    GROUP BY created_at_recording_id
+                ) t ON t.recording_id = r.id
+                {where_clause}
+                ORDER BY r.created_at DESC
+            """
+
+            recordings = await Recording.raw(query)
+
+            for recording in recordings:
+                has_speakers = bool(getattr(recording, "has_speakers", False))
+                has_todos = bool(getattr(recording, "has_todos", False))
+                has_summary = bool(recording.summary)
+                status_parts = [
+                    f"{'✓' if has_speakers else '✗'} speakers",
+                    f"{'✓' if has_todos else '✗'} todos",
+                    f"{'✓' if has_summary else '✗'} summary",
+                ]
+                setattr(recording, "analysis_status", " | ".join(status_parts))
+
+            return recordings
         except Exception as e:
             logging.error(f"Error fetching recordings: {e}")
             return []
+    
     
     @staticmethod
     async def get_recording_by_id(recording_id: int) -> Optional[Recording]:

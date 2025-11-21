@@ -1,7 +1,18 @@
-from typing import Dict, Any, List
-import logging
+import asyncio
 import json
+import logging
+from typing import Any, Dict, List
+
 from .openai_client import get_openai_client, is_openai_configured
+
+
+def _identify_speakers_sync(prompt: str) -> Any:
+    client = get_openai_client()
+    return client.chat.completions.create(
+        model="openai/gpt-5",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+    )
 
 
 async def identify_speakers_in_transcript(transcript: str, users: List[Dict], recording_id: int) -> Dict[str, Any]:
@@ -54,13 +65,7 @@ Return ONLY a JSON object with this exact structure:
 If you cannot confidently identify a speaker, do not include them in the mappings.
 """
         
-        client = get_openai_client()
-        result = client.chat.completions.create(
-            model="openai/gpt-5",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1
-        )
-        
+        result = await asyncio.to_thread(_identify_speakers_sync, prompt)
         content = result.choices[0].message.content
         
         try:
