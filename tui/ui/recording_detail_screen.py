@@ -1,5 +1,8 @@
 import asyncio
 import logging
+import shutil
+import subprocess
+import sys
 from typing import Dict, List, Optional
 
 from textual.app import ComposeResult
@@ -92,6 +95,7 @@ class RecordingDetailScreen(Screen):
         ("c", "toggle_cloud", "Toggle Cloud Storage"),
         ("n", "toggle_nas", "Toggle NAS Storage"),
         ("l", "toggle_local", "Toggle Local Storage"),
+        ("y", "copy_active_view", "Copy active analysis text"),
         ("down", "view_next", "Next output view"),
         ("up", "view_prev", "Previous output view"),
         # Override main app bindings to disable them
@@ -112,6 +116,8 @@ class RecordingDetailScreen(Screen):
         self._transcript_text = "No transcript available."
         self._summary_text = "No summary available."
         self._todos_text = "No TODOs available."
+        self._analysis_status_text = "Analysis: Loading..."
+        self._analysis_status_note: Optional[str] = None
 
     async def on_mount(self):
         """Load recording data when screen mounts"""
@@ -179,7 +185,9 @@ class RecordingDetailScreen(Screen):
 
         # Update analysis status - always show even if no analyses completed
         analysis_status = await AnalysisService.get_analysis_status(self.recording)
-        analysis_widget.update(f"Analysis: {analysis_status}")
+        self._analysis_status_text = f"Analysis: {analysis_status}"
+        self._analysis_status_note = None
+        self._render_analysis_status()
         logging.debug(
             f"Analysis status for recording {self.recording_id}: '{analysis_status}'"
         )
@@ -239,6 +247,7 @@ class RecordingDetailScreen(Screen):
             self.active_view = self._available_views[new_index]
 
     def _refresh_active_view(self) -> None:
+        self._set_analysis_status_note(None)
         if not self._available_views:
             text_widget = self.query_one("#analysis-text", TextArea)
             label_widget = self.query_one("#view-label", Static)
@@ -261,6 +270,27 @@ class RecordingDetailScreen(Screen):
         else:
             text_widget.text = self._transcript_text
             label_widget.update(self.VIEW_LABELS["transcript"])
+
+    def _get_active_view_text(self) -> str:
+        if self.active_view == "summary":
+            return self._summary_text
+        if self.active_view == "todos":
+            return self._todos_text
+        return self._transcript_text
+
+    def _render_analysis_status(self) -> None:
+        try:
+            widget = self.query_one("#analysis-status", Static)
+        except Exception:
+            return
+        if self._analysis_status_note:
+            widget.update(f"{self._analysis_status_text}  ({self._analysis_status_note})")
+        else:
+            widget.update(self._analysis_status_text)
+
+    def _set_analysis_status_note(self, note: Optional[str]) -> None:
+        self._analysis_status_note = note
+        self._render_analysis_status()
 
     async def _build_todos_text(self) -> tuple[str, bool]:
         if not self.recording:
@@ -678,3 +708,45 @@ class RecordingDetailScreen(Screen):
 
     def action_view_prev(self) -> None:
         self._cycle_view(-1)
+
+    def action_copy_active_view(self) -> None:
+        view_text = self._get_active_view_text()
+        label = self.VIEW_LABELS.get(self.active_view, "Transcript")
+
+        if not view_text.strip():
+            logging.info("No %s text available to copy", self.active_view)
+            self._set_analysis_status_note(f"No {label} to copy")
+            return
+
+        if self._copy_to_clipboard(view_text):
+            logging.info(
+                "Copied %s for recording %s", self.active_view, self.recording_id
+            )
+            self._set_analysis_status_note(f"Copied {label}")
+        else:
+            logging.warning("Clipboard tool unavailable; copy aborted")
+            self._set_analysis_status_note("Clipboard unavailable")
+
+    def _copy_to_clipboard(self, text: str) -> bool:
+        commands: List[List[str]] = []
+        if sys.platform == "darwin":
+            commands.append(["pbcopy"])
+        elif sys.platform.startswith("win"):
+            commands.append(["clip"])
+        else:
+            commands.extend([["wl-copy"], ["xclip", "-selection", "clipboard"]])
+
+        if ["pbcopy"] not in commands:
+            commands.append(["pbcopy"])
+
+        for cmd in commands:
+            binary = shutil.which(cmd[0])
+            if not binary:
+                continue
+            try:
+                subprocess.run(cmd, input=text, text=True, check=True)
+                return True
+            except Exception:
+                logging.debug("Clipboard command %s failed", cmd[0], exc_info=True)
+                continue
+        return False
