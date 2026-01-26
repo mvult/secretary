@@ -10,8 +10,8 @@
 ## 2. Feature Checklist (Backend-First)
 
 - [ ] Confirm existing schema aligns with requirements; propose changes (approval required)
-- [ ] Define TODO history/audit log storage model
-- [ ] Define ConnectRPC services + Protobufs (recordings, users, todos, history)
+- [x] Define TODO history/audit log storage model
+- [x] Define ConnectRPC services + Protobufs (recordings, users, todos, history)
 - [ ] Implement auth (email/password) + sessions
 - [ ] Implement recordings list/detail endpoints with audio URL fallback semantics
 - [ ] Implement TODO CRUD + history endpoints
@@ -112,7 +112,13 @@
 - **Known limitations**: Some DB tables (argumentation/epistemology) are out of scope.
 - **Dependencies**: Existing Neon schema; avoid schema changes unless approved.
 
-## 12. Checkpoints and Open Questions
+## 12. Progress Log (Backend)
+
+- **2026-01-26**:
+  - Atlas migrations tracked in `public.atlas_schema_revisions` and `atlas.hcl` configured to use `public` for revisions.
+  - Baseline schema and follow-up migration present; current target state includes `todo_history` with FKs to `todo`, `user`, and `recording`.
+
+## 13. Checkpoints and Open Questions
 
 - **Checkpoints for approval**:
   - Any schema changes (new tables/columns).
@@ -121,3 +127,10 @@
 - **Open questions**:
   - Do we need participant-based access control?
   - Should TODO history be fully immutable or allow corrections?
+
+## 14. Suggested Next Steps (Backend)
+
+- Confirm `todo_history` DDL matches desired semantics (statuses, actor, meeting linkage) and re-approve if changes needed.
+- Implement TODO CRUD + history endpoints in Go + sqlc (include history insert on mutation).
+- Implement recordings list/detail endpoints with audio URL fallback message.
+- Add backend integration tests for TODO history and recordings detail.
