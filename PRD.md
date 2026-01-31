@@ -13,9 +13,9 @@
 - [x] Define TODO history/audit log storage model
 - [x] Define ConnectRPC services + Protobufs (recordings, users, todos, history)
 - [ ] Implement auth (email/password) + sessions
-- [ ] Implement recordings list/detail endpoints with audio URL fallback semantics
-- [ ] Implement TODO CRUD + history endpoints
-- [ ] Backend integration tests
+- [x] Implement recordings list/detail endpoints with audio URL fallback semantics
+- [x] Implement TODO CRUD + history endpoints
+- [x] Backend integration tests
 - [ ] Frontend shell routes/pages
 - [ ] Meetings UI
 - [ ] TODOs UI
@@ -117,6 +117,8 @@
 - **2026-01-26**:
   - Atlas migrations tracked in `public.atlas_schema_revisions` and `atlas.hcl` configured to use `public` for revisions.
   - Baseline schema and follow-up migration present; current target state includes `todo_history` with FKs to `todo`, `user`, and `recording`.
+  - Backend HTTP API implemented for recordings, todos, todo history, and users with integration tests.
+  - Added `user_auth` table to schema and migration for email/password auth.
 
 ## 13. Checkpoints and Open Questions
 
@@ -131,6 +133,5 @@
 ## 14. Suggested Next Steps (Backend)
 
 - Confirm `todo_history` DDL matches desired semantics (statuses, actor, meeting linkage) and re-approve if changes needed.
-- Implement TODO CRUD + history endpoints in Go + sqlc (include history insert on mutation).
-- Implement recordings list/detail endpoints with audio URL fallback message.
-- Add backend integration tests for TODO history and recordings detail.
+- Add auth (email/password) with schema changes and session handling.
+- Wire ConnectRPC/protobuf codegen and replace JSON HTTP handlers.

@@ -1,23 +1,65 @@
 package main
 
 import (
-  "log"
-  "net/http"
-  "os"
+	"context"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/mvult/secretary/backend/internal/db"
+	"github.com/mvult/secretary/backend/internal/server"
 )
 
 func main() {
-  addr := ":8080"
-  if v := os.Getenv("ADDR"); v != "" {
-    addr = v
-  }
+	addr := ":8080"
+	if v := os.Getenv("ADDR"); v != "" {
+		addr = v
+	}
 
-  mux := http.NewServeMux()
-  mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-    w.WriteHeader(http.StatusOK)
-    _, _ = w.Write([]byte("ok"))
-  })
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
-  log.Printf("listening on %s", addr)
-  log.Fatal(http.ListenAndServe(addr, mux))
+	pool, err := db.Open(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer pool.Close()
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Fatal("JWT_SECRET is required")
+	}
+	ttlHours := 168
+	if v := os.Getenv("JWT_TTL_HOURS"); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil || parsed <= 0 {
+			log.Fatal("JWT_TTL_HOURS must be a positive integer")
+		}
+		ttlHours = parsed
+	}
+
+	srv := server.New(pool, []byte(jwtSecret), time.Duration(ttlHours)*time.Hour)
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Routes(),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	log.Printf("listening on %s", addr)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("shutdown error: %v", err)
+	}
 }

@@ -93,6 +93,8 @@ CREATE TABLE "public"."user" (
   "first_name" text NOT NULL,
   "last_name" text NULL,
   "role" text NULL,
+  "email" text NULL,
+  "password_hash" text NULL,
   PRIMARY KEY ("id")
 );
 -- Create "speaker_to_user" table
