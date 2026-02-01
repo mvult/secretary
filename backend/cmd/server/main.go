@@ -10,11 +10,18 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/mvult/secretary/backend/internal/db"
 	"github.com/mvult/secretary/backend/internal/server"
 )
 
 func main() {
+	if err := godotenv.Load(); err != nil {
+		// It's not an error if .env doesn't exist, we might be in production using real env vars.
+		// But let's log it just in case.
+		log.Println("No .env file found, using system environment variables")
+	}
+
 	addr := ":8080"
 	if v := os.Getenv("ADDR"); v != "" {
 		addr = v

@@ -1,0 +1,106 @@
+syntax = "proto3";
+
+package secretary.v1;
+
+option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1";
+
+enum TodoStatus {
+  TODO_STATUS_UNSPECIFIED = 0;
+  TODO_STATUS_NOT_STARTED = 1;
+  TODO_STATUS_PARTIAL = 2;
+  TODO_STATUS_DONE = 3;
+  TODO_STATUS_BLOCKED = 4;
+  TODO_STATUS_SKIPPED = 5;
+}
+
+message Todo {
+  int64 id = 1;
+  string name = 2;
+  string desc = 3;
+  TodoStatus status = 4;
+  int64 user_id = 5;
+  int64 created_at_recording_id = 6;
+  int64 updated_at_recording_id = 7;
+  string created_at_recording_name = 8;
+  string created_at_recording_date = 9;
+}
+
+message TodoHistory {
+  int64 id = 1;
+  int64 todo_id = 2;
+  int64 actor_user_id = 3;
+  string change_type = 4;
+  string name = 5;
+  string desc = 6;
+  TodoStatus status = 7;
+  int64 user_id = 8;
+  int64 created_at_recording_id = 9;
+  int64 updated_at_recording_id = 10;
+  string changed_at = 11;
+}
+
+message ListTodosRequest {
+  int64 user_id = 1;
+  optional int64 recording_id = 2;
+}
+
+message ListTodosResponse {
+  repeated Todo todos = 1;
+}
+
+message GetTodoRequest {
+  int64 id = 1;
+}
+
+message GetTodoResponse {
+  Todo todo = 1;
+}
+
+message CreateTodoRequest {
+  string name = 1;
+  string desc = 2;
+  TodoStatus status = 3;
+  int64 user_id = 4;
+  int64 created_at_recording_id = 5;
+  int64 updated_at_recording_id = 6;
+}
+
+message CreateTodoResponse {
+  Todo todo = 1;
+}
+
+message UpdateTodoRequest {
+  int64 id = 1;
+  string name = 2;
+  string desc = 3;
+  TodoStatus status = 4;
+  int64 user_id = 5;
+  int64 updated_at_recording_id = 6;
+}
+
+message UpdateTodoResponse {
+  Todo todo = 1;
+}
+
+message DeleteTodoRequest {
+  int64 id = 1;
+}
+
+message DeleteTodoResponse {}
+
+message ListTodoHistoryRequest {
+  int64 todo_id = 1;
+}
+
+message ListTodoHistoryResponse {
+  repeated TodoHistory history = 1;
+}
+
+service TodosService {
+  rpc ListTodos(ListTodosRequest) returns (ListTodosResponse);
+  rpc GetTodo(GetTodoRequest) returns (GetTodoResponse);
+  rpc CreateTodo(CreateTodoRequest) returns (CreateTodoResponse);
+  rpc UpdateTodo(UpdateTodoRequest) returns (UpdateTodoResponse);
+  rpc DeleteTodo(DeleteTodoRequest) returns (DeleteTodoResponse);
+  rpc ListTodoHistory(ListTodoHistoryRequest) returns (ListTodoHistoryResponse);
+}

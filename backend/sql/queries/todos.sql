@@ -6,9 +6,28 @@ SELECT
   t.status,
   t.user_id,
   t.created_at_recording_id,
-  t.updated_at_recording_id
+  t.updated_at_recording_id,
+  r.name as recording_name,
+  r.created_at as recording_date
 FROM todo t
+LEFT JOIN recording r ON t.created_at_recording_id = r.id
 WHERE t.user_id = $1
+ORDER BY t.id DESC;
+
+-- name: ListTodosByRecording :many
+SELECT
+  t.id,
+  t.name,
+  t."desc",
+  t.status,
+  t.user_id,
+  t.created_at_recording_id,
+  t.updated_at_recording_id,
+  r.name as recording_name,
+  r.created_at as recording_date
+FROM todo t
+LEFT JOIN recording r ON t.created_at_recording_id = r.id
+WHERE t.created_at_recording_id = $1
 ORDER BY t.id DESC;
 
 -- name: GetTodo :one
@@ -19,8 +38,11 @@ SELECT
   t.status,
   t.user_id,
   t.created_at_recording_id,
-  t.updated_at_recording_id
+  t.updated_at_recording_id,
+  r.name as recording_name,
+  r.created_at as recording_date
 FROM todo t
+LEFT JOIN recording r ON t.created_at_recording_id = r.id
 WHERE t.id = $1;
 
 -- name: CreateTodo :one

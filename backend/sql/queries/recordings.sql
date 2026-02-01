@@ -29,3 +29,13 @@ SELECT
   r.archived
 FROM recording r
 WHERE r.id = $1;
+
+-- name: ListRecordingParticipants :many
+SELECT
+  u.id,
+  u.first_name,
+  u.last_name,
+  u.role
+FROM speaker_to_user stu
+JOIN "user" u ON u.id = stu.user_id
+WHERE stu.recording_id = $1;

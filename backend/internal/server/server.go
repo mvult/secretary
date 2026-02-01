@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -8,33 +9,57 @@ import (
 	"strings"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
+	"github.com/mvult/secretary/backend/gen/secretary/v1/secretaryv1connect"
+	"github.com/mvult/secretary/backend/internal/db/gen"
+	"github.com/rs/cors"
 	"golang.org/x/crypto/bcrypt"
 )
 
 type Server struct {
 	db        *pgxpool.Pool
+	queries   *db.Queries
 	jwtSecret []byte
 	tokenTTL  time.Duration
 }
 
-func New(db *pgxpool.Pool, jwtSecret []byte, tokenTTL time.Duration) *Server {
-	return &Server{db: db, jwtSecret: jwtSecret, tokenTTL: tokenTTL}
+func New(pool *pgxpool.Pool, jwtSecret []byte, tokenTTL time.Duration) *Server {
+	return &Server{
+		db:        pool,
+		queries:   db.New(pool),
+		jwtSecret: jwtSecret,
+		tokenTTL:  tokenTTL,
+	}
 }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/login", s.handleLogin)
-	mux.HandleFunc("/api/recordings", s.handleRecordings)
-	mux.HandleFunc("/api/recordings/", s.handleRecordingByID)
-	mux.HandleFunc("/api/users", s.handleUsers)
-	mux.HandleFunc("/api/todos", s.handleTodos)
-	mux.HandleFunc("/api/todos/", s.handleTodoByID)
-	return s.authMiddleware(mux)
+
+	// Mount ConnectRPC handlers
+	recPath, recHandler := secretaryv1connect.NewRecordingsServiceHandler(s)
+	mux.Handle(recPath, s.authMiddleware(recHandler))
+
+	todoPath, todoHandler := secretaryv1connect.NewTodosServiceHandler(s)
+	mux.Handle(todoPath, s.authMiddleware(todoHandler))
+
+	userPath, userHandler := secretaryv1connect.NewUsersServiceHandler(s)
+	mux.Handle(userPath, s.authMiddleware(userHandler))
+
+	c := cors.New(cors.Options{
+		AllowedOrigins: []string{"*"},
+		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		AllowedHeaders: []string{"Accept", "Content-Type", "Content-Length", "Accept-Encoding", "X-CSRF-Token", "Authorization", "Connect-Protocol-Version", "Connect-Timeout-Ms", "Grpc-Timeout", "X-User-Agent", "X-Grpc-Web"},
+		ExposedHeaders: []string{"Grpc-Status", "Grpc-Message", "Grpc-Status-Details-Bin"},
+	})
+
+	return c.Handler(mux)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -42,6 +67,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok"))
 }
 
+// Login remains a standard HTTP endpoint for now
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -57,20 +83,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var user User
-	var passwordHash string
-	err := s.db.QueryRow(r.Context(), `
-    SELECT id, first_name, last_name, role, email, password_hash
-    FROM "user"
-    WHERE email = $1
-  `, req.Email).Scan(
-		&user.ID,
-		&user.FirstName,
-		&user.LastName,
-		&user.Role,
-		&user.Email,
-		&passwordHash,
-	)
+	userRow, err := s.queries.GetUserByEmail(r.Context(), pgtype.Text{String: req.Email, Valid: true})
 	if errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
@@ -79,587 +92,446 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to login")
 		return
 	}
-	if passwordHash == "" || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(req.Password)) != nil {
+
+	if userRow.PasswordHash.String == "" || bcrypt.CompareHashAndPassword([]byte(userRow.PasswordHash.String), []byte(req.Password)) != nil {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
 
-	token, err := s.issueToken(user.ID)
+	token, err := s.issueToken(int64(userRow.ID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to issue token")
 		return
 	}
+
+	// Construct the response user manually since the DB row doesn't match the Proto exactly
+	userProto := &secretaryv1.User{
+		Id:        int64(userRow.ID),
+		FirstName: userRow.FirstName,
+		LastName:  userRow.LastName.String, // Handle pgtype.Text
+		Role:      userRow.Role.String,     // Handle pgtype.Text
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
-		"user":  user,
+		"user":  userProto,
 	})
 }
 
-func (s *Server) handleRecordings(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	rows, err := s.db.Query(r.Context(), `
-    SELECT
-      r.id,
-      r.created_at,
-      r.name,
-      r.audio_url,
-      r.transcript,
-      r.summary,
-      r.duration
-    FROM recording r
-    ORDER BY r.created_at DESC
-  `)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list recordings")
-		return
-	}
-	defer rows.Close()
+// --- RecordingsService Implementation ---
 
-	recordings := make([]Recording, 0)
-	for rows.Next() {
-		var rec Recording
-		var createdAt pgtype.Timestamptz
-		var duration pgtype.Int4
-		if err := rows.Scan(
-			&rec.ID,
-			&createdAt,
-			&rec.Name,
-			&rec.AudioURL,
-			&rec.Transcript,
-			&rec.Summary,
-			&duration,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read recording")
-			return
+func (s *Server) ListRecordings(ctx context.Context, req *connect.Request[secretaryv1.ListRecordingsRequest]) (*connect.Response[secretaryv1.ListRecordingsResponse], error) {
+	rows, err := s.queries.ListRecordings(ctx)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list recordings"))
+	}
+
+	var recordings []*secretaryv1.Recording
+	for _, row := range rows {
+		rec := &secretaryv1.Recording{
+			Id:         int64(row.ID),
+			CreatedAt:  formatTime(row.CreatedAt),
+			Name:       row.Name.String,
+			AudioUrl:   row.AudioUrl.String,
+			Transcript: row.Transcript.String,
+			Summary:    row.Summary.String,
+			HasAudio:   row.AudioUrl.String != "",
 		}
-		rec.CreatedAt = formatTime(createdAt)
-		if duration.Valid {
-			v := int32(duration.Int32)
-			rec.Duration = &v
+		if row.Duration.Valid {
+			rec.Duration = row.Duration.Int32
 		}
-		rec.HasAudio = rec.AudioURL != ""
 		recordings = append(recordings, rec)
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list recordings")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"recordings": recordings})
+	return connect.NewResponse(&secretaryv1.ListRecordingsResponse{Recordings: recordings}), nil
 }
 
-func (s *Server) handleRecordingByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	id, ok := parseID(r.URL.Path, "/api/recordings/")
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid recording id")
-		return
-	}
-	var rec Recording
-	var createdAt pgtype.Timestamptz
-	var duration pgtype.Int4
-	err := s.db.QueryRow(r.Context(), `
-    SELECT
-      r.id,
-      r.created_at,
-      r.name,
-      r.audio_url,
-      r.transcript,
-      r.summary,
-      r.duration
-    FROM recording r
-    WHERE r.id = $1
-  `, id).Scan(
-		&rec.ID,
-		&createdAt,
-		&rec.Name,
-		&rec.AudioURL,
-		&rec.Transcript,
-		&rec.Summary,
-		&duration,
-	)
+func (s *Server) GetRecording(ctx context.Context, req *connect.Request[secretaryv1.GetRecordingRequest]) (*connect.Response[secretaryv1.GetRecordingResponse], error) {
+	id := req.Msg.Id
+	row, err := s.queries.GetRecording(ctx, int32(id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "recording not found")
-		return
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("recording not found"))
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to fetch recording")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch recording"))
 	}
-	rec.CreatedAt = formatTime(createdAt)
-	if duration.Valid {
-		v := int32(duration.Int32)
-		rec.Duration = &v
-	}
-	rec.HasAudio = rec.AudioURL != ""
-	writeJSON(w, http.StatusOK, map[string]any{"recording": rec})
-}
 
-func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
+	rec := &secretaryv1.Recording{
+		Id:         int64(row.ID),
+		CreatedAt:  formatTime(row.CreatedAt),
+		Name:       row.Name.String,
+		AudioUrl:   row.AudioUrl.String,
+		Transcript: row.Transcript.String,
+		Summary:    row.Summary.String,
+		HasAudio:   row.AudioUrl.String != "",
 	}
-	rows, err := s.db.Query(r.Context(), `
-    SELECT id, first_name, last_name, role
-    FROM "user"
-    ORDER BY id ASC
-  `)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list users")
-		return
+	if row.Duration.Valid {
+		rec.Duration = row.Duration.Int32
 	}
-	defer rows.Close()
 
-	users := make([]User, 0)
-	for rows.Next() {
-		var u User
-		if err := rows.Scan(&u.ID, &u.FirstName, &u.LastName, &u.Role); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read user")
-			return
+	// Fetch participants
+	participants, err := s.queries.ListRecordingParticipants(ctx, int32(id))
+	if err == nil {
+		for _, p := range participants {
+			rec.Participants = append(rec.Participants, &secretaryv1.User{
+				Id:        int64(p.ID),
+				FirstName: p.FirstName,
+				LastName:  p.LastName.String,
+				Role:      p.Role.String,
+			})
 		}
-		users = append(users, u)
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list users")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": users})
+
+	return connect.NewResponse(&secretaryv1.GetRecordingResponse{Recording: rec}), nil
 }
 
-func (s *Server) handleTodos(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.handleListTodos(w, r)
-	case http.MethodPost:
-		s.handleCreateTodo(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
+// --- UsersService Implementation ---
 
-func (s *Server) handleTodoByID(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Path
-	if strings.HasSuffix(path, "/history") {
-		if r.Method != http.MethodGet {
-			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-			return
-		}
-		s.handleListTodoHistory(w, r)
-		return
-	}
-
-	switch r.Method {
-	case http.MethodGet:
-		s.handleGetTodo(w, r)
-	case http.MethodPut:
-		s.handleUpdateTodo(w, r)
-	case http.MethodDelete:
-		s.handleDeleteTodo(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-	}
-}
-
-func (s *Server) handleListTodos(w http.ResponseWriter, r *http.Request) {
-	userIDStr := r.URL.Query().Get("user_id")
-	if userIDStr == "" {
-		writeError(w, http.StatusBadRequest, "user_id is required")
-		return
-	}
-	userID, err := strconv.ParseInt(userIDStr, 10, 64)
+func (s *Server) ListUsers(ctx context.Context, req *connect.Request[secretaryv1.ListUsersRequest]) (*connect.Response[secretaryv1.ListUsersResponse], error) {
+	rows, err := s.queries.ListUsers(ctx)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "invalid user_id")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list users"))
 	}
-	rows, err := s.db.Query(r.Context(), `
-    SELECT
-      t.id,
-      t.name,
-      t."desc",
-      t.status,
-      t.user_id,
-      t.created_at_recording_id,
-      t.updated_at_recording_id
-    FROM todo t
-    WHERE t.user_id = $1
-    ORDER BY t.id DESC
-  `, userID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list todos")
-		return
-	}
-	defer rows.Close()
 
-	todos := make([]Todo, 0)
-	for rows.Next() {
-		var todo Todo
-		if err := rows.Scan(
-			&todo.ID,
-			&todo.Name,
-			&todo.Desc,
-			&todo.Status,
-			&todo.UserID,
-			&todo.CreatedAtRecordingID,
-			&todo.UpdatedAtRecordingID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read todo")
-			return
-		}
-		todos = append(todos, todo)
+	var users []*secretaryv1.User
+	for _, row := range rows {
+		users = append(users, &secretaryv1.User{
+			Id:        int64(row.ID),
+			FirstName: row.FirstName,
+			LastName:  row.LastName.String,
+			Role:      row.Role.String,
+		})
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list todos")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"todos": todos})
+	return connect.NewResponse(&secretaryv1.ListUsersResponse{Users: users}), nil
 }
 
-func (s *Server) handleGetTodo(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(r.URL.Path, "/api/todos/")
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid todo id")
-		return
+// --- TodosService Implementation ---
+
+func (s *Server) ListTodos(ctx context.Context, req *connect.Request[secretaryv1.ListTodosRequest]) (*connect.Response[secretaryv1.ListTodosResponse], error) {
+	var todos []*secretaryv1.Todo
+
+	if req.Msg.RecordingId != nil {
+		// ... existing recording logic ...
+		recordingID := *req.Msg.RecordingId
+		rows, err := s.queries.ListTodosByRecording(ctx, pgtype.Int4{Int32: int32(recordingID), Valid: true})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todos by recording"))
+		}
+		for _, row := range rows {
+			todo := &secretaryv1.Todo{
+				Id:                     int64(row.ID),
+				Name:                   row.Name,
+				Desc:                   row.Desc.String,
+				Status:                 mapStatus(row.Status.String),
+				UserId:                 int64(row.UserID.Int32),
+				CreatedAtRecordingName: row.RecordingName.String,
+				CreatedAtRecordingDate: formatTime(row.RecordingDate),
+			}
+			if row.CreatedAtRecordingID.Valid {
+				todo.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
+			}
+			if row.UpdatedAtRecordingID.Valid {
+				todo.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
+			}
+			todos = append(todos, todo)
+		}
+	} else {
+		userID := req.Msg.UserId
+		if userID == 0 {
+			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
+		}
+
+		rows, err := s.queries.ListTodosByUser(ctx, pgtype.Int4{Int32: int32(userID), Valid: true})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todos"))
+		}
+		for _, row := range rows {
+			todo := &secretaryv1.Todo{
+				Id:                     int64(row.ID),
+				Name:                   row.Name,
+				Desc:                   row.Desc.String,
+				Status:                 mapStatus(row.Status.String),
+				UserId:                 int64(row.UserID.Int32),
+				CreatedAtRecordingName: row.RecordingName.String,
+				CreatedAtRecordingDate: formatTime(row.RecordingDate),
+			}
+			if row.CreatedAtRecordingID.Valid {
+				todo.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
+			}
+			if row.UpdatedAtRecordingID.Valid {
+				todo.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
+			}
+			todos = append(todos, todo)
+		}
 	}
-	var todo Todo
-	err := s.db.QueryRow(r.Context(), `
-    SELECT
-      t.id,
-      t.name,
-      t."desc",
-      t.status,
-      t.user_id,
-      t.created_at_recording_id,
-      t.updated_at_recording_id
-    FROM todo t
-    WHERE t.id = $1
-  `, id).Scan(
-		&todo.ID,
-		&todo.Name,
-		&todo.Desc,
-		&todo.Status,
-		&todo.UserID,
-		&todo.CreatedAtRecordingID,
-		&todo.UpdatedAtRecordingID,
-	)
+
+	return connect.NewResponse(&secretaryv1.ListTodosResponse{Todos: todos}), nil
+}
+
+func (s *Server) GetTodo(ctx context.Context, req *connect.Request[secretaryv1.GetTodoRequest]) (*connect.Response[secretaryv1.GetTodoResponse], error) {
+	id := req.Msg.Id
+	row, err := s.queries.GetTodo(ctx, int32(id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "todo not found")
-		return
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("todo not found"))
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to fetch todo")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch todo"))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"todo": todo})
+
+	todo := &secretaryv1.Todo{
+		Id:                     int64(row.ID),
+		Name:                   row.Name,
+		Desc:                   row.Desc.String,
+		Status:                 mapStatus(row.Status.String),
+		UserId:                 int64(row.UserID.Int32),
+		CreatedAtRecordingName: row.RecordingName.String,
+		CreatedAtRecordingDate: formatTime(row.RecordingDate),
+	}
+	if row.CreatedAtRecordingID.Valid {
+		todo.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
+	}
+	if row.UpdatedAtRecordingID.Valid {
+		todo.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
+	}
+
+	return connect.NewResponse(&secretaryv1.GetTodoResponse{Todo: todo}), nil
 }
 
-func (s *Server) handleCreateTodo(w http.ResponseWriter, r *http.Request) {
-	var req CreateTodoRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
+func (s *Server) CreateTodo(ctx context.Context, req *connect.Request[secretaryv1.CreateTodoRequest]) (*connect.Response[secretaryv1.CreateTodoResponse], error) {
+	msg := req.Msg
+	statusStr := mapStatusToString(msg.Status)
+	if err := validateTodoInput(msg.Name, statusStr); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	if err := validateTodoInput(req.Name, req.Status); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.UserID == 0 {
-		writeError(w, http.StatusBadRequest, "user_id is required")
-		return
+	if msg.UserId == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
 
-	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to start transaction"))
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	var todo Todo
-	err = tx.QueryRow(r.Context(), `
-    INSERT INTO todo (
-      name,
-      "desc",
-      status,
-      user_id,
-      created_at_recording_id,
-      updated_at_recording_id
-    ) VALUES ($1, $2, $3, $4, $5, $6)
-    RETURNING id, name, "desc", status, user_id, created_at_recording_id, updated_at_recording_id
-  `, req.Name, req.Desc, req.Status, req.UserID, nullInt(req.CreatedAtRecordingID), nullInt(req.UpdatedAtRecordingID)).Scan(
-		&todo.ID,
-		&todo.Name,
-		&todo.Desc,
-		&todo.Status,
-		&todo.UserID,
-		&todo.CreatedAtRecordingID,
-		&todo.UpdatedAtRecordingID,
-	)
+	qtx := s.queries.WithTx(tx)
+
+	// Create Todo
+	arg := db.CreateTodoParams{
+		Name:   msg.Name,
+		Desc:   pgtype.Text{String: msg.Desc, Valid: msg.Desc != ""},
+		Status: pgtype.Text{String: statusStr, Valid: true},
+		UserID: pgtype.Int4{Int32: int32(msg.UserId), Valid: true},
+	}
+	if msg.CreatedAtRecordingId != 0 {
+		arg.CreatedAtRecordingID = pgtype.Int4{Int32: int32(msg.CreatedAtRecordingId), Valid: true}
+	}
+	if msg.UpdatedAtRecordingId != 0 {
+		arg.UpdatedAtRecordingID = pgtype.Int4{Int32: int32(msg.UpdatedAtRecordingId), Valid: true}
+	}
+
+	todoRow, err := qtx.CreateTodo(ctx, arg)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create todo")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create todo"))
 	}
 
-	actorID := req.ActorUserID
-	if actorID == 0 {
-		actorID = req.UserID
+	// Create History
+	actorID := msg.UserId // Defaulting to owner as actor
+	historyArg := db.CreateTodoHistoryParams{
+		TodoID:               todoRow.ID,
+		ActorUserID:          pgtype.Int4{Int32: int32(actorID), Valid: true},
+		ChangeType:           "create",
+		Name:                 pgtype.Text{String: todoRow.Name, Valid: true},
+		Desc:                 todoRow.Desc,
+		Status:               todoRow.Status,
+		UserID:               todoRow.UserID,
+		CreatedAtRecordingID: todoRow.CreatedAtRecordingID,
+		UpdatedAtRecordingID: todoRow.UpdatedAtRecordingID,
 	}
-	_, err = tx.Exec(r.Context(), `
-    INSERT INTO todo_history (
-      todo_id,
-      actor_user_id,
-      change_type,
-      name,
-      "desc",
-      status,
-      user_id,
-      created_at_recording_id,
-      updated_at_recording_id
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-  `, todo.ID, nullInt(actorID), "create", todo.Name, todo.Desc, todo.Status, todo.UserID, nullInt(todo.CreatedAtRecordingID), nullInt(todo.UpdatedAtRecordingID))
+
+	err = qtx.CreateTodoHistory(ctx, historyArg)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create todo history")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create todo history"))
 	}
 
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit todo")
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"todo": todo})
+
+	todo := &secretaryv1.Todo{
+		Id:     int64(todoRow.ID),
+		Name:   todoRow.Name,
+		Desc:   todoRow.Desc.String,
+		Status: mapStatus(todoRow.Status.String),
+		UserId: int64(todoRow.UserID.Int32),
+	}
+	if todoRow.CreatedAtRecordingID.Valid {
+		todo.CreatedAtRecordingId = int64(todoRow.CreatedAtRecordingID.Int32)
+	}
+	if todoRow.UpdatedAtRecordingID.Valid {
+		todo.UpdatedAtRecordingId = int64(todoRow.UpdatedAtRecordingID.Int32)
+	}
+
+	return connect.NewResponse(&secretaryv1.CreateTodoResponse{Todo: todo}), nil
 }
 
-func (s *Server) handleUpdateTodo(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(r.URL.Path, "/api/todos/")
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid todo id")
-		return
+func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv1.UpdateTodoRequest]) (*connect.Response[secretaryv1.UpdateTodoResponse], error) {
+	msg := req.Msg
+	statusStr := mapStatusToString(msg.Status)
+	if err := validateTodoInput(msg.Name, statusStr); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	var req UpdateTodoRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if err := validateTodoInput(req.Name, req.Status); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if req.UserID == 0 {
-		writeError(w, http.StatusBadRequest, "user_id is required")
-		return
+	if msg.UserId == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
 	}
 
-	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to start transaction"))
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	var todo Todo
-	err = tx.QueryRow(r.Context(), `
-    UPDATE todo
-    SET
-      name = $2,
-      "desc" = $3,
-      status = $4,
-      user_id = $5,
-      updated_at_recording_id = $6
-    WHERE id = $1
-    RETURNING id, name, "desc", status, user_id, created_at_recording_id, updated_at_recording_id
-  `, id, req.Name, req.Desc, req.Status, req.UserID, nullInt(req.UpdatedAtRecordingID)).Scan(
-		&todo.ID,
-		&todo.Name,
-		&todo.Desc,
-		&todo.Status,
-		&todo.UserID,
-		&todo.CreatedAtRecordingID,
-		&todo.UpdatedAtRecordingID,
-	)
+	qtx := s.queries.WithTx(tx)
+
+	arg := db.UpdateTodoParams{
+		ID:     int32(msg.Id),
+		Name:   msg.Name,
+		Desc:   pgtype.Text{String: msg.Desc, Valid: msg.Desc != ""},
+		Status: pgtype.Text{String: statusStr, Valid: true},
+		UserID: pgtype.Int4{Int32: int32(msg.UserId), Valid: true},
+	}
+	if msg.UpdatedAtRecordingId != 0 {
+		arg.UpdatedAtRecordingID = pgtype.Int4{Int32: int32(msg.UpdatedAtRecordingId), Valid: true}
+	}
+
+	todoRow, err := qtx.UpdateTodo(ctx, arg)
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "todo not found")
-		return
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("todo not found"))
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update todo")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update todo"))
 	}
 
-	actorID := req.ActorUserID
-	if actorID == 0 {
-		actorID = req.UserID
+	actorID := msg.UserId // Defaulting to owner
+	historyArg := db.CreateTodoHistoryParams{
+		TodoID:               todoRow.ID,
+		ActorUserID:          pgtype.Int4{Int32: int32(actorID), Valid: true},
+		ChangeType:           "update",
+		Name:                 pgtype.Text{String: todoRow.Name, Valid: true},
+		Desc:                 todoRow.Desc,
+		Status:               todoRow.Status,
+		UserID:               todoRow.UserID,
+		CreatedAtRecordingID: todoRow.CreatedAtRecordingID,
+		UpdatedAtRecordingID: todoRow.UpdatedAtRecordingID,
 	}
-	_, err = tx.Exec(r.Context(), `
-    INSERT INTO todo_history (
-      todo_id,
-      actor_user_id,
-      change_type,
-      name,
-      "desc",
-      status,
-      user_id,
-      created_at_recording_id,
-      updated_at_recording_id
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-  `, todo.ID, nullInt(actorID), "update", todo.Name, todo.Desc, todo.Status, todo.UserID, nullInt(todo.CreatedAtRecordingID), nullInt(todo.UpdatedAtRecordingID))
+
+	err = qtx.CreateTodoHistory(ctx, historyArg)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update todo history")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update todo history"))
 	}
 
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit todo")
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"todo": todo})
+
+	todo := &secretaryv1.Todo{
+		Id:     int64(todoRow.ID),
+		Name:   todoRow.Name,
+		Desc:   todoRow.Desc.String,
+		Status: mapStatus(todoRow.Status.String),
+		UserId: int64(todoRow.UserID.Int32),
+	}
+	if todoRow.CreatedAtRecordingID.Valid {
+		todo.CreatedAtRecordingId = int64(todoRow.CreatedAtRecordingID.Int32)
+	}
+	if todoRow.UpdatedAtRecordingID.Valid {
+		todo.UpdatedAtRecordingId = int64(todoRow.UpdatedAtRecordingID.Int32)
+	}
+
+	return connect.NewResponse(&secretaryv1.UpdateTodoResponse{Todo: todo}), nil
 }
 
-func (s *Server) handleDeleteTodo(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(r.URL.Path, "/api/todos/")
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid todo id")
-		return
-	}
-	var req DeleteTodoRequest
-	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req)
-	}
+func (s *Server) DeleteTodo(ctx context.Context, req *connect.Request[secretaryv1.DeleteTodoRequest]) (*connect.Response[secretaryv1.DeleteTodoResponse], error) {
+	id := req.Msg.Id
 
-	tx, err := s.db.BeginTx(r.Context(), pgx.TxOptions{})
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to start transaction")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to start transaction"))
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
+	defer func() { _ = tx.Rollback(ctx) }()
 
-	var todo Todo
-	err = tx.QueryRow(r.Context(), `
-    SELECT
-      t.id,
-      t.name,
-      t."desc",
-      t.status,
-      t.user_id,
-      t.created_at_recording_id,
-      t.updated_at_recording_id
-    FROM todo t
-    WHERE t.id = $1
-  `, id).Scan(
-		&todo.ID,
-		&todo.Name,
-		&todo.Desc,
-		&todo.Status,
-		&todo.UserID,
-		&todo.CreatedAtRecordingID,
-		&todo.UpdatedAtRecordingID,
-	)
+	qtx := s.queries.WithTx(tx)
+
+	// Fetch existing todo to record history
+	todoRow, err := qtx.GetTodo(ctx, int32(id))
 	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "todo not found")
-		return
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("todo not found"))
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete todo")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo"))
 	}
 
-	actorID := req.ActorUserID
-	if actorID == 0 {
-		actorID = todo.UserID
+	actorID := todoRow.UserID.Int32 // Defaulting to owner
+	historyArg := db.CreateTodoHistoryParams{
+		TodoID:               todoRow.ID,
+		ActorUserID:          pgtype.Int4{Int32: actorID, Valid: true},
+		ChangeType:           "delete",
+		Name:                 pgtype.Text{String: todoRow.Name, Valid: true},
+		Desc:                 todoRow.Desc,
+		Status:               todoRow.Status,
+		UserID:               todoRow.UserID,
+		CreatedAtRecordingID: todoRow.CreatedAtRecordingID,
+		UpdatedAtRecordingID: todoRow.UpdatedAtRecordingID,
 	}
-	_, err = tx.Exec(r.Context(), `
-    INSERT INTO todo_history (
-      todo_id,
-      actor_user_id,
-      change_type,
-      name,
-      "desc",
-      status,
-      user_id,
-      created_at_recording_id,
-      updated_at_recording_id
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-  `, todo.ID, nullInt(actorID), "delete", todo.Name, todo.Desc, todo.Status, todo.UserID, nullInt(todo.CreatedAtRecordingID), nullInt(todo.UpdatedAtRecordingID))
+
+	err = qtx.CreateTodoHistory(ctx, historyArg)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete todo history")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo history"))
 	}
 
-	_, err = tx.Exec(r.Context(), `DELETE FROM todo WHERE id = $1`, id)
+	err = qtx.DeleteTodo(ctx, int32(id))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete todo")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo"))
 	}
 
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to commit delete")
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit delete"))
 	}
-	w.WriteHeader(http.StatusNoContent)
+	return connect.NewResponse(&secretaryv1.DeleteTodoResponse{}), nil
 }
 
-func (s *Server) handleListTodoHistory(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseID(strings.TrimSuffix(r.URL.Path, "/history"), "/api/todos/")
-	if !ok {
-		writeError(w, http.StatusBadRequest, "invalid todo id")
-		return
-	}
-	rows, err := s.db.Query(r.Context(), `
-    SELECT
-      h.id,
-      h.todo_id,
-      h.actor_user_id,
-      h.change_type,
-      h.name,
-      h."desc",
-      h.status,
-      h.user_id,
-      h.created_at_recording_id,
-      h.updated_at_recording_id,
-      h.changed_at
-    FROM todo_history h
-    WHERE h.todo_id = $1
-    ORDER BY h.changed_at DESC
-  `, id)
+func (s *Server) ListTodoHistory(ctx context.Context, req *connect.Request[secretaryv1.ListTodoHistoryRequest]) (*connect.Response[secretaryv1.ListTodoHistoryResponse], error) {
+	id := req.Msg.TodoId
+	rows, err := s.queries.ListTodoHistory(ctx, int32(id))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list todo history")
-		return
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todo history"))
 	}
-	defer rows.Close()
 
-	history := make([]TodoHistory, 0)
-	for rows.Next() {
-		var item TodoHistory
-		var changedAt pgtype.Timestamptz
-		if err := rows.Scan(
-			&item.ID,
-			&item.TodoID,
-			&item.ActorUserID,
-			&item.ChangeType,
-			&item.Name,
-			&item.Desc,
-			&item.Status,
-			&item.UserID,
-			&item.CreatedAtRecordingID,
-			&item.UpdatedAtRecordingID,
-			&changedAt,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read todo history")
-			return
+	var history []*secretaryv1.TodoHistory
+	for _, row := range rows {
+		item := &secretaryv1.TodoHistory{
+			Id:         int64(row.ID),
+			TodoId:     int64(row.TodoID),
+			ChangeType: row.ChangeType,
+			Name:       row.Name.String,
+			Desc:       row.Desc.String,
+			Status:     mapStatus(row.Status.String),
+			UserId:     int64(row.UserID.Int32),
+			ChangedAt:  formatTime(row.ChangedAt),
 		}
-		item.ChangedAt = formatTime(changedAt)
+		if row.ActorUserID.Valid {
+			item.ActorUserId = int64(row.ActorUserID.Int32)
+		}
+		if row.CreatedAtRecordingID.Valid {
+			item.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
+		}
+		if row.UpdatedAtRecordingID.Valid {
+			item.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
+		}
 		history = append(history, item)
 	}
-	if rows.Err() != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list todo history")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"history": history})
+	return connect.NewResponse(&secretaryv1.ListTodoHistoryResponse{History: history}), nil
 }
+
+// --- Helpers ---
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -712,21 +584,6 @@ func (s *Server) issueToken(userID int64) (string, error) {
 	return token.SignedString(s.jwtSecret)
 }
 
-func parseID(path, prefix string) (int64, bool) {
-	if !strings.HasPrefix(path, prefix) {
-		return 0, false
-	}
-	raw := strings.TrimPrefix(path, prefix)
-	if raw == "" || strings.Contains(raw, "/") {
-		raw = strings.Split(raw, "/")[0]
-	}
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil || id <= 0 {
-		return 0, false
-	}
-	return id, true
-}
-
 func formatTime(ts pgtype.Timestamptz) string {
 	if !ts.Valid {
 		return ""
@@ -756,6 +613,43 @@ func validStatus(status string) bool {
 	}
 }
 
+func mapStatus(status string) secretaryv1.TodoStatus {
+	// Normalize status to handle potential case/whitespace issues
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "not_started", "pending": // Handle legacy "pending"
+		return secretaryv1.TodoStatus_TODO_STATUS_PARTIAL
+	case "partial", "in_progress", "in progress": // Handle variations
+		return secretaryv1.TodoStatus_TODO_STATUS_PARTIAL
+	case "done", "completed":
+		return secretaryv1.TodoStatus_TODO_STATUS_DONE
+	case "blocked":
+		return secretaryv1.TodoStatus_TODO_STATUS_BLOCKED
+	case "skipped":
+		return secretaryv1.TodoStatus_TODO_STATUS_SKIPPED
+	default:
+		// Fallback for unknown status strings
+		return secretaryv1.TodoStatus_TODO_STATUS_UNSPECIFIED
+	}
+}
+
+func mapStatusToString(status secretaryv1.TodoStatus) string {
+	switch status {
+	case secretaryv1.TodoStatus_TODO_STATUS_NOT_STARTED:
+		return "not_started"
+	case secretaryv1.TodoStatus_TODO_STATUS_PARTIAL:
+		return "partial"
+	case secretaryv1.TodoStatus_TODO_STATUS_DONE:
+		return "done"
+	case secretaryv1.TodoStatus_TODO_STATUS_BLOCKED:
+		return "blocked"
+	case secretaryv1.TodoStatus_TODO_STATUS_SKIPPED:
+		return "skipped"
+	default:
+		return ""
+	}
+}
+
 func nullInt(v int64) any {
 	if v == 0 {
 		return nil
@@ -763,92 +657,7 @@ func nullInt(v int64) any {
 	return v
 }
 
-type Recording struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name,omitempty"`
-	CreatedAt  string `json:"created_at,omitempty"`
-	Duration   *int32 `json:"duration,omitempty"`
-	Summary    string `json:"summary,omitempty"`
-	Transcript string `json:"transcript,omitempty"`
-	AudioURL   string `json:"audio_url,omitempty"`
-	HasAudio   bool   `json:"has_audio"`
-}
-
-type User struct {
-	ID        int64  `json:"id"`
-	FirstName string `json:"first_name"`
-	LastName  string `json:"last_name,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Email     string `json:"email,omitempty"`
-}
-
-type Todo struct {
-	ID                   int64  `json:"id"`
-	Name                 string `json:"name"`
-	Desc                 string `json:"desc,omitempty"`
-	Status               string `json:"status"`
-	UserID               int64  `json:"user_id"`
-	CreatedAtRecordingID int64  `json:"created_at_recording_id,omitempty"`
-	UpdatedAtRecordingID int64  `json:"updated_at_recording_id,omitempty"`
-}
-
-type TodoHistory struct {
-	ID                   int64  `json:"id"`
-	TodoID               int64  `json:"todo_id"`
-	ActorUserID          int64  `json:"actor_user_id,omitempty"`
-	ChangeType           string `json:"change_type"`
-	Name                 string `json:"name,omitempty"`
-	Desc                 string `json:"desc,omitempty"`
-	Status               string `json:"status,omitempty"`
-	UserID               int64  `json:"user_id,omitempty"`
-	CreatedAtRecordingID int64  `json:"created_at_recording_id,omitempty"`
-	UpdatedAtRecordingID int64  `json:"updated_at_recording_id,omitempty"`
-	ChangedAt            string `json:"changed_at,omitempty"`
-}
-
-type CreateTodoRequest struct {
-	Name                 string `json:"name"`
-	Desc                 string `json:"desc"`
-	Status               string `json:"status"`
-	UserID               int64  `json:"user_id"`
-	CreatedAtRecordingID int64  `json:"created_at_recording_id"`
-	UpdatedAtRecordingID int64  `json:"updated_at_recording_id"`
-	ActorUserID          int64  `json:"actor_user_id"`
-}
-
-type UpdateTodoRequest struct {
-	Name                 string `json:"name"`
-	Desc                 string `json:"desc"`
-	Status               string `json:"status"`
-	UserID               int64  `json:"user_id"`
-	UpdatedAtRecordingID int64  `json:"updated_at_recording_id"`
-	ActorUserID          int64  `json:"actor_user_id"`
-}
-
-type DeleteTodoRequest struct {
-	ActorUserID int64 `json:"actor_user_id"`
-}
-
-type ListTodoHistoryRequest struct {
-	TodoID int64 `json:"todo_id"`
-}
-
-type ListTodosRequest struct {
-	UserID int64 `json:"user_id"`
-}
-
-type ListRecordingsRequest struct{}
-
-type GetRecordingRequest struct {
-	ID int64 `json:"id"`
-}
-
-type GetTodoRequest struct {
-	ID int64 `json:"id"`
-}
-
-type ListUsersRequest struct{}
-
+// Local Request struct for Login (not in proto)
 type LoginRequest struct {
 	Email    string `json:"email"`
 	Password string `json:"password"`

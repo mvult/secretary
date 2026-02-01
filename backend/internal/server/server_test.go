@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
+	"github.com/mvult/secretary/backend/gen/secretary/v1/secretaryv1connect"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -38,7 +40,10 @@ func TestRecordingsListAndGet(t *testing.T) {
 	defer cleanupUser(t, ctx, pool, userID)
 	token := login(t, ts.URL, email, password)
 
-	resp, err := authGet(ts.URL+"/api/recordings", token)
+	// ListRecordings
+	// ConnectRPC uses POST by default. URL: /<package>.<Service>/<Method>
+	listURL := ts.URL + secretaryv1connect.RecordingsServiceListRecordingsProcedure
+	resp, err := authPost(listURL, token, map[string]any{})
 	if err != nil {
 		t.Fatalf("list recordings: %v", err)
 	}
@@ -46,16 +51,14 @@ func TestRecordingsListAndGet(t *testing.T) {
 		t.Fatalf("list recordings status: %d", resp.StatusCode)
 	}
 
-	var listPayload struct {
-		Recordings []Recording `json:"recordings"`
-	}
+	var listPayload secretaryv1.ListRecordingsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&listPayload); err != nil {
 		t.Fatalf("decode list: %v", err)
 	}
 	resp.Body.Close()
 	found := false
 	for _, rec := range listPayload.Recordings {
-		if rec.ID == recordingID {
+		if rec.Id == recordingID {
 			found = true
 			if rec.HasAudio {
 				t.Fatalf("expected has_audio false for test recording")
@@ -66,22 +69,22 @@ func TestRecordingsListAndGet(t *testing.T) {
 		t.Fatalf("expected recording id %d in list", recordingID)
 	}
 
-	resp, err = authGet(ts.URL+"/api/recordings/"+strconv.FormatInt(recordingID, 10), token)
+	// GetRecording
+	getURL := ts.URL + secretaryv1connect.RecordingsServiceGetRecordingProcedure
+	resp, err = authPost(getURL, token, map[string]any{"id": recordingID})
 	if err != nil {
 		t.Fatalf("get recording: %v", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("get recording status: %d", resp.StatusCode)
 	}
-	var getPayload struct {
-		Recording Recording `json:"recording"`
-	}
+	var getPayload secretaryv1.GetRecordingResponse
 	if err := json.NewDecoder(resp.Body).Decode(&getPayload); err != nil {
 		t.Fatalf("decode get: %v", err)
 	}
 	resp.Body.Close()
-	if getPayload.Recording.ID != recordingID {
-		t.Fatalf("expected recording id %d, got %d", recordingID, getPayload.Recording.ID)
+	if getPayload.Recording.Id != recordingID {
+		t.Fatalf("expected recording id %d, got %d", recordingID, getPayload.Recording.Id)
 	}
 }
 
@@ -108,18 +111,20 @@ func TestTodoLifecycle(t *testing.T) {
 
 	token := login(t, ts.URL, email, password)
 
-	createReq := CreateTodoRequest{
+	createReq := secretaryv1.CreateTodoRequest{
 		Name:                 "Test todo",
 		Desc:                 "Test desc",
-		Status:               "not_started",
-		UserID:               userID,
-		CreatedAtRecordingID: recordingID,
-		UpdatedAtRecordingID: recordingID,
+		Status:               secretaryv1.TodoStatus_TODO_STATUS_NOT_STARTED,
+		UserId:               userID,
+		CreatedAtRecordingId: recordingID,
+		UpdatedAtRecordingId: recordingID,
 	}
 	todo := createTodo(t, ts.URL, token, createReq)
-	defer cleanupTodo(t, ctx, pool, todo.ID)
+	defer cleanupTodo(t, ctx, pool, todo.Id)
 
-	listResp, err := authGet(ts.URL+"/api/todos?user_id="+strconv.FormatInt(userID, 10), token)
+	// ListTodos
+	listURL := ts.URL + secretaryv1connect.TodosServiceListTodosProcedure
+	listResp, err := authPost(listURL, token, map[string]any{"user_id": userID})
 	if err != nil {
 		t.Fatalf("list todos: %v", err)
 	}
@@ -128,38 +133,35 @@ func TestTodoLifecycle(t *testing.T) {
 	}
 	listResp.Body.Close()
 
-	updateReq := UpdateTodoRequest{
+	// UpdateTodo
+	updateReq := secretaryv1.UpdateTodoRequest{
+		Id:                   todo.Id,
 		Name:                 "Test todo updated",
 		Desc:                 "Updated desc",
-		Status:               "done",
-		UserID:               userID,
-		UpdatedAtRecordingID: recordingID,
+		Status:               secretaryv1.TodoStatus_TODO_STATUS_DONE,
+		UserId:               userID,
+		UpdatedAtRecordingId: recordingID,
 	}
-	updateBody, _ := json.Marshal(updateReq)
-	updateResp, err := http.NewRequest(http.MethodPut, ts.URL+"/api/todos/"+strconv.FormatInt(todo.ID, 10), bytes.NewReader(updateBody))
-	if err != nil {
-		t.Fatalf("build update request: %v", err)
-	}
-	updateResp.Header.Set("Authorization", "Bearer "+token)
-	updateHTTPResp, err := http.DefaultClient.Do(updateResp)
+	updateURL := ts.URL + secretaryv1connect.TodosServiceUpdateTodoProcedure
+	updateResp, err := authPost(updateURL, token, updateReq)
 	if err != nil {
 		t.Fatalf("update todo: %v", err)
 	}
-	if updateHTTPResp.StatusCode != http.StatusOK {
-		t.Fatalf("update todo status: %d", updateHTTPResp.StatusCode)
+	if updateResp.StatusCode != http.StatusOK {
+		t.Fatalf("update todo status: %d", updateResp.StatusCode)
 	}
-	updateHTTPResp.Body.Close()
+	updateResp.Body.Close()
 
-	historyResp, err := authGet(ts.URL+"/api/todos/"+strconv.FormatInt(todo.ID, 10)+"/history", token)
+	// ListTodoHistory
+	historyURL := ts.URL + secretaryv1connect.TodosServiceListTodoHistoryProcedure
+	historyResp, err := authPost(historyURL, token, map[string]any{"todo_id": todo.Id})
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
 	if historyResp.StatusCode != http.StatusOK {
 		t.Fatalf("history status: %d", historyResp.StatusCode)
 	}
-	var historyPayload struct {
-		History []TodoHistory `json:"history"`
-	}
+	var historyPayload secretaryv1.ListTodoHistoryResponse
 	if err := json.NewDecoder(historyResp.Body).Decode(&historyPayload); err != nil {
 		t.Fatalf("decode history: %v", err)
 	}
@@ -168,16 +170,13 @@ func TestTodoLifecycle(t *testing.T) {
 		t.Fatalf("expected at least 2 history rows, got %d", len(historyPayload.History))
 	}
 
-	deleteReq, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/todos/"+strconv.FormatInt(todo.ID, 10), nil)
-	if err != nil {
-		t.Fatalf("build delete: %v", err)
-	}
-	deleteReq.Header.Set("Authorization", "Bearer "+token)
-	deleteResp, err := http.DefaultClient.Do(deleteReq)
+	// DeleteTodo
+	deleteURL := ts.URL + secretaryv1connect.TodosServiceDeleteTodoProcedure
+	deleteResp, err := authPost(deleteURL, token, map[string]any{"id": todo.Id})
 	if err != nil {
 		t.Fatalf("delete todo: %v", err)
 	}
-	if deleteResp.StatusCode != http.StatusNoContent {
+	if deleteResp.StatusCode != http.StatusOK { // Connect returns 200 OK for empty responses usually, not 204
 		t.Fatalf("delete todo status: %d", deleteResp.StatusCode)
 	}
 	deleteResp.Body.Close()
@@ -233,25 +232,17 @@ func cleanupUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID i
 	_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, userID)
 }
 
-func createTodo(t *testing.T, baseURL string, token string, req CreateTodoRequest) Todo {
+func createTodo(t *testing.T, baseURL string, token string, req secretaryv1.CreateTodoRequest) *secretaryv1.Todo {
 	t.Helper()
-	body, _ := json.Marshal(req)
-	reqHTTP, err := http.NewRequest(http.MethodPost, baseURL+"/api/todos", bytes.NewReader(body))
-	if err != nil {
-		t.Fatalf("build create todo: %v", err)
-	}
-	reqHTTP.Header.Set("Content-Type", "application/json")
-	reqHTTP.Header.Set("Authorization", "Bearer "+token)
-	resp, err := http.DefaultClient.Do(reqHTTP)
+	createURL := baseURL + secretaryv1connect.TodosServiceCreateTodoProcedure
+	resp, err := authPost(createURL, token, req)
 	if err != nil {
 		t.Fatalf("create todo: %v", err)
 	}
-	if resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create todo status: %d", resp.StatusCode)
 	}
-	var payload struct {
-		Todo Todo `json:"todo"`
-	}
+	var payload secretaryv1.CreateTodoResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
@@ -259,11 +250,13 @@ func createTodo(t *testing.T, baseURL string, token string, req CreateTodoReques
 	return payload.Todo
 }
 
-func authGet(url string, token string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func authPost(url string, token string, body any) (*http.Response, error) {
+	b, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token)
 	return http.DefaultClient.Do(req)
 }
