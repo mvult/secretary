@@ -22,8 +22,6 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
   const [status, setStatus] = useState<string>('1');
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const user = getUser();
-  
-  console.log('EditTodoDrawer user:', user);
 
   const toggleExpand = (id: string) => {
     setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }));

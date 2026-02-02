@@ -17,15 +17,16 @@ export function LoginPage() {
     setLoading(true);
 
     try {
-      const res = await fetch('http://localhost:8080/api/login', {
+      const isDev = import.meta.env.MODE === 'development';
+      const baseUrl = isDev ? 'http://localhost:8080' : '';
+      const res = await fetch(`${baseUrl}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
 
       const data = await res.json();
-      console.log('Login response data:', data);
-
+      
       if (!res.ok) {
         throw new Error(data.error || 'Login failed');
       }
