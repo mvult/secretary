@@ -5,8 +5,8 @@ import { TodosService } from '../gen/secretary/v1/todos_connect';
 import { UsersService } from '../gen/secretary/v1/users_connect';
 import { getToken } from './auth';
 
-const isProd = import.meta.env.PROD;
-const baseUrl = import.meta.env.VITE_API_URL || (isProd ? '/' : 'http://localhost:8080');
+const isDev = import.meta.env.MODE === 'development';
+const baseUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:8080' : '/');
 
 const transport = createConnectTransport({
   baseUrl,
