@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Base Generator (Tools)
 # -----------------------------------------------------------------------------
-FROM golang:1.23-alpine AS generator
+FROM golang:1.25-alpine AS generator
 WORKDIR /workspace
 
 # Install buf and sqlc
@@ -49,7 +49,7 @@ RUN bun run build
 # -----------------------------------------------------------------------------
 # Stage 3: Backend Builder
 # -----------------------------------------------------------------------------
-FROM golang:1.23-alpine AS backend_builder
+FROM golang:1.25-alpine AS backend_builder
 WORKDIR /app/backend
 
 # Copy go.mod and go.sum
