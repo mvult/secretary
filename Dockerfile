@@ -15,7 +15,7 @@ RUN go install github.com/bufbuild/buf/cmd/buf@v1.47.2 && \
 # Install Node.js and plugins for frontend generation
 # We use npm here because it's native to Alpine and stable for installing the generator plugins
 RUN apk add --no-cache nodejs npm && \
-    npm install -g @bufbuild/protoc-gen-es @connectrpc/protoc-gen-connect-es
+    npm install -g @bufbuild/protoc-gen-es@1.10.0 @connectrpc/protoc-gen-connect-es@1.4.0
 
 # Copy necessary files for generation
 COPY buf.gen.frontend.yaml .

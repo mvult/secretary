@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { Container, Title, Text, Loader, Alert, Tabs, Paper, Group, Badge, Breadcrumbs, Anchor, Card, Stack, Switch, Button } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
