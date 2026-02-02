@@ -50,7 +50,8 @@ COPY --from=generator /workspace/frontend/src/gen ./src/gen
 # Build the React app
 # VITE_API_URL can be set to /api since we are serving from the same origin,
 # or left empty if the client automatically uses relative paths.
-ENV VITE_API_URL="" 
+ENV NODE_ENV=production
+ENV VITE_API_URL="/" 
 RUN bun run build
 
 # -----------------------------------------------------------------------------
