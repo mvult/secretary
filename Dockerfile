@@ -41,7 +41,7 @@ WORKDIR /app/frontend
 
 # Copy frontend source and generated code
 COPY frontend/package.json frontend/bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install
 
 COPY frontend .
 # Copy generated frontend protobuf code from generator stage
