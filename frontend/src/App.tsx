@@ -20,9 +20,9 @@ function App() {
           </RequireAuth>
         }
       >
-        <Route index element={<DashboardPage />} />
+        <Route index element={<TodosPage />} />
+        <Route path="recordings" element={<DashboardPage />} />
         <Route path="recordings/:id" element={<RecordingDetailPage />} />
-        <Route path="todos" element={<TodosPage />} />
         <Route path="settings" element={<SettingsPage />} />
       </Route>
 

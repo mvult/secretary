@@ -66,17 +66,17 @@ export function Layout() {
 
       <AppShell.Navbar p="md">
         <NavItem
-          label="Recordings"
-          icon={<Mic size={16} />}
+          label="My Todos"
+          icon={<CheckSquare size={16} />}
           active={location.pathname === '/'}
           onClick={() => { navigate('/'); toggle(); }}
           desktopOpened={desktopOpened}
         />
         <NavItem
-          label="My Todos"
-          icon={<CheckSquare size={16} />}
-          active={location.pathname === '/todos'}
-          onClick={() => { navigate('/todos'); toggle(); }}
+          label="Recordings"
+          icon={<Mic size={16} />}
+          active={location.pathname.startsWith('/recordings')}
+          onClick={() => { navigate('/recordings'); toggle(); }}
           desktopOpened={desktopOpened}
         />
         <NavItem
