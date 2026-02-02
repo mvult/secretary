@@ -11,6 +11,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteRecording = `-- name: DeleteRecording :exec
+DELETE FROM recording
+WHERE id = $1
+`
+
+func (q *Queries) DeleteRecording(ctx context.Context, id int32) error {
+	_, err := q.db.Exec(ctx, deleteRecording, id)
+	return err
+}
+
 const getRecording = `-- name: GetRecording :one
 SELECT
   r.id,
@@ -52,7 +62,8 @@ SELECT
   u.id,
   u.first_name,
   u.last_name,
-  u.role
+  u.role,
+  stu.speaker_id
 FROM speaker_to_user stu
 JOIN "user" u ON u.id = stu.user_id
 WHERE stu.recording_id = $1
@@ -63,6 +74,7 @@ type ListRecordingParticipantsRow struct {
 	FirstName string
 	LastName  pgtype.Text
 	Role      pgtype.Text
+	SpeakerID int32
 }
 
 func (q *Queries) ListRecordingParticipants(ctx context.Context, recordingID int32) ([]ListRecordingParticipantsRow, error) {
@@ -79,6 +91,7 @@ func (q *Queries) ListRecordingParticipants(ctx context.Context, recordingID int
 			&i.FirstName,
 			&i.LastName,
 			&i.Role,
+			&i.SpeakerID,
 		); err != nil {
 			return nil, err
 		}

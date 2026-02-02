@@ -4,6 +4,7 @@ import { Drawer, Select, Textarea, Button, Group, Stack, Timeline, Text, Loader,
 import { notifications } from '@mantine/notifications';
 import { Trash, MoreVertical, ChevronDown, ChevronRight } from 'lucide-react';
 import { todosClient, usersClient } from '../lib/client';
+import { getUser } from '../lib/auth';
 import { getStatusConfig, TODO_STATUS_OPTIONS } from '../lib/status';
 import { Todo, TodoStatus, ListTodoHistoryResponse } from '../gen/secretary/v1/todos_pb';
 import { ListUsersResponse } from '../gen/secretary/v1/users_pb';
@@ -20,6 +21,9 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
   const [desc, setDesc] = useState('');
   const [status, setStatus] = useState<string>('1');
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+  const user = getUser();
+  
+  console.log('EditTodoDrawer user:', user);
 
   const toggleExpand = (id: string) => {
     setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }));
@@ -118,17 +122,19 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
               <ActionIcon variant="subtle" color="gray"><MoreVertical size={16} /></ActionIcon>
             </Menu.Target>
             <Menu.Dropdown>
-              <Menu.Item
-                color="red"
-                leftSection={<Trash size={14} />}
-                onClick={() => {
-                  if (confirm('Are you sure you want to delete this todo?')) {
-                    deleteMutation.mutate();
-                  }
-                }}
-              >
-                Delete Todo
-              </Menu.Item>
+              {user?.role === 'admin' && (
+                <Menu.Item
+                  color="red"
+                  leftSection={<Trash size={14} />}
+                  onClick={() => {
+                    if (confirm('Are you sure you want to delete this todo?')) {
+                      deleteMutation.mutate();
+                    }
+                  }}
+                >
+                  Delete Todo
+                </Menu.Item>
+              )}
             </Menu.Dropdown>
           </Menu>
         </Group>

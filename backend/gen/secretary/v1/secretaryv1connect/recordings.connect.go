@@ -39,12 +39,16 @@ const (
 	// RecordingsServiceGetRecordingProcedure is the fully-qualified name of the RecordingsService's
 	// GetRecording RPC.
 	RecordingsServiceGetRecordingProcedure = "/secretary.v1.RecordingsService/GetRecording"
+	// RecordingsServiceDeleteRecordingProcedure is the fully-qualified name of the RecordingsService's
+	// DeleteRecording RPC.
+	RecordingsServiceDeleteRecordingProcedure = "/secretary.v1.RecordingsService/DeleteRecording"
 )
 
 // RecordingsServiceClient is a client for the secretary.v1.RecordingsService service.
 type RecordingsServiceClient interface {
 	ListRecordings(context.Context, *connect.Request[v1.ListRecordingsRequest]) (*connect.Response[v1.ListRecordingsResponse], error)
 	GetRecording(context.Context, *connect.Request[v1.GetRecordingRequest]) (*connect.Response[v1.GetRecordingResponse], error)
+	DeleteRecording(context.Context, *connect.Request[v1.DeleteRecordingRequest]) (*connect.Response[v1.DeleteRecordingResponse], error)
 }
 
 // NewRecordingsServiceClient constructs a client for the secretary.v1.RecordingsService service. By
@@ -70,13 +74,20 @@ func NewRecordingsServiceClient(httpClient connect.HTTPClient, baseURL string, o
 			connect.WithSchema(recordingsServiceMethods.ByName("GetRecording")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteRecording: connect.NewClient[v1.DeleteRecordingRequest, v1.DeleteRecordingResponse](
+			httpClient,
+			baseURL+RecordingsServiceDeleteRecordingProcedure,
+			connect.WithSchema(recordingsServiceMethods.ByName("DeleteRecording")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // recordingsServiceClient implements RecordingsServiceClient.
 type recordingsServiceClient struct {
-	listRecordings *connect.Client[v1.ListRecordingsRequest, v1.ListRecordingsResponse]
-	getRecording   *connect.Client[v1.GetRecordingRequest, v1.GetRecordingResponse]
+	listRecordings  *connect.Client[v1.ListRecordingsRequest, v1.ListRecordingsResponse]
+	getRecording    *connect.Client[v1.GetRecordingRequest, v1.GetRecordingResponse]
+	deleteRecording *connect.Client[v1.DeleteRecordingRequest, v1.DeleteRecordingResponse]
 }
 
 // ListRecordings calls secretary.v1.RecordingsService.ListRecordings.
@@ -89,10 +100,16 @@ func (c *recordingsServiceClient) GetRecording(ctx context.Context, req *connect
 	return c.getRecording.CallUnary(ctx, req)
 }
 
+// DeleteRecording calls secretary.v1.RecordingsService.DeleteRecording.
+func (c *recordingsServiceClient) DeleteRecording(ctx context.Context, req *connect.Request[v1.DeleteRecordingRequest]) (*connect.Response[v1.DeleteRecordingResponse], error) {
+	return c.deleteRecording.CallUnary(ctx, req)
+}
+
 // RecordingsServiceHandler is an implementation of the secretary.v1.RecordingsService service.
 type RecordingsServiceHandler interface {
 	ListRecordings(context.Context, *connect.Request[v1.ListRecordingsRequest]) (*connect.Response[v1.ListRecordingsResponse], error)
 	GetRecording(context.Context, *connect.Request[v1.GetRecordingRequest]) (*connect.Response[v1.GetRecordingResponse], error)
+	DeleteRecording(context.Context, *connect.Request[v1.DeleteRecordingRequest]) (*connect.Response[v1.DeleteRecordingResponse], error)
 }
 
 // NewRecordingsServiceHandler builds an HTTP handler from the service implementation. It returns
@@ -114,12 +131,20 @@ func NewRecordingsServiceHandler(svc RecordingsServiceHandler, opts ...connect.H
 		connect.WithSchema(recordingsServiceMethods.ByName("GetRecording")),
 		connect.WithHandlerOptions(opts...),
 	)
+	recordingsServiceDeleteRecordingHandler := connect.NewUnaryHandler(
+		RecordingsServiceDeleteRecordingProcedure,
+		svc.DeleteRecording,
+		connect.WithSchema(recordingsServiceMethods.ByName("DeleteRecording")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/secretary.v1.RecordingsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case RecordingsServiceListRecordingsProcedure:
 			recordingsServiceListRecordingsHandler.ServeHTTP(w, r)
 		case RecordingsServiceGetRecordingProcedure:
 			recordingsServiceGetRecordingHandler.ServeHTTP(w, r)
+		case RecordingsServiceDeleteRecordingProcedure:
+			recordingsServiceDeleteRecordingHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -135,4 +160,8 @@ func (UnimplementedRecordingsServiceHandler) ListRecordings(context.Context, *co
 
 func (UnimplementedRecordingsServiceHandler) GetRecording(context.Context, *connect.Request[v1.GetRecordingRequest]) (*connect.Response[v1.GetRecordingResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.RecordingsService.GetRecording is not implemented"))
+}
+
+func (UnimplementedRecordingsServiceHandler) DeleteRecording(context.Context, *connect.Request[v1.DeleteRecordingRequest]) (*connect.Response[v1.DeleteRecordingResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.RecordingsService.DeleteRecording is not implemented"))
 }

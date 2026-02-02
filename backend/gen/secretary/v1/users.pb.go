@@ -27,6 +27,7 @@ type User struct {
 	FirstName     string                 `protobuf:"bytes,2,opt,name=first_name,json=firstName,proto3" json:"first_name,omitempty"`
 	LastName      string                 `protobuf:"bytes,3,opt,name=last_name,json=lastName,proto3" json:"last_name,omitempty"`
 	Role          string                 `protobuf:"bytes,4,opt,name=role,proto3" json:"role,omitempty"`
+	SpeakerId     int32                  `protobuf:"varint,5,opt,name=speaker_id,json=speakerId,proto3" json:"speaker_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -87,6 +88,13 @@ func (x *User) GetRole() string {
 		return x.Role
 	}
 	return ""
+}
+
+func (x *User) GetSpeakerId() int32 {
+	if x != nil {
+		return x.SpeakerId
+	}
+	return 0
 }
 
 type ListUsersRequest struct {
@@ -173,13 +181,15 @@ var File_secretary_v1_users_proto protoreflect.FileDescriptor
 
 const file_secretary_v1_users_proto_rawDesc = "" +
 	"\n" +
-	"\x18secretary/v1/users.proto\x12\fsecretary.v1\"f\n" +
+	"\x18secretary/v1/users.proto\x12\fsecretary.v1\"\x85\x01\n" +
 	"\x04User\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1d\n" +
 	"\n" +
 	"first_name\x18\x02 \x01(\tR\tfirstName\x12\x1b\n" +
 	"\tlast_name\x18\x03 \x01(\tR\blastName\x12\x12\n" +
-	"\x04role\x18\x04 \x01(\tR\x04role\"\x12\n" +
+	"\x04role\x18\x04 \x01(\tR\x04role\x12\x1d\n" +
+	"\n" +
+	"speaker_id\x18\x05 \x01(\x05R\tspeakerId\"\x12\n" +
 	"\x10ListUsersRequest\"=\n" +
 	"\x11ListUsersResponse\x12(\n" +
 	"\x05users\x18\x01 \x03(\v2\x12.secretary.v1.UserR\x05users2\\\n" +

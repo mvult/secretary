@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getUser = `-- name: GetUser :one
+SELECT
+  u.id,
+  u.first_name,
+  u.last_name,
+  u.role
+FROM "user" u
+WHERE u.id = $1
+`
+
+type GetUserRow struct {
+	ID        int32
+	FirstName string
+	LastName  pgtype.Text
+	Role      pgtype.Text
+}
+
+func (q *Queries) GetUser(ctx context.Context, id int32) (GetUserRow, error) {
+	row := q.db.QueryRow(ctx, getUser, id)
+	var i GetUserRow
+	err := row.Scan(
+		&i.ID,
+		&i.FirstName,
+		&i.LastName,
+		&i.Role,
+	)
+	return i, err
+}
+
 const getUserByEmail = `-- name: GetUserByEmail :one
 SELECT
   u.id,

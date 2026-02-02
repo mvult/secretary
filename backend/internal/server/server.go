@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +23,13 @@ import (
 	"github.com/rs/cors"
 	"golang.org/x/crypto/bcrypt"
 )
+
+//go:embed dist/*
+var content embed.FS
+
+type contextKey string
+
+const userIdKey contextKey = "user_id"
 
 type Server struct {
 	db        *pgxpool.Pool
@@ -60,6 +70,68 @@ func (s *Server) Routes() http.Handler {
 	})
 
 	return c.Handler(mux)
+}
+
+// ServeHTTP implements the http.Handler interface
+func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// If path starts with /api, forward to the mux (API handlers)
+	// We also need to handle ConnectRPC routes which might not start with /api
+	// A simple check is to see if the file exists in the embedded FS
+	// If it does, serve it. If it doesn't and it's not an API call, serve index.html (SPA fallback)
+
+	// Since we are using standard http.ServeMux which doesn't support regex or easy fallback
+	// We'll wrap the logic here.
+
+	// Check if the request is for an API endpoint or ConnectRPC service
+	// ConnectRPC services usually look like /secretary.v1.RecordingsService/ListRecordings
+	// Our custom API endpoints start with /api
+	if strings.HasPrefix(r.URL.Path, "/api") || strings.Contains(r.URL.Path, "Service/") || r.URL.Path == "/healthz" {
+		s.Routes().ServeHTTP(w, r)
+		return
+	}
+
+	// Try to serve static file
+	path := r.URL.Path
+	if path == "/" {
+		path = "index.html"
+	}
+	// dist/ is the root of our embedded FS
+	fullPath := "dist" + path
+
+	// Check if file exists in embedded FS
+	f, err := content.Open(fullPath)
+	if err == nil {
+		defer f.Close()
+		// Get content type
+		ext := filepath.Ext(fullPath)
+		contentType := "application/octet-stream"
+		switch ext {
+		case ".html":
+			contentType = "text/html"
+		case ".css":
+			contentType = "text/css"
+		case ".js":
+			contentType = "application/javascript"
+		case ".svg":
+			contentType = "image/svg+xml"
+		}
+		w.Header().Set("Content-Type", contentType)
+
+		stat, _ := f.Stat()
+		http.ServeContent(w, r, fullPath, stat.ModTime(), f.(io.ReadSeeker))
+		return
+	}
+
+	// Fallback to index.html for SPA
+	indexFile, err := content.Open("dist/index.html")
+	if err != nil {
+		http.Error(w, "index.html not found", http.StatusInternalServerError)
+		return
+	}
+	defer indexFile.Close()
+	stat, _ := indexFile.Stat()
+	w.Header().Set("Content-Type", "text/html")
+	http.ServeContent(w, r, "index.html", stat.ModTime(), indexFile.(io.ReadSeeker))
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -104,17 +176,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Construct the response user manually since the DB row doesn't match the Proto exactly
-	userProto := &secretaryv1.User{
-		Id:        int64(userRow.ID),
-		FirstName: userRow.FirstName,
-		LastName:  userRow.LastName.String, // Handle pgtype.Text
-		Role:      userRow.Role.String,     // Handle pgtype.Text
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
-		"user":  userProto,
+		"user": map[string]any{
+			"id":        userRow.ID,
+			"firstName": userRow.FirstName,
+			"lastName":  userRow.LastName.String,
+			"role":      userRow.Role.String,
+		},
 	})
 }
 
@@ -177,11 +246,31 @@ func (s *Server) GetRecording(ctx context.Context, req *connect.Request[secretar
 				FirstName: p.FirstName,
 				LastName:  p.LastName.String,
 				Role:      p.Role.String,
+				SpeakerId: int32(p.SpeakerID),
 			})
 		}
 	}
 
 	return connect.NewResponse(&secretaryv1.GetRecordingResponse{Recording: rec}), nil
+}
+
+func (s *Server) DeleteRecording(ctx context.Context, req *connect.Request[secretaryv1.DeleteRecordingRequest]) (*connect.Response[secretaryv1.DeleteRecordingResponse], error) {
+	userID, ok := ctx.Value(userIdKey).(int64)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))
+	}
+	user, err := s.queries.GetUser(ctx, int32(userID))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch user"))
+	}
+	if user.Role.String != "admin" {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only admins can delete recordings"))
+	}
+
+	if err := s.queries.DeleteRecording(ctx, int32(req.Msg.Id)); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete recording"))
+	}
+	return connect.NewResponse(&secretaryv1.DeleteRecordingResponse{}), nil
 }
 
 // --- UsersService Implementation ---
@@ -452,6 +541,18 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 func (s *Server) DeleteTodo(ctx context.Context, req *connect.Request[secretaryv1.DeleteTodoRequest]) (*connect.Response[secretaryv1.DeleteTodoResponse], error) {
 	id := req.Msg.Id
 
+	userID, ok := ctx.Value(userIdKey).(int64)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("unauthenticated"))
+	}
+	user, err := s.queries.GetUser(ctx, int32(userID))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch user"))
+	}
+	if user.Role.String != "admin" {
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only admins can delete todos"))
+	}
+
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to start transaction"))
@@ -569,7 +670,17 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "invalid token")
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		claims, ok := token.Claims.(jwt.MapClaims)
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "invalid token claims")
+			return
+		}
+		sub, _ := claims.GetSubject()
+		userID, _ := strconv.ParseInt(sub, 10, 64)
+		ctx := context.WithValue(r.Context(), userIdKey, userID)
+
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

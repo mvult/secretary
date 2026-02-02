@@ -17,3 +17,12 @@ SELECT
   u.password_hash
 FROM "user" u
 WHERE u.email = $1;
+
+-- name: GetUser :one
+SELECT
+  u.id,
+  u.first_name,
+  u.last_name,
+  u.role
+FROM "user" u
+WHERE u.id = $1;

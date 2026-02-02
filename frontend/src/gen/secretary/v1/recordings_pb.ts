@@ -234,3 +234,71 @@ export class GetRecordingResponse extends Message<GetRecordingResponse> {
   }
 }
 
+/**
+ * @generated from message secretary.v1.DeleteRecordingRequest
+ */
+export class DeleteRecordingRequest extends Message<DeleteRecordingRequest> {
+  /**
+   * @generated from field: int64 id = 1;
+   */
+  id = protoInt64.zero;
+
+  constructor(data?: PartialMessage<DeleteRecordingRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.DeleteRecordingRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRecordingRequest {
+    return new DeleteRecordingRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteRecordingRequest {
+    return new DeleteRecordingRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteRecordingRequest {
+    return new DeleteRecordingRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteRecordingRequest | PlainMessage<DeleteRecordingRequest> | undefined, b: DeleteRecordingRequest | PlainMessage<DeleteRecordingRequest> | undefined): boolean {
+    return proto3.util.equals(DeleteRecordingRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message secretary.v1.DeleteRecordingResponse
+ */
+export class DeleteRecordingResponse extends Message<DeleteRecordingResponse> {
+  constructor(data?: PartialMessage<DeleteRecordingResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.DeleteRecordingResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteRecordingResponse {
+    return new DeleteRecordingResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DeleteRecordingResponse {
+    return new DeleteRecordingResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DeleteRecordingResponse {
+    return new DeleteRecordingResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DeleteRecordingResponse | PlainMessage<DeleteRecordingResponse> | undefined, b: DeleteRecordingResponse | PlainMessage<DeleteRecordingResponse> | undefined): boolean {
+    return proto3.util.equals(DeleteRecordingResponse, a, b);
+  }
+}
+

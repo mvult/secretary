@@ -35,4 +35,11 @@ message GetRecordingResponse {
 service RecordingsService {
   rpc ListRecordings(ListRecordingsRequest) returns (ListRecordingsResponse);
   rpc GetRecording(GetRecordingRequest) returns (GetRecordingResponse);
+  rpc DeleteRecording(DeleteRecordingRequest) returns (DeleteRecordingResponse);
 }
+
+message DeleteRecordingRequest {
+  int64 id = 1;
+}
+
+message DeleteRecordingResponse {}

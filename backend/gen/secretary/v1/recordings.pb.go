@@ -297,6 +297,86 @@ func (x *GetRecordingResponse) GetRecording() *Recording {
 	return nil
 }
 
+type DeleteRecordingRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRecordingRequest) Reset() {
+	*x = DeleteRecordingRequest{}
+	mi := &file_secretary_v1_recordings_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRecordingRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRecordingRequest) ProtoMessage() {}
+
+func (x *DeleteRecordingRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_recordings_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRecordingRequest.ProtoReflect.Descriptor instead.
+func (*DeleteRecordingRequest) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_recordings_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *DeleteRecordingRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type DeleteRecordingResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteRecordingResponse) Reset() {
+	*x = DeleteRecordingResponse{}
+	mi := &file_secretary_v1_recordings_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteRecordingResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteRecordingResponse) ProtoMessage() {}
+
+func (x *DeleteRecordingResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_recordings_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteRecordingResponse.ProtoReflect.Descriptor instead.
+func (*DeleteRecordingResponse) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_recordings_proto_rawDescGZIP(), []int{6}
+}
+
 var File_secretary_v1_recordings_proto protoreflect.FileDescriptor
 
 const file_secretary_v1_recordings_proto_rawDesc = "" +
@@ -323,10 +403,14 @@ const file_secretary_v1_recordings_proto_rawDesc = "" +
 	"\x13GetRecordingRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\"M\n" +
 	"\x14GetRecordingResponse\x125\n" +
-	"\trecording\x18\x01 \x01(\v2\x17.secretary.v1.RecordingR\trecording2\xc7\x01\n" +
+	"\trecording\x18\x01 \x01(\v2\x17.secretary.v1.RecordingR\trecording\"(\n" +
+	"\x16DeleteRecordingRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\"\x19\n" +
+	"\x17DeleteRecordingResponse2\xa7\x02\n" +
 	"\x11RecordingsService\x12[\n" +
 	"\x0eListRecordings\x12#.secretary.v1.ListRecordingsRequest\x1a$.secretary.v1.ListRecordingsResponse\x12U\n" +
-	"\fGetRecording\x12!.secretary.v1.GetRecordingRequest\x1a\".secretary.v1.GetRecordingResponseBAZ?github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1b\x06proto3"
+	"\fGetRecording\x12!.secretary.v1.GetRecordingRequest\x1a\".secretary.v1.GetRecordingResponse\x12^\n" +
+	"\x0fDeleteRecording\x12$.secretary.v1.DeleteRecordingRequest\x1a%.secretary.v1.DeleteRecordingResponseBAZ?github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1b\x06proto3"
 
 var (
 	file_secretary_v1_recordings_proto_rawDescOnce sync.Once
@@ -340,25 +424,29 @@ func file_secretary_v1_recordings_proto_rawDescGZIP() []byte {
 	return file_secretary_v1_recordings_proto_rawDescData
 }
 
-var file_secretary_v1_recordings_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_secretary_v1_recordings_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_secretary_v1_recordings_proto_goTypes = []any{
-	(*Recording)(nil),              // 0: secretary.v1.Recording
-	(*ListRecordingsRequest)(nil),  // 1: secretary.v1.ListRecordingsRequest
-	(*ListRecordingsResponse)(nil), // 2: secretary.v1.ListRecordingsResponse
-	(*GetRecordingRequest)(nil),    // 3: secretary.v1.GetRecordingRequest
-	(*GetRecordingResponse)(nil),   // 4: secretary.v1.GetRecordingResponse
-	(*User)(nil),                   // 5: secretary.v1.User
+	(*Recording)(nil),               // 0: secretary.v1.Recording
+	(*ListRecordingsRequest)(nil),   // 1: secretary.v1.ListRecordingsRequest
+	(*ListRecordingsResponse)(nil),  // 2: secretary.v1.ListRecordingsResponse
+	(*GetRecordingRequest)(nil),     // 3: secretary.v1.GetRecordingRequest
+	(*GetRecordingResponse)(nil),    // 4: secretary.v1.GetRecordingResponse
+	(*DeleteRecordingRequest)(nil),  // 5: secretary.v1.DeleteRecordingRequest
+	(*DeleteRecordingResponse)(nil), // 6: secretary.v1.DeleteRecordingResponse
+	(*User)(nil),                    // 7: secretary.v1.User
 }
 var file_secretary_v1_recordings_proto_depIdxs = []int32{
-	5, // 0: secretary.v1.Recording.participants:type_name -> secretary.v1.User
+	7, // 0: secretary.v1.Recording.participants:type_name -> secretary.v1.User
 	0, // 1: secretary.v1.ListRecordingsResponse.recordings:type_name -> secretary.v1.Recording
 	0, // 2: secretary.v1.GetRecordingResponse.recording:type_name -> secretary.v1.Recording
 	1, // 3: secretary.v1.RecordingsService.ListRecordings:input_type -> secretary.v1.ListRecordingsRequest
 	3, // 4: secretary.v1.RecordingsService.GetRecording:input_type -> secretary.v1.GetRecordingRequest
-	2, // 5: secretary.v1.RecordingsService.ListRecordings:output_type -> secretary.v1.ListRecordingsResponse
-	4, // 6: secretary.v1.RecordingsService.GetRecording:output_type -> secretary.v1.GetRecordingResponse
-	5, // [5:7] is the sub-list for method output_type
-	3, // [3:5] is the sub-list for method input_type
+	5, // 5: secretary.v1.RecordingsService.DeleteRecording:input_type -> secretary.v1.DeleteRecordingRequest
+	2, // 6: secretary.v1.RecordingsService.ListRecordings:output_type -> secretary.v1.ListRecordingsResponse
+	4, // 7: secretary.v1.RecordingsService.GetRecording:output_type -> secretary.v1.GetRecordingResponse
+	6, // 8: secretary.v1.RecordingsService.DeleteRecording:output_type -> secretary.v1.DeleteRecordingResponse
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
 	3, // [3:3] is the sub-list for extension extendee
 	0, // [0:3] is the sub-list for field type_name
@@ -376,7 +464,7 @@ func file_secretary_v1_recordings_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_secretary_v1_recordings_proto_rawDesc), len(file_secretary_v1_recordings_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

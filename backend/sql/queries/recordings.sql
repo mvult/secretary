@@ -35,7 +35,12 @@ SELECT
   u.id,
   u.first_name,
   u.last_name,
-  u.role
+  u.role,
+  stu.speaker_id
 FROM speaker_to_user stu
 JOIN "user" u ON u.id = stu.user_id
 WHERE stu.recording_id = $1;
+
+-- name: DeleteRecording :exec
+DELETE FROM recording
+WHERE id = $1;

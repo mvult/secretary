@@ -1,10 +1,12 @@
 import { useState, useMemo } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
-import { Container, Title, Text, Loader, Alert, Tabs, Paper, Group, Badge, Breadcrumbs, Anchor, Card, Stack } from '@mantine/core';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Container, Title, Text, Loader, Alert, Tabs, Paper, Group, Badge, Breadcrumbs, Anchor, Card, Stack, Switch, Button } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { AlertCircle, Calendar, Clock } from 'lucide-react';
+import { notifications } from '@mantine/notifications';
+import { AlertCircle, Calendar, Clock, Trash } from 'lucide-react';
 import { recordingsClient, todosClient, usersClient } from '../lib/client';
+import { getUser } from '../lib/auth';
 import { getStatusConfig } from '../lib/status';
 import type { GetRecordingResponse, Recording } from '../gen/secretary/v1/recordings_pb';
 import type { ListTodosResponse, Todo } from '../gen/secretary/v1/todos_pb';
@@ -17,6 +19,24 @@ export function RecordingDetailPage() {
   const [activeTab, setActiveTab] = useState<string | null>('summary');
   const [drawerOpened, { open: openDrawer, close: closeDrawer }] = useDisclosure(false);
   const [selectedTodo, setSelectedTodo] = useState<Todo | null>(null);
+  const [showMyTodosOnly, setShowMyTodosOnly] = useState(false);
+  const currentUser = getUser();
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  const deleteRecordingMutation = useMutation({
+    mutationFn: async () => {
+      if (!recordingId) return;
+      await recordingsClient.deleteRecording({ id: recordingId });
+    },
+    onSuccess: () => {
+      notifications.show({ title: 'Success', message: 'Recording deleted', color: 'blue' });
+      navigate('/');
+    },
+    onError: (err: any) => {
+      notifications.show({ title: 'Error', message: err.message, color: 'red' });
+    }
+  });
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['recording', id],
@@ -53,6 +73,80 @@ export function RecordingDetailPage() {
     return map;
   }, [users]);
 
+  const filteredTodos = useMemo(() => {
+    if (!todos) return [];
+    if (!showMyTodosOnly || !currentUser) return todos;
+    return todos.filter(t => t.userId === BigInt(currentUser.id));
+  }, [todos, showMyTodosOnly, currentUser]);
+
+  const rec = data as Recording | undefined;
+
+  // Calculate word counts per speaker from transcript
+  const speakerStats = useMemo(() => {
+    if (!rec?.transcript) return { total: 0, bySpeaker: new Map<string, number>() };
+    
+    const stats = new Map<string, number>();
+    let totalWords = 0;
+    
+    // Split by newlines to handle "Speaker: Text" format
+    const lines = rec.transcript.split('\n');
+    
+    for (const line of lines) {
+      // Match "Speaker 1: " or "SPEAKER_01: " or just "Speaker 1:"
+      // Capturing group 1 is the ID
+      const matchId = line.match(/^(?:Speaker|SPEAKER_)\s*0*(\d+):\s+(.+)$/i);
+      if (matchId) {
+        const speakerId = parseInt(matchId[1], 10);
+        const text = matchId[2];
+        const wordCount = text.trim().split(/\s+/).length;
+        
+        const key = `id_${speakerId}`;
+        stats.set(key, (stats.get(key) || 0) + wordCount);
+        totalWords += wordCount;
+        continue;
+      }
+
+      // Fallback: Match "Name: "
+      const matchName = line.match(/^([^:]+):\s+(.+)$/);
+      if (matchName) {
+        const name = matchName[1].trim().toLowerCase();
+        const text = matchName[2];
+        const wordCount = text.trim().split(/\s+/).length;
+
+        const key = `name_${name}`;
+        stats.set(key, (stats.get(key) || 0) + wordCount);
+        totalWords += wordCount;
+      }
+    }
+    
+    return { total: totalWords, bySpeaker: stats };
+  }, [rec?.transcript]);
+
+  const getSpeakerPercentage = (user: { firstName: string; lastName: string; speakerId?: number }) => {
+    if (speakerStats.total === 0) return 0;
+    
+    let count: number | undefined;
+
+    // 1. Try Lookup by speaker_ID
+    if (user.speakerId !== undefined) {
+       count = speakerStats.bySpeaker.get(`id_${user.speakerId}`);
+    }
+
+    // 2. Fallback: Lookup by Name
+    if (count === undefined) {
+       const fullName = `${user.firstName} ${user.lastName}`.trim().toLowerCase();
+       count = speakerStats.bySpeaker.get(`name_${fullName}`);
+    }
+    
+    if (count === undefined) {
+       const firstName = user.firstName.trim().toLowerCase();
+       count = speakerStats.bySpeaker.get(`name_${firstName}`);
+    }
+
+    if (count === undefined) return 0;
+    return Math.round((count / speakerStats.total) * 100);
+  };
+
   const handleTodoClick = (todo: Todo) => {
     setSelectedTodo(todo);
     openDrawer();
@@ -60,7 +154,7 @@ export function RecordingDetailPage() {
 
   if (isLoading) return <Container><Loader /></Container>;
   
-  if (error || !data) {
+  if (error || !rec) {
     return (
       <Container>
          <Alert icon={<AlertCircle size={16} />} title="Error" color="red">
@@ -71,15 +165,31 @@ export function RecordingDetailPage() {
     );
   }
 
-  const rec = data as Recording;
-
   return (
     <Container size="lg">
-      <Group mb="md">
-        <Breadcrumbs>
-          <Anchor component={Link} to="/">Recordings</Anchor>
-          <Text>{rec.name}</Text>
-        </Breadcrumbs>
+      <Group mb="md" justify="space-between">
+        <Group>
+            <Breadcrumbs>
+            <Anchor component={Link} to="/">Recordings</Anchor>
+            <Text>{rec.name}</Text>
+            </Breadcrumbs>
+        </Group>
+        {currentUser?.role === 'admin' && (
+            <Button 
+                color="red" 
+                variant="light" 
+                size="xs"
+                leftSection={<Trash size={14} />}
+                onClick={() => {
+                    if (confirm('Are you sure you want to delete this recording? This action cannot be undone.')) {
+                        deleteRecordingMutation.mutate();
+                    }
+                }}
+                loading={deleteRecordingMutation.isPending}
+            >
+                Delete Recording
+            </Button>
+        )}
       </Group>
 
       <Title order={2} mb="xs">{rec.name || 'Untitled Meeting'}</Title>
@@ -99,11 +209,21 @@ export function RecordingDetailPage() {
 
       {rec.participants && rec.participants.length > 0 && (
         <Group mb="xl">
-          {rec.participants.map((p) => (
-             <Badge key={p.id} variant="outline" color="gray">
-               {p.firstName} {p.lastName}
-             </Badge>
-          ))}
+          {rec.participants.map((p) => {
+             const pct = getSpeakerPercentage(p);
+             return (
+               <Badge key={p.id} variant="outline" color="gray" size="lg" py="sm" pr="lg" tt="none">
+                 <Group gap="sm">
+                   <Text>{p.firstName} {p.lastName}</Text>
+                   {pct > 0 && (
+                     <Badge size="sm" variant="filled" color="gray">
+                       {pct}%
+                     </Badge>
+                   )}
+                 </Group>
+               </Badge>
+             );
+          })}
         </Group>
       )}
 
@@ -153,9 +273,19 @@ export function RecordingDetailPage() {
           </Tabs.Panel>
 
           <Tabs.Panel value="todos" pt="xl">
-             {todos && todos.length > 0 ? (
+            <Group mb="md" justify="space-between">
+              <Text c="dimmed" size="sm">
+                {filteredTodos.length} task{filteredTodos.length !== 1 ? 's' : ''}
+              </Text>
+              <Switch
+                label="Only show my tasks"
+                checked={showMyTodosOnly}
+                onChange={(event) => setShowMyTodosOnly(event.currentTarget.checked)}
+              />
+            </Group>
+             {filteredTodos.length > 0 ? (
                <Stack gap="sm">
-                   {todos.map((todo) => {
+                   {filteredTodos.map((todo) => {
                      const statusConfig = getStatusConfig(todo.status);
                      return (
                        <Card 
@@ -194,7 +324,9 @@ export function RecordingDetailPage() {
                    })}
                </Stack>
              ) : (
-                <Text c="dimmed">No tasks created during this meeting.</Text>
+                <Text c="dimmed">
+                  {showMyTodosOnly ? "You don't have any tasks in this meeting." : "No tasks created during this meeting."}
+                </Text>
              )}
           </Tabs.Panel>
         </Tabs>

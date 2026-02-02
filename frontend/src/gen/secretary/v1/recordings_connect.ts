@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { GetRecordingRequest, GetRecordingResponse, ListRecordingsRequest, ListRecordingsResponse } from "./recordings_pb.js";
+import { DeleteRecordingRequest, DeleteRecordingResponse, GetRecordingRequest, GetRecordingResponse, ListRecordingsRequest, ListRecordingsResponse } from "./recordings_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -28,6 +28,15 @@ export const RecordingsService = {
       name: "GetRecording",
       I: GetRecordingRequest,
       O: GetRecordingResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc secretary.v1.RecordingsService.DeleteRecording
+     */
+    deleteRecording: {
+      name: "DeleteRecording",
+      I: DeleteRecordingRequest,
+      O: DeleteRecordingResponse,
       kind: MethodKind.Unary,
     },
   }
