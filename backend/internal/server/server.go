@@ -93,7 +93,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Try to serve static file
 	path := r.URL.Path
 	if path == "/" {
-		path = "index.html"
+		path = "/index.html"
 	}
 	// dist/ is the root of our embedded FS
 	fullPath := "dist" + path

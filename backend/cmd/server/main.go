@@ -52,7 +52,7 @@ func main() {
 	srv := server.New(pool, []byte(jwtSecret), time.Duration(ttlHours)*time.Hour)
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           srv.Routes(),
+		Handler:           srv,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
