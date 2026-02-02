@@ -6,9 +6,16 @@
 FROM golang:1.25-alpine AS generator
 WORKDIR /workspace
 
-# Install buf and sqlc
+# Install Go tools
 RUN go install github.com/bufbuild/buf/cmd/buf@v1.47.2 && \
-    go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0
+    go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.27.0 && \
+    go install google.golang.org/protobuf/cmd/protoc-gen-go@latest && \
+    go install connectrpc.com/connect/cmd/protoc-gen-connect-go@latest
+
+# Install Node.js and plugins for frontend generation
+# We use npm here because it's native to Alpine and stable for installing the generator plugins
+RUN apk add --no-cache nodejs npm && \
+    npm install -g @bufbuild/protoc-gen-es @connectrpc/protoc-gen-connect-es
 
 # Copy necessary files for generation
 COPY buf.gen.frontend.yaml .
