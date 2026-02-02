@@ -6,8 +6,8 @@ import { AlertCircle, Plus, Filter } from 'lucide-react';
 import { todosClient, usersClient } from '../lib/client';
 import { getUser } from '../lib/auth';
 import { getStatusConfig } from '../lib/status';
-import { ListTodosResponse, Todo } from '../gen/secretary/v1/todos_pb';
-import { ListUsersResponse } from '../gen/secretary/v1/users_pb';
+import type { ListTodosResponse, Todo } from '../gen/secretary/v1/todos_pb';
+import type { ListUsersResponse } from '../gen/secretary/v1/users_pb';
 import { CreateTodoModal } from '../components/CreateTodoModal';
 import { EditTodoDrawer } from '../components/EditTodoDrawer';
 

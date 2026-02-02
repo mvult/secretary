@@ -22,7 +22,7 @@ export function RecordingDetailPage() {
   const [showMyTodosOnly, setShowMyTodosOnly] = useState(false);
   const currentUser = getUser();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
+  // const queryClient = useQueryClient();
 
   const deleteRecordingMutation = useMutation({
     mutationFn: async () => {
