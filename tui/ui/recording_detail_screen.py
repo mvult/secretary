@@ -363,7 +363,7 @@ class RecordingDetailScreen(Screen):
                     self.recording_id, name=new_name
                 )
                 self.recording.name = new_name
-                self.update_display()
+                await self.update_display()
                 logging.info(f"Renamed recording {self.recording_id} to '{new_name}'")
             except Exception as e:
                 logging.error(f"Error renaming recording {self.recording_id}: {e}")
@@ -428,7 +428,10 @@ class RecordingDetailScreen(Screen):
         if not self.is_mounted:
             return
 
-        title_widget = self.query_one("#recording-title", Static)
+        try:
+            title_widget = self.query_one("#recording-title", Static)
+        except Exception:
+            return
 
         try:
             result = task.result()
@@ -557,8 +560,11 @@ class RecordingDetailScreen(Screen):
         if not self.is_mounted:
             return
 
-        title_widget = self.query_one("#recording-title", Static)
-        storage_widget = self.query_one("#storage-status", Static)
+        try:
+            title_widget = self.query_one("#recording-title", Static)
+            storage_widget = self.query_one("#storage-status", Static)
+        except Exception:
+            return
 
         try:
             result = task.result()
@@ -668,7 +674,10 @@ class RecordingDetailScreen(Screen):
         if not self.is_mounted:
             return
 
-        title_widget = self.query_one("#recording-title", Static)
+        try:
+            title_widget = self.query_one("#recording-title", Static)
+        except Exception:
+            return
 
         try:
             result = task.result()

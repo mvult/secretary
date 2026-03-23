@@ -13,9 +13,21 @@ import logging
 class StorageManager:
     def __init__(self):
         self.nas_dir = "/Volumes/s3/sec-recordings"
-        self.azure_storage = AzureBlobStorage(
-            os.getenv("AZURE_CONNECTION_STRING")
-        )
+        conn_str = os.getenv("AZURE_CONNECTION_STRING")
+        if not conn_str:
+            logging.warning("AZURE_CONNECTION_STRING is not set")
+            # We can still initialize, but cloud ops will fail. 
+            # Or we can raise. Given the usage, maybe better to warn?
+            # Existing code passed None which caused AzureBlobStorage to have None connection_string.
+            # My updated AzureBlobStorage raises ValueError on None.
+            # So we should probably handle it gracefully here if we want the app to start without cloud.
+            self.azure_storage = None
+        else:
+            try:
+                self.azure_storage = AzureBlobStorage(conn_str)
+            except ValueError as e:
+                logging.error(f"Failed to initialize Azure Storage: {e}")
+                self.azure_storage = None
 
     def _download_from_cloud_sync(self, url: str, dest_path: str) -> bool:
         response = requests.get(url, stream=True)
@@ -169,6 +181,9 @@ class StorageManager:
     
     async def toggle_cloud_storage(self, recording) -> Dict[str, Any]:
         """Toggle cloud storage for a recording"""
+        if not self.azure_storage:
+            return {"success": False, "error": "Azure Storage not configured"}
+
         has_cloud = recording.audio_url and recording.audio_url.startswith('https://')
         
         if has_cloud:
@@ -235,15 +250,18 @@ class StorageManager:
         
         # Delete from cloud
         if recording.audio_url and recording.audio_url.startswith('https://'):
-            try:
-                blob_name = f"{recording.id}_{recording.name}.wav"
-                result = await self.azure_storage.delete_file(blob_name)
-                if result['success']:
-                    deleted_locations.append("cloud")
-                else:
-                    errors.append(f"Failed to delete cloud file: {result.get('error', 'Unknown error')}")
-            except Exception as e:
-                errors.append(f"Failed to delete cloud file: {e}")
+            if self.azure_storage:
+                try:
+                    blob_name = f"{recording.id}_{recording.name}.wav"
+                    result = await self.azure_storage.delete_file(blob_name)
+                    if result['success']:
+                        deleted_locations.append("cloud")
+                    else:
+                        errors.append(f"Failed to delete cloud file: {result.get('error', 'Unknown error')}")
+                except Exception as e:
+                    errors.append(f"Failed to delete cloud file: {e}")
+            else:
+                errors.append("Azure Storage not configured")
         
         return {
             "deleted_locations": deleted_locations,

@@ -15,12 +15,18 @@ load_dotenv()
 
 class AzureBlobStorage:
     def __init__(self, connection_string: str):
+        if not connection_string:
+            raise ValueError("Azure Storage connection string is empty or None")
+
         self.connection_string = connection_string
         self.account_name = None
         self.account_key = None
         self.endpoint_suffix = "core.windows.net"
         
         self._parse_connection_string()
+        
+        if not self.account_name or not self.account_key:
+            raise ValueError("Invalid Azure Connection String: Missing AccountName or AccountKey")
     
     def _parse_connection_string(self):
         """Parse Azure connection string to extract account name and key"""

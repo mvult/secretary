@@ -62,6 +62,12 @@ func (s *Server) Routes() http.Handler {
 	userPath, userHandler := secretaryv1connect.NewUsersServiceHandler(s)
 	mux.Handle(userPath, s.authMiddleware(userHandler))
 
+	workspacePath, workspaceHandler := secretaryv1connect.NewWorkspacesServiceHandler(s)
+	mux.Handle(workspacePath, s.authMiddleware(workspaceHandler))
+
+	documentPath, documentHandler := secretaryv1connect.NewDocumentsServiceHandler(s)
+	mux.Handle(documentPath, s.authMiddleware(documentHandler))
+
 	c := cors.New(cors.Options{
 		AllowedOrigins: []string{"*"},
 		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},

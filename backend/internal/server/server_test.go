@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,8 @@ import (
 	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
 	"github.com/mvult/secretary/backend/gen/secretary/v1/secretaryv1connect"
 	"golang.org/x/crypto/bcrypt"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRecordingsListAndGet(t *testing.T) {
@@ -182,6 +185,143 @@ func TestTodoLifecycle(t *testing.T) {
 	deleteResp.Body.Close()
 }
 
+func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	userID, email, password := insertUser(t, ctx, pool)
+	defer cleanupUser(t, ctx, pool, userID)
+
+	srv := New(pool, []byte("test-secret"), 24*time.Hour)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	token := login(t, ts.URL, email, password)
+
+	workspaceURL := ts.URL + secretaryv1connect.WorkspacesServiceCreateWorkspaceProcedure
+	workspaceResp, err := authPost(workspaceURL, token, secretaryv1.CreateWorkspaceRequest{Name: "Native Sync"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if workspaceResp.StatusCode != http.StatusOK {
+		t.Fatalf("create workspace status: %d", workspaceResp.StatusCode)
+	}
+	var workspacePayload secretaryv1.CreateWorkspaceResponse
+	if err := decodeProtoBody(workspaceResp.Body, &workspacePayload); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	workspaceResp.Body.Close()
+	workspaceID := workspacePayload.Workspace.Id
+	defer cleanupWorkspace(t, ctx, pool, workspaceID)
+
+	saveURL := ts.URL + secretaryv1connect.DocumentsServiceSaveDocumentProcedure
+	createResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{
+		Document: &secretaryv1.Document{
+			ClientKey:   "note-local-1",
+			WorkspaceId: workspaceID,
+			Kind:        "note",
+			Title:       "Persistence flow",
+			Blocks: []*secretaryv1.Block{
+				{ClientKey: "block-a", SortOrder: 1, Text: "Top level", Status: "note"},
+				{ClientKey: "block-b", ParentClientKey: "block-a", SortOrder: 2, Text: "Nested", Status: "todo"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("save document: %v", err)
+	}
+	if createResp.StatusCode != http.StatusOK {
+		t.Fatalf("save document status: %d", createResp.StatusCode)
+	}
+	var createPayload secretaryv1.SaveDocumentResponse
+	if err := decodeProtoBody(createResp.Body, &createPayload); err != nil {
+		t.Fatalf("decode save document: %v", err)
+	}
+	createResp.Body.Close()
+	if createPayload.Document == nil || createPayload.Document.Id == 0 {
+		t.Fatalf("expected saved document id")
+	}
+	if len(createPayload.Document.Blocks) != 2 {
+		t.Fatalf("expected 2 saved blocks, got %d", len(createPayload.Document.Blocks))
+	}
+	if createPayload.Document.Blocks[1].ParentBlockId != createPayload.Document.Blocks[0].Id {
+		t.Fatalf("expected nested block parent to be persisted")
+	}
+
+	updatedResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{
+		Document: &secretaryv1.Document{
+			Id:          createPayload.Document.Id,
+			ClientKey:   createPayload.Document.ClientKey,
+			WorkspaceId: workspaceID,
+			Kind:        "note",
+			Title:       "Persistence flow updated",
+			Blocks: []*secretaryv1.Block{
+				{
+					Id:        createPayload.Document.Blocks[0].Id,
+					ClientKey: createPayload.Document.Blocks[0].ClientKey,
+					SortOrder: 1,
+					Text:      "Top level updated",
+					Status:    "doing",
+				},
+				{
+					ClientKey: "block-c",
+					SortOrder: 2,
+					Text:      "Fresh second block",
+					Status:    "done",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update document: %v", err)
+	}
+	if updatedResp.StatusCode != http.StatusOK {
+		t.Fatalf("update document status: %d", updatedResp.StatusCode)
+	}
+	var updatedPayload secretaryv1.SaveDocumentResponse
+	if err := decodeProtoBody(updatedResp.Body, &updatedPayload); err != nil {
+		t.Fatalf("decode updated document: %v", err)
+	}
+	updatedResp.Body.Close()
+	if len(updatedPayload.Document.Blocks) != 2 {
+		t.Fatalf("expected 2 blocks after reconcile, got %d", len(updatedPayload.Document.Blocks))
+	}
+	if updatedPayload.Document.Blocks[0].Text != "Top level updated" {
+		t.Fatalf("expected updated text, got %q", updatedPayload.Document.Blocks[0].Text)
+	}
+
+	listURL := ts.URL + secretaryv1connect.DocumentsServiceListDocumentsProcedure
+	listResp, err := authPost(listURL, token, secretaryv1.ListDocumentsRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("list documents: %v", err)
+	}
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list documents status: %d", listResp.StatusCode)
+	}
+	var listPayload secretaryv1.ListDocumentsResponse
+	if err := decodeProtoBody(listResp.Body, &listPayload); err != nil {
+		t.Fatalf("decode list documents: %v", err)
+	}
+	listResp.Body.Close()
+	if len(listPayload.Documents) != 1 {
+		t.Fatalf("expected 1 document, got %d", len(listPayload.Documents))
+	}
+	if listPayload.Documents[0].Title != "Persistence flow updated" {
+		t.Fatalf("expected updated title, got %q", listPayload.Documents[0].Title)
+	}
+	if len(listPayload.Documents[0].Blocks) != 2 {
+		t.Fatalf("expected 2 blocks from list, got %d", len(listPayload.Documents[0].Blocks))
+	}
+}
+
 func insertUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int64, string, string) {
 	t.Helper()
 	var id int64
@@ -191,6 +331,13 @@ func insertUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int64, s
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
+	_, _ = pool.Exec(ctx, `
+    SELECT setval(
+      pg_get_serial_sequence('"user"', 'id'),
+      GREATEST(COALESCE((SELECT MAX(id) FROM "user"), 0), 1),
+      true
+    )
+  `)
 	err = pool.QueryRow(ctx, `
     INSERT INTO "user" (first_name, last_name, role, email, password_hash)
     VALUES ($1, $2, $3, $4, $5)
@@ -230,6 +377,11 @@ func cleanupRecording(t *testing.T, ctx context.Context, pool *pgxpool.Pool, rec
 func cleanupUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool, userID int64) {
 	t.Helper()
 	_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, userID)
+}
+
+func cleanupWorkspace(t *testing.T, ctx context.Context, pool *pgxpool.Pool, workspaceID int64) {
+	t.Helper()
+	_, _ = pool.Exec(ctx, `DELETE FROM workspace WHERE id = $1`, workspaceID)
 }
 
 func createTodo(t *testing.T, baseURL string, token string, req secretaryv1.CreateTodoRequest) *secretaryv1.Todo {
@@ -282,4 +434,12 @@ func login(t *testing.T, baseURL, email, password string) string {
 		t.Fatalf("missing token")
 	}
 	return payload.Token
+}
+
+func decodeProtoBody(body io.ReadCloser, target proto.Message) error {
+	data, err := io.ReadAll(body)
+	if err != nil {
+		return err
+	}
+	return protojson.Unmarshal(data, target)
 }

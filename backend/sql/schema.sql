@@ -97,6 +97,23 @@ CREATE TABLE "public"."user" (
   "password_hash" text NULL,
   PRIMARY KEY ("id")
 );
+-- Create "workspace" table
+CREATE TABLE "public"."workspace" (
+  "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  "name" text NOT NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id")
+);
+-- Create "workspace_user_rel" table
+CREATE TABLE "public"."workspace_user_rel" (
+  "workspace_id" integer NOT NULL,
+  "user_id" integer NOT NULL,
+  "role" text NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("workspace_id", "user_id"),
+  CONSTRAINT "workspace_user_rel_user_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "workspace_user_rel_workspace_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
+);
 -- Create "speaker_to_user" table
 CREATE TABLE "public"."speaker_to_user" (
   "recording_id" integer NOT NULL,
@@ -121,6 +138,37 @@ CREATE TABLE "public"."recording" (
   "archived" boolean NULL,
   PRIMARY KEY ("id")
 );
+-- Create "document" table
+CREATE TABLE "public"."document" (
+  "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  "workspace_id" integer NOT NULL,
+  "kind" text NOT NULL,
+  "title" text NOT NULL,
+  "journal_date" date NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id"),
+  CONSTRAINT "document_workspace_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "document_kind_check" CHECK (kind = ANY (ARRAY['journal'::text, 'note'::text])),
+  CONSTRAINT "document_kind_date_check" CHECK (((kind = 'journal'::text) AND (journal_date IS NOT NULL)) OR ((kind = 'note'::text) AND (journal_date IS NULL))),
+  CONSTRAINT "document_workspace_journal_date_key" UNIQUE ("workspace_id", "journal_date")
+);
+-- Create "block" table
+CREATE TABLE "public"."block" (
+  "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  "document_id" integer NOT NULL,
+  "parent_block_id" integer NULL,
+  "sort_order" integer NOT NULL,
+  "text" text NOT NULL,
+  "status" text NOT NULL DEFAULT 'note',
+  "todo_id" integer NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id"),
+  CONSTRAINT "block_document_fk" FOREIGN KEY ("document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "block_parent_fk" FOREIGN KEY ("parent_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "block_status_check" CHECK (status = ANY (ARRAY['note'::text, 'todo'::text, 'doing'::text, 'done'::text]))
+);
 -- Create "todo" table
 CREATE TABLE "public"."todo" (
   "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
@@ -135,6 +183,14 @@ CREATE TABLE "public"."todo" (
   CONSTRAINT "todo_user" FOREIGN KEY ("user_id") REFERENCES "public"."user" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION,
   CONSTRAINT "updated_at_recording_id" FOREIGN KEY ("updated_at_recording_id") REFERENCES "public"."recording" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION
 );
+-- Modify "block" table
+ALTER TABLE "public"."block" ADD CONSTRAINT "block_todo_fk" FOREIGN KEY ("todo_id") REFERENCES "public"."todo" ("id") ON UPDATE NO ACTION ON DELETE SET NULL, ADD CONSTRAINT "block_document_parent_sort_key" UNIQUE ("document_id", "parent_block_id", "sort_order");
+-- Create index "block_document_idx" to table: "block"
+CREATE INDEX "block_document_idx" ON "public"."block" ("document_id");
+-- Create index "block_parent_idx" to table: "block"
+CREATE INDEX "block_parent_idx" ON "public"."block" ("parent_block_id");
+-- Create index "block_todo_idx" to table: "block"
+CREATE INDEX "block_todo_idx" ON "public"."block" ("todo_id");
 -- Create "todo_history" table
 CREATE TABLE "public"."todo_history" (
   "id" bigserial NOT NULL,

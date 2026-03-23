@@ -40,7 +40,7 @@ func main() {
 	if jwtSecret == "" {
 		log.Fatal("JWT_SECRET is required")
 	}
-	ttlHours := 168
+	ttlHours := 24 * 30 * 6
 	if v := os.Getenv("JWT_TTL_HOURS"); v != "" {
 		parsed, err := strconv.Atoi(v)
 		if err != nil || parsed <= 0 {

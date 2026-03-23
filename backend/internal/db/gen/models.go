@@ -195,6 +195,28 @@ type Argument struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type Block struct {
+	ID            int32
+	DocumentID    int32
+	ParentBlockID pgtype.Int4
+	SortOrder     int32
+	Text          string
+	Status        string
+	TodoID        pgtype.Int4
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+}
+
+type Document struct {
+	ID          int32
+	WorkspaceID int32
+	Kind        string
+	Title       string
+	JournalDate pgtype.Date
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type Issue struct {
 	ID        int32
 	TopicID   int32
@@ -292,4 +314,17 @@ type User struct {
 	Role         pgtype.Text
 	Email        pgtype.Text
 	PasswordHash pgtype.Text
+}
+
+type Workspace struct {
+	ID        int32
+	Name      string
+	CreatedAt pgtype.Timestamptz
+}
+
+type WorkspaceUserRel struct {
+	WorkspaceID int32
+	UserID      int32
+	Role        pgtype.Text
+	CreatedAt   pgtype.Timestamptz
 }
