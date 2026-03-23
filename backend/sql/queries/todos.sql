@@ -5,14 +5,20 @@ SELECT
   t."desc",
   t.status,
   t.user_id,
+  t.workspace_id,
+  t.source_kind,
+  t.source_document_id,
+  t.source_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
+  t.created_at,
+  t.updated_at,
   r.name as recording_name,
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
 WHERE t.user_id = $1
-ORDER BY t.id DESC;
+ORDER BY t.created_at DESC, t.id DESC;
 
 -- name: ListTodosByRecording :many
 SELECT
@@ -21,14 +27,20 @@ SELECT
   t."desc",
   t.status,
   t.user_id,
+  t.workspace_id,
+  t.source_kind,
+  t.source_document_id,
+  t.source_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
+  t.created_at,
+  t.updated_at,
   r.name as recording_name,
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
 WHERE t.created_at_recording_id = $1
-ORDER BY t.id DESC;
+ORDER BY t.created_at DESC, t.id DESC;
 
 -- name: GetTodo :one
 SELECT
@@ -37,8 +49,14 @@ SELECT
   t."desc",
   t.status,
   t.user_id,
+  t.workspace_id,
+  t.source_kind,
+  t.source_document_id,
+  t.source_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
+  t.created_at,
+  t.updated_at,
   r.name as recording_name,
   r.created_at as recording_date
 FROM todo t
@@ -54,7 +72,7 @@ INSERT INTO todo (
   created_at_recording_id,
   updated_at_recording_id
 ) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, "desc", status, user_id, created_at_recording_id, updated_at_recording_id;
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
 
 -- name: UpdateTodo :one
 UPDATE todo
@@ -63,9 +81,10 @@ SET
   "desc" = $3,
   status = $4,
   user_id = $5,
-  updated_at_recording_id = $6
+  updated_at_recording_id = $6,
+  updated_at = now()
 WHERE id = $1
-RETURNING id, name, "desc", status, user_id, created_at_recording_id, updated_at_recording_id;
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
 
 -- name: DeleteTodo :exec
 DELETE FROM todo WHERE id = $1;

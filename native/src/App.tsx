@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createWorkspace, listDocuments, listWorkspaces, login, saveDocument } from './lib/backend';
+import { createWorkspace, listDocuments, listTodos, listWorkspaces, login, saveDocument, updateTodo } from './lib/backend';
 import { OutlineEditor } from './features/outline/OutlineEditor';
 import { documentToOutlinePage, outlinePageToDocument } from './features/outline/remote';
 import { useOutlineState } from './features/outline/state';
@@ -14,6 +14,9 @@ import {
   getPagesForPersistence,
 } from './features/outline/tree';
 import type { OutlinePage } from './features/outline/types';
+import type { BackendTodo } from './lib/backend';
+
+type TodoFilter = 'all' | 'open' | 'done' | 'blocked' | 'skipped';
 
 const SETTINGS_STORAGE_KEY = 'secretary-native-settings';
 
@@ -21,8 +24,72 @@ interface StoredSettings {
   backendUrl?: string;
   email?: string;
   token?: string;
+  userId?: number;
   workspaceId?: number;
   centerColumn?: boolean;
+}
+
+function todoStatusTone(status: BackendTodo['status']) {
+  switch (status) {
+    case 'not_started':
+      return 'todo';
+    case 'partial':
+      return 'doing';
+    default:
+      return status;
+  }
+}
+
+function formatTodoTimestamp(todo: BackendTodo) {
+  const value = todo.updatedAt || todo.createdAt || todo.createdAtRecordingDate;
+  if (!value) {
+    return 'No timestamp';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function todoStatusToNodeStatus(status: BackendTodo['status']) {
+  switch (status) {
+    case 'not_started':
+      return 'todo';
+    case 'partial':
+      return 'doing';
+    case 'done':
+      return 'done';
+    case 'blocked':
+      return 'blocked';
+    case 'skipped':
+      return 'skipped';
+    default:
+      return 'todo';
+  }
+}
+
+function matchesTodoFilter(todo: BackendTodo, filter: TodoFilter) {
+  switch (filter) {
+    case 'open':
+      return todo.status === 'not_started' || todo.status === 'partial';
+    case 'done':
+      return todo.status === 'done';
+    case 'blocked':
+      return todo.status === 'blocked';
+    case 'skipped':
+      return todo.status === 'skipped';
+    case 'all':
+    default:
+      return true;
+  }
 }
 
 function pageHash(page: OutlinePage) {
@@ -53,7 +120,12 @@ function App() {
   const [centerColumn, setCenterColumn] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const [authToken, setAuthToken] = useState('');
+  const [userId, setUserId] = useState<number | null>(null);
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+  const [todos, setTodos] = useState<BackendTodo[]>([]);
+  const [todoFilter, setTodoFilter] = useState<TodoFilter>('all');
+  const [updatingTodoId, setUpdatingTodoId] = useState<number | null>(null);
+  const [isLoadingTodos, setIsLoadingTodos] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [initialLoadResolved, setInitialLoadResolved] = useState(false);
@@ -68,6 +140,7 @@ function App() {
   const page = getCurrentPage(state);
   const journalPage = getJournalPage(state);
   const journals = getJournalPages(state);
+  const filteredTodos = useMemo(() => todos.filter((todo) => matchesTodoFilter(todo, todoFilter)), [todoFilter, todos]);
   const matches = useMemo(() => findMatchingNotes(state, searchQuery), [searchQuery, state]);
   const topMatch = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
@@ -96,6 +169,7 @@ function App() {
       setBackendUrl(parsed.backendUrl ?? 'http://localhost:8080');
       setEmail(parsed.email ?? '');
       setAuthToken(parsed.token ?? '');
+      setUserId(parsed.userId ?? null);
       setWorkspaceId(parsed.workspaceId ?? null);
       setCenterColumn(parsed.centerColumn ?? false);
     } catch {
@@ -114,11 +188,12 @@ function App() {
       backendUrl,
       email,
       token: authToken || undefined,
+      userId: userId ?? undefined,
       workspaceId: workspaceId ?? undefined,
       centerColumn,
     };
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
-  }, [authToken, backendUrl, bootstrapped, centerColumn, email, workspaceId]);
+  }, [authToken, backendUrl, bootstrapped, centerColumn, email, userId, workspaceId]);
 
   useEffect(() => {
     if (!bootstrapped) {
@@ -144,6 +219,54 @@ function App() {
       hashes.set(nextPage.id, pageHash(nextPage));
     }
     lastSavedHashesRef.current = hashes;
+  }, [dispatch]);
+
+  const loadTodoList = useCallback(async (tokenOverride?: string, userIdOverride?: number | null) => {
+    const nextToken = tokenOverride ?? authToken;
+    const nextUserId = userIdOverride ?? userId;
+    if (!backendUrl.trim() || !nextToken || !nextUserId) {
+      setTodos([]);
+      return;
+    }
+
+    setIsLoadingTodos(true);
+    try {
+      const nextTodos = await listTodos(backendUrl, nextToken, nextUserId);
+      setTodos(nextTodos);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'Todo refresh failed.');
+    } finally {
+      setIsLoadingTodos(false);
+    }
+  }, [authToken, backendUrl, userId]);
+
+  const syncTodoIntoPages = useCallback((todo: BackendTodo) => {
+    if (!todo.sourceDocumentId || !todo.sourceBlockId) {
+      return;
+    }
+    const page = stateRef.current.pages.find((entry) => entry.backendId === todo.sourceDocumentId);
+    if (!page) {
+      return;
+    }
+    const node = page.nodes.find((entry) => entry.backendId === todo.sourceBlockId || entry.todoId === todo.id);
+    if (!node) {
+      return;
+    }
+    const nextStatus = todoStatusToNodeStatus(todo.status);
+    if (node.status === nextStatus) {
+      return;
+    }
+    dispatch({
+      type: 'mergeRemotePage',
+      page: {
+        ...page,
+        nodes: page.nodes.map((entry) => (
+          entry.id === node.id
+            ? { ...entry, status: nextStatus, todoId: todo.id, updatedAt: todo.updatedAt || entry.updatedAt }
+            : entry
+        )),
+      },
+    });
   }, [dispatch]);
 
   const syncFromBackend = useCallback(async (tokenOverride?: string, workspaceOverride?: number | null) => {
@@ -210,6 +333,13 @@ function App() {
 
     dispatch({ type: 'createTodayJournal' });
   }, [bootstrapped, dispatch, initialLoadResolved, state.pages.length]);
+
+  useEffect(() => {
+    if (state.activeView !== 'todos') {
+      return;
+    }
+    void loadTodoList();
+  }, [loadTodoList, state.activeView]);
 
   const flushDirtyPages = useCallback(async () => {
     if (!syncEnabled) {
@@ -304,7 +434,7 @@ function App() {
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings')) {
+      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos')) {
         event.preventDefault();
         setSearchQuery('');
         dispatchAfterFlush({ type: 'selectJournal' });
@@ -325,6 +455,12 @@ function App() {
         event.preventDefault();
         setSearchQuery('');
         dispatchAfterFlush({ type: 'openSearch' });
+        return;
+      }
+
+      if (event.key.toLowerCase() === 't') {
+        event.preventDefault();
+        dispatchAfterFlush({ type: 'openTodos' });
         return;
       }
 
@@ -488,9 +624,11 @@ function App() {
       const response = await login(backendUrl, email, password);
       bootSyncRef.current = true;
       setAuthToken(response.token);
+      setUserId(response.user.id);
       setPassword('');
       setSyncMessage(`Logged in as ${response.user.firstName || email}.`);
       await syncFromBackend(response.token, null);
+      await loadTodoList(response.token, response.user.id);
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Login failed.');
     } finally {
@@ -502,6 +640,7 @@ function App() {
     try {
       await flushDirtyPages();
       await syncFromBackend();
+      await loadTodoList();
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Sync failed.');
     }
@@ -509,9 +648,59 @@ function App() {
 
   const handleLogout = () => {
     setAuthToken('');
+    setUserId(null);
     setWorkspaceId(null);
+    setTodos([]);
     setSyncMessage('Logged out.');
     bootSyncRef.current = false;
+  };
+
+  const openTodoSource = (todo: BackendTodo) => {
+    if (!todo.sourceDocumentId) {
+      return;
+    }
+    const sourcePage = state.pages.find((entry) => entry.backendId === todo.sourceDocumentId);
+    if (!sourcePage) {
+      setSyncMessage('Source page is not loaded locally yet. Sync to refresh documents.');
+      return;
+    }
+
+    if (sourcePage.kind === 'note') {
+      dispatchAfterFlush({ type: 'selectNote', pageId: sourcePage.id });
+    } else {
+      dispatchAfterFlush({ type: 'selectJournalPage', pageId: sourcePage.id });
+    }
+
+    if (!todo.sourceBlockId) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      const node = stateRef.current.pages
+        .find((entry) => entry.id === sourcePage.id)
+        ?.nodes.find((entry) => entry.backendId === todo.sourceBlockId || entry.todoId === todo.id);
+      if (!node) {
+        return;
+      }
+      dispatch({ type: 'focus', nodeId: node.id });
+      document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)?.scrollIntoView({ block: 'center' });
+    }, 0);
+  };
+
+  const handleTodoStatusChange = async (todo: BackendTodo, nextStatus: BackendTodo['status']) => {
+    if (!authToken || !userId || nextStatus === todo.status) {
+      return;
+    }
+    setUpdatingTodoId(todo.id);
+    try {
+      const savedTodo = await updateTodo(backendUrl, authToken, { ...todo, status: nextStatus, userId });
+      setTodos((current) => current.map((entry) => (entry.id === savedTodo.id ? savedTodo : entry)));
+      syncTodoIntoPages(savedTodo);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'Todo update failed.');
+    } finally {
+      setUpdatingTodoId(null);
+    }
   };
 
   return (
@@ -661,6 +850,85 @@ function App() {
           </section>
         ) : null}
 
+        {state.activeView === 'todos' ? (
+          <section className="todos-shell">
+            <header className="page-header">
+              <p className="page-date">Canonical tasks</p>
+              <div className="page-heading-row">
+                <h2 className="page-title settings-title">Todos</h2>
+                <span className="page-kind">{filteredTodos.length}</span>
+              </div>
+            </header>
+
+            <div className="search-results">
+              <div className="todo-filter-row">
+                {(['all', 'open', 'done', 'blocked', 'skipped'] as TodoFilter[]).map((filter) => (
+                  <button
+                    key={filter}
+                    type="button"
+                    className="todo-filter-button"
+                    data-active={todoFilter === filter}
+                    onClick={() => setTodoFilter(filter)}
+                  >
+                    {filter}
+                  </button>
+                ))}
+              </div>
+              {!authToken || !userId ? (
+                <div className="search-empty">Log in again to load your todos.</div>
+              ) : isLoadingTodos ? (
+                <div className="search-empty">Loading todos...</div>
+              ) : filteredTodos.length === 0 ? (
+                <div className="search-empty">No todos yet. Mark a block as a task and it will show up here.</div>
+              ) : (
+                filteredTodos.map((todo) => (
+                  <article key={todo.id} className="todo-card">
+                    <div className="todo-card-header">
+                      <div>
+                        <h3 className="search-result-title">{todo.name}</h3>
+                        <p className="todo-card-meta">{formatTodoTimestamp(todo)}</p>
+                      </div>
+                      <label
+                        className="todo-status-control"
+                        data-status={todoStatusTone(todo.status)}
+                        data-busy={updatingTodoId === todo.id}
+                      >
+                        <span className="todo-status-dot" aria-hidden="true" />
+                        <select
+                          className="todo-status-select"
+                          value={todo.status}
+                          disabled={updatingTodoId === todo.id}
+                          aria-label={`Set status for ${todo.name}`}
+                          onChange={(event) => void handleTodoStatusChange(todo, event.target.value as BackendTodo['status'])}
+                        >
+                          <option value="not_started">Todo</option>
+                          <option value="partial">Doing</option>
+                          <option value="done">Done</option>
+                          <option value="blocked">Blocked</option>
+                          <option value="skipped">Skipped</option>
+                        </select>
+                        <span className="todo-status-caret" aria-hidden="true">
+                          v
+                        </span>
+                      </label>
+                    </div>
+                    {todo.desc ? <p className="todo-card-desc">{todo.desc}</p> : null}
+                    <div className="todo-card-footer">
+                      <span className="todo-card-meta">#{todo.id}</span>
+                      {todo.sourceDocumentId ? (
+                        <button type="button" className="todo-link-button" onClick={() => openTodoSource(todo)}>
+                          Open source
+                        </button>
+                      ) : null}
+                      {todo.createdAtRecordingName ? <span className="todo-card-meta">From {todo.createdAtRecordingName}</span> : null}
+                    </div>
+                  </article>
+                ))
+              )}
+            </div>
+          </section>
+        ) : null}
+
         {state.activeView === 'settings' ? (
           <section className="settings-shell">
             <header className="page-header">
@@ -731,7 +999,7 @@ function App() {
 
               <div className="settings-hotkeys">
                 <span className="settings-label">Hotkeys</span>
-                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+,` settings. `Esc` returns to journals from overlays.</p>
+                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+T` todos. `Cmd+,` settings. `Esc` returns to journals from overlays.</p>
               </div>
 
               <div className="settings-actions">

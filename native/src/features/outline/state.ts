@@ -16,6 +16,7 @@ import {
   moveSelection,
   pasteBelow,
   openSearchView,
+  openTodosView,
   openSettingsView,
   openAbove,
   openBelow,
@@ -55,6 +56,7 @@ export type OutlineAction =
   | { type: 'selectJournalPage'; pageId: string }
   | { type: 'selectNote'; pageId: string }
   | { type: 'openSearch' }
+  | { type: 'openTodos' }
   | { type: 'openSettings' }
   | { type: 'createNote'; title?: string }
   | { type: 'createTodayJournal' }
@@ -139,6 +141,8 @@ function reducer(state: OutlineState, action: OutlineAction): OutlineState {
       return selectNote(currentState, action.pageId);
     case 'openSearch':
       return openSearchView(currentState);
+    case 'openTodos':
+      return openTodosView(currentState);
     case 'openSettings':
       return openSettingsView(currentState);
     case 'createNote':

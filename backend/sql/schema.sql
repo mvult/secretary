@@ -167,7 +167,7 @@ CREATE TABLE "public"."block" (
   PRIMARY KEY ("id"),
   CONSTRAINT "block_document_fk" FOREIGN KEY ("document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "block_parent_fk" FOREIGN KEY ("parent_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
-  CONSTRAINT "block_status_check" CHECK (status = ANY (ARRAY['note'::text, 'todo'::text, 'doing'::text, 'done'::text]))
+  CONSTRAINT "block_status_check" CHECK (status = ANY (ARRAY['note'::text, 'todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]))
 );
 -- Create "todo" table
 CREATE TABLE "public"."todo" (
@@ -176,11 +176,20 @@ CREATE TABLE "public"."todo" (
   "desc" text NULL,
   "status" text NULL,
   "user_id" integer NULL,
+  "workspace_id" integer NULL,
+  "source_kind" text NOT NULL DEFAULT 'manual',
+  "source_document_id" integer NULL,
+  "source_block_id" integer NULL,
   "created_at_recording_id" integer NULL,
   "updated_at_recording_id" integer NULL,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("id"),
   CONSTRAINT "created_session_fk" FOREIGN KEY ("created_at_recording_id") REFERENCES "public"."recording" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT "todo_source_document_fk" FOREIGN KEY ("source_document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "todo_user" FOREIGN KEY ("user_id") REFERENCES "public"."user" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT "todo_workspace_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT "todo_source_kind_check" CHECK (source_kind = ANY (ARRAY['manual'::text, 'block'::text, 'recording'::text, 'llm'::text])),
   CONSTRAINT "updated_at_recording_id" FOREIGN KEY ("updated_at_recording_id") REFERENCES "public"."recording" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION
 );
 -- Modify "block" table
@@ -191,6 +200,10 @@ CREATE INDEX "block_document_idx" ON "public"."block" ("document_id");
 CREATE INDEX "block_parent_idx" ON "public"."block" ("parent_block_id");
 -- Create index "block_todo_idx" to table: "block"
 CREATE INDEX "block_todo_idx" ON "public"."block" ("todo_id");
+-- Create index "todo_source_block_idx" to table: "todo"
+CREATE UNIQUE INDEX "todo_source_block_idx" ON "public"."todo" ("source_block_id") WHERE (source_block_id IS NOT NULL);
+-- Create index "todo_workspace_idx" to table: "todo"
+CREATE INDEX "todo_workspace_idx" ON "public"."todo" ("workspace_id");
 -- Create "todo_history" table
 CREATE TABLE "public"."todo_history" (
   "id" bigserial NOT NULL,

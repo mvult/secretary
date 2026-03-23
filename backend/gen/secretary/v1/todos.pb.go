@@ -90,6 +90,11 @@ type Todo struct {
 	UpdatedAtRecordingId   int64                  `protobuf:"varint,7,opt,name=updated_at_recording_id,json=updatedAtRecordingId,proto3" json:"updated_at_recording_id,omitempty"`
 	CreatedAtRecordingName string                 `protobuf:"bytes,8,opt,name=created_at_recording_name,json=createdAtRecordingName,proto3" json:"created_at_recording_name,omitempty"`
 	CreatedAtRecordingDate string                 `protobuf:"bytes,9,opt,name=created_at_recording_date,json=createdAtRecordingDate,proto3" json:"created_at_recording_date,omitempty"`
+	CreatedAt              string                 `protobuf:"bytes,10,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	UpdatedAt              string                 `protobuf:"bytes,11,opt,name=updated_at,json=updatedAt,proto3" json:"updated_at,omitempty"`
+	SourceKind             string                 `protobuf:"bytes,12,opt,name=source_kind,json=sourceKind,proto3" json:"source_kind,omitempty"`
+	SourceDocumentId       int64                  `protobuf:"varint,13,opt,name=source_document_id,json=sourceDocumentId,proto3" json:"source_document_id,omitempty"`
+	SourceBlockId          int64                  `protobuf:"varint,14,opt,name=source_block_id,json=sourceBlockId,proto3" json:"source_block_id,omitempty"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -185,6 +190,41 @@ func (x *Todo) GetCreatedAtRecordingDate() string {
 		return x.CreatedAtRecordingDate
 	}
 	return ""
+}
+
+func (x *Todo) GetCreatedAt() string {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return ""
+}
+
+func (x *Todo) GetUpdatedAt() string {
+	if x != nil {
+		return x.UpdatedAt
+	}
+	return ""
+}
+
+func (x *Todo) GetSourceKind() string {
+	if x != nil {
+		return x.SourceKind
+	}
+	return ""
+}
+
+func (x *Todo) GetSourceDocumentId() int64 {
+	if x != nil {
+		return x.SourceDocumentId
+	}
+	return 0
+}
+
+func (x *Todo) GetSourceBlockId() int64 {
+	if x != nil {
+		return x.SourceBlockId
+	}
+	return 0
 }
 
 type TodoHistory struct {
@@ -923,7 +963,7 @@ var File_secretary_v1_todos_proto protoreflect.FileDescriptor
 
 const file_secretary_v1_todos_proto_rawDesc = "" +
 	"\n" +
-	"\x18secretary/v1/todos.proto\x12\fsecretary.v1\"\xed\x02\n" +
+	"\x18secretary/v1/todos.proto\x12\fsecretary.v1\"\xa2\x04\n" +
 	"\x04Todo\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x12\n" +
@@ -933,7 +973,16 @@ const file_secretary_v1_todos_proto_rawDesc = "" +
 	"\x17created_at_recording_id\x18\x06 \x01(\x03R\x14createdAtRecordingId\x125\n" +
 	"\x17updated_at_recording_id\x18\a \x01(\x03R\x14updatedAtRecordingId\x129\n" +
 	"\x19created_at_recording_name\x18\b \x01(\tR\x16createdAtRecordingName\x129\n" +
-	"\x19created_at_recording_date\x18\t \x01(\tR\x16createdAtRecordingDate\"\xfb\x02\n" +
+	"\x19created_at_recording_date\x18\t \x01(\tR\x16createdAtRecordingDate\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\n" +
+	" \x01(\tR\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"updated_at\x18\v \x01(\tR\tupdatedAt\x12\x1f\n" +
+	"\vsource_kind\x18\f \x01(\tR\n" +
+	"sourceKind\x12,\n" +
+	"\x12source_document_id\x18\r \x01(\x03R\x10sourceDocumentId\x12&\n" +
+	"\x0fsource_block_id\x18\x0e \x01(\x03R\rsourceBlockId\"\xfb\x02\n" +
 	"\vTodoHistory\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x17\n" +
 	"\atodo_id\x18\x02 \x01(\x03R\x06todoId\x12\"\n" +

@@ -20,7 +20,7 @@ INSERT INTO todo (
   created_at_recording_id,
   updated_at_recording_id
 ) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, "desc", status, user_id, created_at_recording_id, updated_at_recording_id
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
 type CreateTodoParams struct {
@@ -48,8 +48,14 @@ func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, e
 		&i.Desc,
 		&i.Status,
 		&i.UserID,
+		&i.WorkspaceID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -111,8 +117,14 @@ SELECT
   t."desc",
   t.status,
   t.user_id,
+  t.workspace_id,
+  t.source_kind,
+  t.source_document_id,
+  t.source_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
+  t.created_at,
+  t.updated_at,
   r.name as recording_name,
   r.created_at as recording_date
 FROM todo t
@@ -126,8 +138,14 @@ type GetTodoRow struct {
 	Desc                 pgtype.Text
 	Status               pgtype.Text
 	UserID               pgtype.Int4
+	WorkspaceID          pgtype.Int4
+	SourceKind           string
+	SourceDocumentID     pgtype.Int4
+	SourceBlockID        pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 	RecordingName        pgtype.Text
 	RecordingDate        pgtype.Timestamptz
 }
@@ -141,8 +159,14 @@ func (q *Queries) GetTodo(ctx context.Context, id int32) (GetTodoRow, error) {
 		&i.Desc,
 		&i.Status,
 		&i.UserID,
+		&i.WorkspaceID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 		&i.RecordingName,
 		&i.RecordingDate,
 	)
@@ -206,14 +230,20 @@ SELECT
   t."desc",
   t.status,
   t.user_id,
+  t.workspace_id,
+  t.source_kind,
+  t.source_document_id,
+  t.source_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
+  t.created_at,
+  t.updated_at,
   r.name as recording_name,
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
 WHERE t.created_at_recording_id = $1
-ORDER BY t.id DESC
+ORDER BY t.created_at DESC, t.id DESC
 `
 
 type ListTodosByRecordingRow struct {
@@ -222,8 +252,14 @@ type ListTodosByRecordingRow struct {
 	Desc                 pgtype.Text
 	Status               pgtype.Text
 	UserID               pgtype.Int4
+	WorkspaceID          pgtype.Int4
+	SourceKind           string
+	SourceDocumentID     pgtype.Int4
+	SourceBlockID        pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 	RecordingName        pgtype.Text
 	RecordingDate        pgtype.Timestamptz
 }
@@ -243,8 +279,14 @@ func (q *Queries) ListTodosByRecording(ctx context.Context, createdAtRecordingID
 			&i.Desc,
 			&i.Status,
 			&i.UserID,
+			&i.WorkspaceID,
+			&i.SourceKind,
+			&i.SourceDocumentID,
+			&i.SourceBlockID,
 			&i.CreatedAtRecordingID,
 			&i.UpdatedAtRecordingID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 			&i.RecordingName,
 			&i.RecordingDate,
 		); err != nil {
@@ -265,14 +307,20 @@ SELECT
   t."desc",
   t.status,
   t.user_id,
+  t.workspace_id,
+  t.source_kind,
+  t.source_document_id,
+  t.source_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
+  t.created_at,
+  t.updated_at,
   r.name as recording_name,
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
 WHERE t.user_id = $1
-ORDER BY t.id DESC
+ORDER BY t.created_at DESC, t.id DESC
 `
 
 type ListTodosByUserRow struct {
@@ -281,8 +329,14 @@ type ListTodosByUserRow struct {
 	Desc                 pgtype.Text
 	Status               pgtype.Text
 	UserID               pgtype.Int4
+	WorkspaceID          pgtype.Int4
+	SourceKind           string
+	SourceDocumentID     pgtype.Int4
+	SourceBlockID        pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 	RecordingName        pgtype.Text
 	RecordingDate        pgtype.Timestamptz
 }
@@ -302,8 +356,14 @@ func (q *Queries) ListTodosByUser(ctx context.Context, userID pgtype.Int4) ([]Li
 			&i.Desc,
 			&i.Status,
 			&i.UserID,
+			&i.WorkspaceID,
+			&i.SourceKind,
+			&i.SourceDocumentID,
+			&i.SourceBlockID,
 			&i.CreatedAtRecordingID,
 			&i.UpdatedAtRecordingID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 			&i.RecordingName,
 			&i.RecordingDate,
 		); err != nil {
@@ -324,9 +384,10 @@ SET
   "desc" = $3,
   status = $4,
   user_id = $5,
-  updated_at_recording_id = $6
+  updated_at_recording_id = $6,
+  updated_at = now()
 WHERE id = $1
-RETURNING id, name, "desc", status, user_id, created_at_recording_id, updated_at_recording_id
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
 type UpdateTodoParams struct {
@@ -354,8 +415,14 @@ func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) (Todo, e
 		&i.Desc,
 		&i.Status,
 		&i.UserID,
+		&i.WorkspaceID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }

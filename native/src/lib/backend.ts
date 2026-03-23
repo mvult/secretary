@@ -10,6 +10,41 @@ export interface LoginResponse {
   user: BackendUser;
 }
 
+export type BackendTodoStatus = 'not_started' | 'partial' | 'done' | 'blocked' | 'skipped';
+
+export interface BackendTodo {
+  id: number;
+  name: string;
+  desc: string;
+  status: BackendTodoStatus;
+  userId: number;
+  createdAtRecordingId: number;
+  updatedAtRecordingId: number;
+  createdAtRecordingName: string;
+  createdAtRecordingDate: string;
+  createdAt: string;
+  updatedAt: string;
+  sourceKind: string;
+  sourceDocumentId: number;
+  sourceBlockId: number;
+}
+
+function todoStatusToProto(status: BackendTodoStatus) {
+  switch (status) {
+    case 'done':
+      return 'TODO_STATUS_DONE';
+    case 'blocked':
+      return 'TODO_STATUS_BLOCKED';
+    case 'skipped':
+      return 'TODO_STATUS_SKIPPED';
+    case 'partial':
+      return 'TODO_STATUS_PARTIAL';
+    case 'not_started':
+    default:
+      return 'TODO_STATUS_NOT_STARTED';
+  }
+}
+
 export interface BackendWorkspace {
   id: number;
   name: string;
@@ -24,7 +59,7 @@ export interface BackendBlock {
   parentClientKey: string;
   sortOrder: number;
   text: string;
-  status: 'note' | 'todo' | 'doing' | 'done';
+  status: 'note' | 'todo' | 'doing' | 'done' | 'blocked' | 'skipped';
   todoId: number;
   createdAt: string;
   updatedAt: string;
@@ -64,7 +99,54 @@ function normalizeWorkspace(value: any): BackendWorkspace {
   };
 }
 
+function normalizeTodoStatus(value: unknown): BackendTodoStatus {
+  switch (value) {
+    case 'TODO_STATUS_DONE':
+    case 'done':
+    case 3:
+      return 'done';
+    case 'TODO_STATUS_BLOCKED':
+    case 'blocked':
+    case 4:
+      return 'blocked';
+    case 'TODO_STATUS_SKIPPED':
+    case 'skipped':
+    case 5:
+      return 'skipped';
+    case 'TODO_STATUS_PARTIAL':
+    case 'partial':
+    case 'in_progress':
+    case 2:
+      return 'partial';
+    case 'TODO_STATUS_NOT_STARTED':
+    case 'not_started':
+    case 1:
+    default:
+      return 'not_started';
+  }
+}
+
+function normalizeTodo(value: any): BackendTodo {
+  return {
+    id: toNumber(value?.id),
+    name: typeof value?.name === 'string' ? value.name : '',
+    desc: typeof value?.desc === 'string' ? value.desc : '',
+    status: normalizeTodoStatus(value?.status),
+    userId: toNumber(value?.userId),
+    createdAtRecordingId: toNumber(value?.createdAtRecordingId),
+    updatedAtRecordingId: toNumber(value?.updatedAtRecordingId),
+    createdAtRecordingName: typeof value?.createdAtRecordingName === 'string' ? value.createdAtRecordingName : '',
+    createdAtRecordingDate: typeof value?.createdAtRecordingDate === 'string' ? value.createdAtRecordingDate : '',
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+    updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
+    sourceKind: typeof value?.sourceKind === 'string' ? value.sourceKind : '',
+    sourceDocumentId: toNumber(value?.sourceDocumentId),
+    sourceBlockId: toNumber(value?.sourceBlockId),
+  };
+}
+
 function normalizeBlock(value: any): BackendBlock {
+  const status = value?.status;
   return {
     id: toNumber(value?.id),
     clientKey: typeof value?.clientKey === 'string' ? value.clientKey : '',
@@ -73,7 +155,7 @@ function normalizeBlock(value: any): BackendBlock {
     parentClientKey: typeof value?.parentClientKey === 'string' ? value.parentClientKey : '',
     sortOrder: toNumber(value?.sortOrder),
     text: typeof value?.text === 'string' ? value.text : '',
-    status: value?.status === 'todo' || value?.status === 'doing' || value?.status === 'done' ? value.status : 'note',
+    status: status === 'todo' || status === 'doing' || status === 'done' || status === 'blocked' || status === 'skipped' ? status : 'note',
     todoId: toNumber(value?.todoId),
     createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
     updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
@@ -129,6 +211,36 @@ async function postJson<TResponse>(baseUrl: string, path: string, body: unknown,
 
 export function login(baseUrl: string, email: string, password: string) {
   return postJson<LoginResponse>(baseUrl, '/api/login', { email, password });
+}
+
+export async function listTodos(baseUrl: string, token: string, userId: number) {
+  const payload = await postJson<{ todos?: BackendTodo[] }>(
+    baseUrl,
+    '/secretary.v1.TodosService/ListTodos',
+    { userId },
+    token,
+  );
+  return Array.isArray(payload.todos) ? payload.todos.map(normalizeTodo) : [];
+}
+
+export async function updateTodo(baseUrl: string, token: string, todo: BackendTodo) {
+  const payload = await postJson<{ todo?: BackendTodo }>(
+    baseUrl,
+    '/secretary.v1.TodosService/UpdateTodo',
+    {
+      id: todo.id,
+      name: todo.name,
+      desc: todo.desc,
+      status: todoStatusToProto(todo.status),
+      userId: todo.userId,
+      updatedAtRecordingId: todo.updatedAtRecordingId,
+    },
+    token,
+  );
+  if (!payload.todo) {
+    throw new Error('Todo was not returned by the server.');
+  }
+  return normalizeTodo(payload.todo);
 }
 
 export async function listWorkspaces(baseUrl: string, token: string) {

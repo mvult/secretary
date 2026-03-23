@@ -207,6 +207,11 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	serverIDByClientKey := map[string]int32{}
 	clientKeyByServerID := map[int32]string{}
 	keptIDs := make([]int32, 0, len(incoming.Blocks))
+	type savedBlockRecord struct {
+		msg   *secretaryv1.Block
+		block db.Block
+	}
+	savedRecords := make([]savedBlockRecord, 0, len(incoming.Blocks))
 
 	for _, blockMsg := range incoming.Blocks {
 		if err := validateBlockMessage(blockMsg); err != nil {
@@ -218,13 +223,18 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 
+		todoID := pgtype.Int4{}
+		if blockMsg.Id > 0 {
+			todoID = existingByID[int32(blockMsg.Id)].TodoID
+		}
+
 		params := db.CreateBlockParams{
 			DocumentID:    savedDoc.ID,
 			ParentBlockID: parentID,
 			SortOrder:     blockMsg.SortOrder,
 			Text:          blockMsg.Text,
 			Status:        blockMsg.Status,
-			TodoID:        toNullInt4(blockMsg.TodoId),
+			TodoID:        todoID,
 		}
 
 		var savedBlock db.Block
@@ -255,6 +265,29 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		}
 		serverIDByClientKey[clientKey] = savedBlock.ID
 		clientKeyByServerID[savedBlock.ID] = clientKey
+		savedRecords = append(savedRecords, savedBlockRecord{msg: blockMsg, block: savedBlock})
+	}
+
+	removedBlocks := removedBlocksByID(existingBlocks, keptIDs)
+	for _, block := range removedBlocks {
+		if !block.TodoID.Valid {
+			continue
+		}
+		if err := deleteTodoWithHistory(ctx, qtx, block.TodoID.Int32, userID); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo for removed block"))
+		}
+	}
+
+	for index, record := range savedRecords {
+		updatedBlock, err := s.reconcileBlockTodo(ctx, qtx, savedDoc, record.block, record.msg, userID)
+		if err != nil {
+			var connectErr *connect.Error
+			if errors.As(err, &connectErr) {
+				return nil, err
+			}
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+		savedRecords[index].block = updatedBlock
 	}
 
 	if err := deleteMissingBlocks(ctx, tx, savedDoc.ID, keptIDs); err != nil {
@@ -426,11 +459,158 @@ func validateBlockMessage(block *secretaryv1.Block) error {
 
 func validBlockStatus(status string) bool {
 	switch status {
-	case "note", "todo", "doing", "done":
+	case "note", "todo", "doing", "done", "blocked", "skipped":
 		return true
 	default:
 		return false
 	}
+}
+
+func isTaskBlockStatus(status string) bool {
+	switch status {
+	case "todo", "doing", "done", "blocked", "skipped":
+		return true
+	default:
+		return false
+	}
+}
+
+func mapBlockStatusToTodoStatus(status string) string {
+	switch status {
+	case "todo":
+		return "not_started"
+	case "doing":
+		return "partial"
+	case "done":
+		return "done"
+	case "blocked":
+		return "blocked"
+	case "skipped":
+		return "skipped"
+	default:
+		return ""
+	}
+}
+
+func removedBlocksByID(existingBlocks []db.Block, keptIDs []int32) []db.Block {
+	kept := make(map[int32]struct{}, len(keptIDs))
+	for _, id := range keptIDs {
+		kept[id] = struct{}{}
+	}
+	removed := make([]db.Block, 0)
+	for _, block := range existingBlocks {
+		if _, ok := kept[block.ID]; ok {
+			continue
+		}
+		removed = append(removed, block)
+	}
+	return removed
+}
+
+func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db.Document, block db.Block, msg *secretaryv1.Block, userID int64) (db.Block, error) {
+	if !isTaskBlockStatus(msg.Status) {
+		if block.TodoID.Valid {
+			if err := deleteTodoWithHistory(ctx, qtx, block.TodoID.Int32, userID); err != nil {
+				return db.Block{}, err
+			}
+			block.TodoID = pgtype.Int4{}
+		}
+		return block, nil
+	}
+
+	name := strings.TrimSpace(msg.Text)
+	status := mapBlockStatusToTodoStatus(msg.Status)
+	if err := validateTodoInput(name, status); err != nil {
+		return db.Block{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("task block %q is invalid: %w", msg.ClientKey, err))
+	}
+
+	desc := pgtype.Text{}
+	workspaceID := pgtype.Int4{Int32: doc.WorkspaceID, Valid: true}
+	sourceDocumentID := pgtype.Int4{Int32: doc.ID, Valid: true}
+	sourceBlockID := pgtype.Int4{Int32: block.ID, Valid: true}
+	userIDValue := pgtype.Int4{Int32: int32(userID), Valid: true}
+	statusValue := pgtype.Text{String: status, Valid: true}
+
+	if block.TodoID.Valid {
+		todo, err := qtx.UpdateCanonicalTodoForBlock(ctx, db.UpdateCanonicalTodoForBlockParams{
+			ID:               block.TodoID.Int32,
+			Name:             name,
+			Desc:             desc,
+			Status:           statusValue,
+			UserID:           userIDValue,
+			WorkspaceID:      workspaceID,
+			SourceDocumentID: sourceDocumentID,
+			SourceBlockID:    sourceBlockID,
+		})
+		if err == nil {
+			if err := createTodoHistoryEntry(ctx, qtx, todo.ID, userID, "update", todo.Name, todo.Desc, todo.Status, todo.UserID, todo.CreatedAtRecordingID, todo.UpdatedAtRecordingID); err != nil {
+				return db.Block{}, err
+			}
+			return block, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return db.Block{}, err
+		}
+		block.TodoID = pgtype.Int4{}
+	}
+
+	todo, err := qtx.CreateCanonicalTodoForBlock(ctx, db.CreateCanonicalTodoForBlockParams{
+		Name:             name,
+		Desc:             desc,
+		Status:           statusValue,
+		UserID:           userIDValue,
+		WorkspaceID:      workspaceID,
+		SourceDocumentID: sourceDocumentID,
+		SourceBlockID:    sourceBlockID,
+	})
+	if err != nil {
+		return db.Block{}, err
+	}
+	if err := createTodoHistoryEntry(ctx, qtx, todo.ID, userID, "create", todo.Name, todo.Desc, todo.Status, todo.UserID, todo.CreatedAtRecordingID, todo.UpdatedAtRecordingID); err != nil {
+		return db.Block{}, err
+	}
+
+	updatedBlock, err := qtx.UpdateBlock(ctx, db.UpdateBlockParams{
+		ID:            block.ID,
+		DocumentID:    block.DocumentID,
+		ParentBlockID: block.ParentBlockID,
+		SortOrder:     block.SortOrder,
+		Text:          block.Text,
+		Status:        block.Status,
+		TodoID:        pgtype.Int4{Int32: todo.ID, Valid: true},
+	})
+	if err != nil {
+		return db.Block{}, err
+	}
+	return updatedBlock, nil
+}
+
+func deleteTodoWithHistory(ctx context.Context, qtx *db.Queries, todoID int32, userID int64) error {
+	todo, err := qtx.GetTodo(ctx, todoID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := createTodoHistoryEntry(ctx, qtx, todo.ID, userID, "delete", todo.Name, todo.Desc, todo.Status, todo.UserID, todo.CreatedAtRecordingID, todo.UpdatedAtRecordingID); err != nil {
+		return err
+	}
+	return qtx.DeleteTodo(ctx, todoID)
+}
+
+func createTodoHistoryEntry(ctx context.Context, qtx *db.Queries, todoID int32, actorUserID int64, changeType string, name string, desc pgtype.Text, status pgtype.Text, userID pgtype.Int4, createdAtRecordingID pgtype.Int4, updatedAtRecordingID pgtype.Int4) error {
+	return qtx.CreateTodoHistory(ctx, db.CreateTodoHistoryParams{
+		TodoID:               todoID,
+		ActorUserID:          pgtype.Int4{Int32: int32(actorUserID), Valid: actorUserID > 0},
+		ChangeType:           changeType,
+		Name:                 pgtype.Text{String: name, Valid: strings.TrimSpace(name) != ""},
+		Desc:                 desc,
+		Status:               status,
+		UserID:               userID,
+		CreatedAtRecordingID: createdAtRecordingID,
+		UpdatedAtRecordingID: updatedAtRecordingID,
+	})
 }
 
 func resolveParentBlockID(block *secretaryv1.Block, existingByID map[int32]db.Block, serverIDByClientKey map[string]int32) (pgtype.Int4, error) {

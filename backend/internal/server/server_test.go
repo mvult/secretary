@@ -255,6 +255,36 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if createPayload.Document.Blocks[1].ParentBlockId != createPayload.Document.Blocks[0].Id {
 		t.Fatalf("expected nested block parent to be persisted")
 	}
+	if createPayload.Document.Blocks[0].TodoId != 0 {
+		t.Fatalf("expected note block to have no todo, got %d", createPayload.Document.Blocks[0].TodoId)
+	}
+	if createPayload.Document.Blocks[1].TodoId == 0 {
+		t.Fatalf("expected task block to create canonical todo")
+	}
+	var sourceKind string
+	var sourceDocumentID, sourceBlockID int64
+	var todoStatus string
+	err = pool.QueryRow(ctx, `
+		SELECT source_kind, source_document_id, source_block_id, status
+		FROM todo
+		WHERE id = $1
+	`, createPayload.Document.Blocks[1].TodoId).Scan(&sourceKind, &sourceDocumentID, &sourceBlockID, &todoStatus)
+	if err != nil {
+		t.Fatalf("load block todo: %v", err)
+	}
+	if sourceKind != "block" {
+		t.Fatalf("expected block source kind, got %q", sourceKind)
+	}
+	if sourceDocumentID != createPayload.Document.Id {
+		t.Fatalf("expected source document %d, got %d", createPayload.Document.Id, sourceDocumentID)
+	}
+	if sourceBlockID != createPayload.Document.Blocks[1].Id {
+		t.Fatalf("expected source block %d, got %d", createPayload.Document.Blocks[1].Id, sourceBlockID)
+	}
+	if todoStatus != "not_started" {
+		t.Fatalf("expected new task todo status not_started, got %q", todoStatus)
+	}
+	removedTodoID := createPayload.Document.Blocks[1].TodoId
 
 	updatedResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{
 		Document: &secretaryv1.Document{
@@ -297,6 +327,73 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if updatedPayload.Document.Blocks[0].Text != "Top level updated" {
 		t.Fatalf("expected updated text, got %q", updatedPayload.Document.Blocks[0].Text)
 	}
+	if updatedPayload.Document.Blocks[0].TodoId == 0 || updatedPayload.Document.Blocks[1].TodoId == 0 {
+		t.Fatalf("expected task blocks to own canonical todos after update")
+	}
+	var removedTodoCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM todo WHERE id = $1`, removedTodoID).Scan(&removedTodoCount)
+	if err != nil {
+		t.Fatalf("count removed todo: %v", err)
+	}
+	if removedTodoCount != 0 {
+		t.Fatalf("expected removed block todo to be deleted, found %d rows", removedTodoCount)
+	}
+	var topTodoStatus string
+	err = pool.QueryRow(ctx, `SELECT status FROM todo WHERE id = $1`, updatedPayload.Document.Blocks[0].TodoId).Scan(&topTodoStatus)
+	if err != nil {
+		t.Fatalf("load updated top todo: %v", err)
+	}
+	if topTodoStatus != "partial" {
+		t.Fatalf("expected doing block to map to partial, got %q", topTodoStatus)
+	}
+	topTodoID := updatedPayload.Document.Blocks[0].TodoId
+
+	revertResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{
+		Document: &secretaryv1.Document{
+			Id:          updatedPayload.Document.Id,
+			ClientKey:   updatedPayload.Document.ClientKey,
+			WorkspaceId: workspaceID,
+			Kind:        "note",
+			Title:       "Persistence flow reverted",
+			Blocks: []*secretaryv1.Block{
+				{
+					Id:        updatedPayload.Document.Blocks[0].Id,
+					ClientKey: updatedPayload.Document.Blocks[0].ClientKey,
+					SortOrder: 1,
+					Text:      "Top level reverted to note",
+					Status:    "note",
+				},
+				{
+					Id:        updatedPayload.Document.Blocks[1].Id,
+					ClientKey: updatedPayload.Document.Blocks[1].ClientKey,
+					SortOrder: 2,
+					Text:      "Fresh second block",
+					Status:    "done",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("revert document: %v", err)
+	}
+	if revertResp.StatusCode != http.StatusOK {
+		t.Fatalf("revert document status: %d", revertResp.StatusCode)
+	}
+	var revertPayload secretaryv1.SaveDocumentResponse
+	if err := decodeProtoBody(revertResp.Body, &revertPayload); err != nil {
+		t.Fatalf("decode reverted document: %v", err)
+	}
+	revertResp.Body.Close()
+	if revertPayload.Document.Blocks[0].TodoId != 0 {
+		t.Fatalf("expected reverted note block to drop todo, got %d", revertPayload.Document.Blocks[0].TodoId)
+	}
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM todo WHERE id = $1`, topTodoID).Scan(&removedTodoCount)
+	if err != nil {
+		t.Fatalf("count reverted todo: %v", err)
+	}
+	if removedTodoCount != 0 {
+		t.Fatalf("expected reverted note todo to be deleted, found %d rows", removedTodoCount)
+	}
 
 	listURL := ts.URL + secretaryv1connect.DocumentsServiceListDocumentsProcedure
 	listResp, err := authPost(listURL, token, secretaryv1.ListDocumentsRequest{WorkspaceId: workspaceID})
@@ -314,11 +411,14 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if len(listPayload.Documents) != 1 {
 		t.Fatalf("expected 1 document, got %d", len(listPayload.Documents))
 	}
-	if listPayload.Documents[0].Title != "Persistence flow updated" {
+	if listPayload.Documents[0].Title != "Persistence flow reverted" {
 		t.Fatalf("expected updated title, got %q", listPayload.Documents[0].Title)
 	}
 	if len(listPayload.Documents[0].Blocks) != 2 {
 		t.Fatalf("expected 2 blocks from list, got %d", len(listPayload.Documents[0].Blocks))
+	}
+	if listPayload.Documents[0].Blocks[0].TodoId != 0 {
+		t.Fatalf("expected list response to reflect removed todo link")
 	}
 }
 

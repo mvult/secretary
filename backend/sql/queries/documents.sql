@@ -84,3 +84,31 @@ SET
   updated_at = now()
 WHERE id = $1
 RETURNING id, document_id, parent_block_id, sort_order, text, status, todo_id, created_at, updated_at;
+
+-- name: CreateCanonicalTodoForBlock :one
+INSERT INTO todo (
+  name,
+  "desc",
+  status,
+  user_id,
+  workspace_id,
+  source_kind,
+  source_document_id,
+  source_block_id
+) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7)
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
+
+-- name: UpdateCanonicalTodoForBlock :one
+UPDATE todo
+SET
+  name = $2,
+  "desc" = $3,
+  status = $4,
+  user_id = $5,
+  workspace_id = $6,
+  source_kind = 'block',
+  source_document_id = $7,
+  source_block_id = $8,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;

@@ -282,8 +282,14 @@ type Todo struct {
 	Desc                 pgtype.Text
 	Status               pgtype.Text
 	UserID               pgtype.Int4
+	WorkspaceID          pgtype.Int4
+	SourceKind           string
+	SourceDocumentID     pgtype.Int4
+	SourceBlockID        pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 }
 
 type TodoHistory struct {

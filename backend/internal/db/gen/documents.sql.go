@@ -56,6 +56,59 @@ func (q *Queries) CreateBlock(ctx context.Context, arg CreateBlockParams) (Block
 	return i, err
 }
 
+const createCanonicalTodoForBlock = `-- name: CreateCanonicalTodoForBlock :one
+INSERT INTO todo (
+  name,
+  "desc",
+  status,
+  user_id,
+  workspace_id,
+  source_kind,
+  source_document_id,
+  source_block_id
+) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7)
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+`
+
+type CreateCanonicalTodoForBlockParams struct {
+	Name             string
+	Desc             pgtype.Text
+	Status           pgtype.Text
+	UserID           pgtype.Int4
+	WorkspaceID      pgtype.Int4
+	SourceDocumentID pgtype.Int4
+	SourceBlockID    pgtype.Int4
+}
+
+func (q *Queries) CreateCanonicalTodoForBlock(ctx context.Context, arg CreateCanonicalTodoForBlockParams) (Todo, error) {
+	row := q.db.QueryRow(ctx, createCanonicalTodoForBlock,
+		arg.Name,
+		arg.Desc,
+		arg.Status,
+		arg.UserID,
+		arg.WorkspaceID,
+		arg.SourceDocumentID,
+		arg.SourceBlockID,
+	)
+	var i Todo
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Desc,
+		&i.Status,
+		&i.UserID,
+		&i.WorkspaceID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
+		&i.CreatedAtRecordingID,
+		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createDocument = `-- name: CreateDocument :one
 INSERT INTO document (
   workspace_id,
@@ -256,6 +309,63 @@ func (q *Queries) UpdateBlock(ctx context.Context, arg UpdateBlockParams) (Block
 		&i.Text,
 		&i.Status,
 		&i.TodoID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateCanonicalTodoForBlock = `-- name: UpdateCanonicalTodoForBlock :one
+UPDATE todo
+SET
+  name = $2,
+  "desc" = $3,
+  status = $4,
+  user_id = $5,
+  workspace_id = $6,
+  source_kind = 'block',
+  source_document_id = $7,
+  source_block_id = $8,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+`
+
+type UpdateCanonicalTodoForBlockParams struct {
+	ID               int32
+	Name             string
+	Desc             pgtype.Text
+	Status           pgtype.Text
+	UserID           pgtype.Int4
+	WorkspaceID      pgtype.Int4
+	SourceDocumentID pgtype.Int4
+	SourceBlockID    pgtype.Int4
+}
+
+func (q *Queries) UpdateCanonicalTodoForBlock(ctx context.Context, arg UpdateCanonicalTodoForBlockParams) (Todo, error) {
+	row := q.db.QueryRow(ctx, updateCanonicalTodoForBlock,
+		arg.ID,
+		arg.Name,
+		arg.Desc,
+		arg.Status,
+		arg.UserID,
+		arg.WorkspaceID,
+		arg.SourceDocumentID,
+		arg.SourceBlockID,
+	)
+	var i Todo
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Desc,
+		&i.Status,
+		&i.UserID,
+		&i.WorkspaceID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
+		&i.CreatedAtRecordingID,
+		&i.UpdatedAtRecordingID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

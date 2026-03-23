@@ -68,6 +68,7 @@ export function OutlineRow({
   return (
     <div
       className="row"
+      data-node-id={node.id}
       data-has-status={node.status !== 'note'}
       data-focused={isFocused}
       data-selected={isSelected}

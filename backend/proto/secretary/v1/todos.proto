@@ -23,6 +23,11 @@ message Todo {
   int64 updated_at_recording_id = 7;
   string created_at_recording_name = 8;
   string created_at_recording_date = 9;
+  string created_at = 10;
+  string updated_at = 11;
+  string source_kind = 12;
+  int64 source_document_id = 13;
+  int64 source_block_id = 14;
 }
 
 message TodoHistory {

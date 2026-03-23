@@ -1,8 +1,8 @@
-export type NodeStatus = 'note' | 'todo' | 'doing' | 'done';
+export type NodeStatus = 'note' | 'todo' | 'doing' | 'done' | 'blocked' | 'skipped';
 
 export type PageKind = 'journal' | 'note';
 
-export type WorkspaceView = 'journals' | 'note' | 'search' | 'settings';
+export type WorkspaceView = 'journals' | 'note' | 'search' | 'todos' | 'settings';
 
 export interface OutlineNode {
   id: string;

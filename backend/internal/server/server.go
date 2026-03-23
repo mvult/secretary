@@ -312,22 +312,7 @@ func (s *Server) ListTodos(ctx context.Context, req *connect.Request[secretaryv1
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todos by recording"))
 		}
 		for _, row := range rows {
-			todo := &secretaryv1.Todo{
-				Id:                     int64(row.ID),
-				Name:                   row.Name,
-				Desc:                   row.Desc.String,
-				Status:                 mapStatus(row.Status.String),
-				UserId:                 int64(row.UserID.Int32),
-				CreatedAtRecordingName: row.RecordingName.String,
-				CreatedAtRecordingDate: formatTime(row.RecordingDate),
-			}
-			if row.CreatedAtRecordingID.Valid {
-				todo.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
-			}
-			if row.UpdatedAtRecordingID.Valid {
-				todo.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
-			}
-			todos = append(todos, todo)
+			todos = append(todos, todoRowToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID))
 		}
 	} else {
 		userID := req.Msg.UserId
@@ -340,22 +325,7 @@ func (s *Server) ListTodos(ctx context.Context, req *connect.Request[secretaryv1
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todos"))
 		}
 		for _, row := range rows {
-			todo := &secretaryv1.Todo{
-				Id:                     int64(row.ID),
-				Name:                   row.Name,
-				Desc:                   row.Desc.String,
-				Status:                 mapStatus(row.Status.String),
-				UserId:                 int64(row.UserID.Int32),
-				CreatedAtRecordingName: row.RecordingName.String,
-				CreatedAtRecordingDate: formatTime(row.RecordingDate),
-			}
-			if row.CreatedAtRecordingID.Valid {
-				todo.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
-			}
-			if row.UpdatedAtRecordingID.Valid {
-				todo.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
-			}
-			todos = append(todos, todo)
+			todos = append(todos, todoRowToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID))
 		}
 	}
 
@@ -372,22 +342,7 @@ func (s *Server) GetTodo(ctx context.Context, req *connect.Request[secretaryv1.G
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch todo"))
 	}
 
-	todo := &secretaryv1.Todo{
-		Id:                     int64(row.ID),
-		Name:                   row.Name,
-		Desc:                   row.Desc.String,
-		Status:                 mapStatus(row.Status.String),
-		UserId:                 int64(row.UserID.Int32),
-		CreatedAtRecordingName: row.RecordingName.String,
-		CreatedAtRecordingDate: formatTime(row.RecordingDate),
-	}
-	if row.CreatedAtRecordingID.Valid {
-		todo.CreatedAtRecordingId = int64(row.CreatedAtRecordingID.Int32)
-	}
-	if row.UpdatedAtRecordingID.Valid {
-		todo.UpdatedAtRecordingId = int64(row.UpdatedAtRecordingID.Int32)
-	}
-
+	todo := todoRowToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID)
 	return connect.NewResponse(&secretaryv1.GetTodoResponse{Todo: todo}), nil
 }
 
@@ -451,19 +406,7 @@ func (s *Server) CreateTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
 
-	todo := &secretaryv1.Todo{
-		Id:     int64(todoRow.ID),
-		Name:   todoRow.Name,
-		Desc:   todoRow.Desc.String,
-		Status: mapStatus(todoRow.Status.String),
-		UserId: int64(todoRow.UserID.Int32),
-	}
-	if todoRow.CreatedAtRecordingID.Valid {
-		todo.CreatedAtRecordingId = int64(todoRow.CreatedAtRecordingID.Int32)
-	}
-	if todoRow.UpdatedAtRecordingID.Valid {
-		todo.UpdatedAtRecordingId = int64(todoRow.UpdatedAtRecordingID.Int32)
-	}
+	todo := todoRowToProto(todoRow.ID, todoRow.Name, todoRow.Desc, todoRow.Status, todoRow.UserID, todoRow.CreatedAtRecordingID, todoRow.UpdatedAtRecordingID, pgtype.Text{}, pgtype.Timestamptz{}, todoRow.CreatedAt, todoRow.UpdatedAt, todoRow.SourceKind, todoRow.SourceDocumentID, todoRow.SourceBlockID)
 
 	return connect.NewResponse(&secretaryv1.CreateTodoResponse{Todo: todo}), nil
 }
@@ -527,19 +470,7 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
 
-	todo := &secretaryv1.Todo{
-		Id:     int64(todoRow.ID),
-		Name:   todoRow.Name,
-		Desc:   todoRow.Desc.String,
-		Status: mapStatus(todoRow.Status.String),
-		UserId: int64(todoRow.UserID.Int32),
-	}
-	if todoRow.CreatedAtRecordingID.Valid {
-		todo.CreatedAtRecordingId = int64(todoRow.CreatedAtRecordingID.Int32)
-	}
-	if todoRow.UpdatedAtRecordingID.Valid {
-		todo.UpdatedAtRecordingId = int64(todoRow.UpdatedAtRecordingID.Int32)
-	}
+	todo := todoRowToProto(todoRow.ID, todoRow.Name, todoRow.Desc, todoRow.Status, todoRow.UserID, todoRow.CreatedAtRecordingID, todoRow.UpdatedAtRecordingID, pgtype.Text{}, pgtype.Timestamptz{}, todoRow.CreatedAt, todoRow.UpdatedAt, todoRow.SourceKind, todoRow.SourceDocumentID, todoRow.SourceBlockID)
 
 	return connect.NewResponse(&secretaryv1.UpdateTodoResponse{Todo: todo}), nil
 }
@@ -730,12 +661,55 @@ func validStatus(status string) bool {
 	}
 }
 
+func todoRowToProto(
+	id int32,
+	name string,
+	desc pgtype.Text,
+	status pgtype.Text,
+	userID pgtype.Int4,
+	createdAtRecordingID pgtype.Int4,
+	updatedAtRecordingID pgtype.Int4,
+	recordingName pgtype.Text,
+	recordingDate pgtype.Timestamptz,
+	createdAt pgtype.Timestamptz,
+	updatedAt pgtype.Timestamptz,
+	sourceKind string,
+	sourceDocumentID pgtype.Int4,
+	sourceBlockID pgtype.Int4,
+) *secretaryv1.Todo {
+	todo := &secretaryv1.Todo{
+		Id:                     int64(id),
+		Name:                   name,
+		Desc:                   desc.String,
+		Status:                 mapStatus(status.String),
+		UserId:                 int64(userID.Int32),
+		CreatedAtRecordingName: recordingName.String,
+		CreatedAtRecordingDate: formatTime(recordingDate),
+		CreatedAt:              formatTime(createdAt),
+		UpdatedAt:              formatTime(updatedAt),
+		SourceKind:             sourceKind,
+	}
+	if createdAtRecordingID.Valid {
+		todo.CreatedAtRecordingId = int64(createdAtRecordingID.Int32)
+	}
+	if updatedAtRecordingID.Valid {
+		todo.UpdatedAtRecordingId = int64(updatedAtRecordingID.Int32)
+	}
+	if sourceDocumentID.Valid {
+		todo.SourceDocumentId = int64(sourceDocumentID.Int32)
+	}
+	if sourceBlockID.Valid {
+		todo.SourceBlockId = int64(sourceBlockID.Int32)
+	}
+	return todo
+}
+
 func mapStatus(status string) secretaryv1.TodoStatus {
 	// Normalize status to handle potential case/whitespace issues
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {
 	case "not_started", "pending": // Handle legacy "pending"
-		return secretaryv1.TodoStatus_TODO_STATUS_PARTIAL
+		return secretaryv1.TodoStatus_TODO_STATUS_NOT_STARTED
 	case "partial", "in_progress", "in progress": // Handle variations
 		return secretaryv1.TodoStatus_TODO_STATUS_PARTIAL
 	case "done", "completed":

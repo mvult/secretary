@@ -487,6 +487,14 @@ export function openSearchView(state: OutlineState): OutlineState {
   };
 }
 
+export function openTodosView(state: OutlineState): OutlineState {
+	return {
+		...commitEdit(state),
+		activeView: 'todos',
+		anchorId: null,
+	};
+}
+
 export function openSettingsView(state: OutlineState): OutlineState {
   return {
     ...commitEdit(state),
