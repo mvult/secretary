@@ -14,7 +14,13 @@ interface OutlineRowProps {
   onCommit: (text?: string, cursor?: number) => void;
   onCycleStatus: () => void;
   onSplit: (selectionStart: number, selectionEnd: number) => void;
+  onStructuredPaste: (text: string) => void;
   onToggleStatus: (nodeId: string) => void;
+}
+
+function looksLikeStructuredPaste(text: string) {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n').filter((line) => line.trim());
+  return lines.length > 1 && lines.every((line) => /^\s*[-*+]\s+/.test(line));
 }
 
 export function OutlineRow({
@@ -28,6 +34,7 @@ export function OutlineRow({
   onCommit,
   onCycleStatus,
   onSplit,
+  onStructuredPaste,
   onToggleStatus,
 }: OutlineRowProps) {
   const isEditing = state.editingId === node.id;
@@ -69,7 +76,7 @@ export function OutlineRow({
     <div
       className="row"
       data-node-id={node.id}
-      data-has-status={node.status !== 'note'}
+      data-has-status={Boolean(node.todoStatus)}
       data-focused={isFocused}
       data-selected={isSelected}
       data-editing={isEditing}
@@ -79,16 +86,16 @@ export function OutlineRow({
         •
       </span>
 
-      {node.status === 'note' ? null : (
+      {node.todoStatus ? (
         <button
           type="button"
           className="status-chip status-chip-button"
-          data-status={node.status}
+          data-status={node.todoStatus}
           onClick={() => onToggleStatus(node.id)}
         >
-          {node.status}
+          {node.todoStatus}
         </button>
-      )}
+      ) : null}
 
       <span className="row-content">
         {isEditing ? (
@@ -102,6 +109,15 @@ export function OutlineRow({
               const value = textareaRef.current?.value ?? state.draftText;
               const cursor = textareaRef.current?.selectionStart ?? value.length;
               onCommit(value, cursor);
+            }}
+            onPaste={(event) => {
+              const text = event.clipboardData.getData('text/plain');
+              if (!looksLikeStructuredPaste(text)) {
+                return;
+              }
+
+              event.preventDefault();
+              onStructuredPaste(text);
             }}
             onKeyDown={(event) => {
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {

@@ -2,6 +2,7 @@
 SELECT
   d.id,
   d.workspace_id,
+  d.directory_id,
   d.kind,
   d.title,
   d.journal_date,
@@ -19,6 +20,7 @@ ORDER BY
 SELECT
   d.id,
   d.workspace_id,
+  d.directory_id,
   d.kind,
   d.title,
   d.journal_date,
@@ -30,21 +32,89 @@ WHERE d.id = $1;
 -- name: CreateDocument :one
 INSERT INTO document (
   workspace_id,
+  directory_id,
   kind,
   title,
   journal_date
-) VALUES ($1, $2, $3, $4)
-RETURNING id, workspace_id, kind, title, journal_date, created_at, updated_at;
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at;
 
 -- name: UpdateDocument :one
 UPDATE document
 SET
-  kind = $2,
-  title = $3,
-  journal_date = $4,
+  directory_id = $2,
+  kind = $3,
+  title = $4,
+  journal_date = $5,
   updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, kind, title, journal_date, created_at, updated_at;
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at;
+
+-- name: DeleteDocument :exec
+DELETE FROM document
+WHERE id = $1;
+
+-- name: ListDirectoriesByWorkspace :many
+SELECT
+  id,
+  workspace_id,
+  parent_id,
+  name,
+  position,
+  created_at,
+  updated_at
+FROM directory
+WHERE workspace_id = $1
+ORDER BY parent_id NULLS FIRST, position ASC, lower(name) ASC, id ASC;
+
+-- name: GetDirectory :one
+SELECT
+  id,
+  workspace_id,
+  parent_id,
+  name,
+  position,
+  created_at,
+  updated_at
+FROM directory
+WHERE id = $1;
+
+-- name: CreateDirectory :one
+INSERT INTO directory (
+  workspace_id,
+  parent_id,
+  name,
+  position
+) VALUES (
+  $1,
+  $2,
+  $3,
+  COALESCE((SELECT MAX(position) + 1 FROM directory WHERE workspace_id = $1 AND parent_id IS NOT DISTINCT FROM $2), 0)
+)
+RETURNING id, workspace_id, parent_id, name, position, created_at, updated_at;
+
+-- name: UpdateDirectory :one
+UPDATE directory
+SET
+  name = $2,
+  parent_id = $3,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, parent_id, name, position, created_at, updated_at;
+
+-- name: DeleteDirectory :exec
+DELETE FROM directory
+WHERE id = $1;
+
+-- name: CountChildDirectories :one
+SELECT COUNT(*)
+FROM directory
+WHERE parent_id = $1;
+
+-- name: CountDocumentsInDirectory :one
+SELECT COUNT(*)
+FROM document
+WHERE directory_id = $1;
 
 -- name: ListBlocksByDocument :many
 SELECT
@@ -53,7 +123,6 @@ SELECT
   b.parent_block_id,
   b.sort_order,
   b.text,
-  b.status,
   b.todo_id,
   b.created_at,
   b.updated_at
@@ -67,10 +136,9 @@ INSERT INTO block (
   parent_block_id,
   sort_order,
   text,
-  status,
   todo_id
-) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, document_id, parent_block_id, sort_order, text, status, todo_id, created_at, updated_at;
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
 
 -- name: UpdateBlock :one
 UPDATE block
@@ -79,11 +147,10 @@ SET
   parent_block_id = $3,
   sort_order = $4,
   text = $5,
-  status = $6,
-  todo_id = $7,
+  todo_id = $6,
   updated_at = now()
 WHERE id = $1
-RETURNING id, document_id, parent_block_id, sort_order, text, status, todo_id, created_at, updated_at;
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
 
 -- name: CreateCanonicalTodoForBlock :one
 INSERT INTO todo (

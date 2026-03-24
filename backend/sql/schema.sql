@@ -138,19 +138,36 @@ CREATE TABLE "public"."recording" (
   "archived" boolean NULL,
   PRIMARY KEY ("id")
 );
+-- Create "directory" table
+CREATE TABLE "public"."directory" (
+  "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  "workspace_id" integer NOT NULL,
+  "parent_id" integer NULL,
+  "name" text NOT NULL,
+  "position" integer NOT NULL DEFAULT 0,
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id"),
+  CONSTRAINT "directory_parent_fk" FOREIGN KEY ("parent_id") REFERENCES "public"."directory" ("id") ON UPDATE NO ACTION ON DELETE RESTRICT,
+  CONSTRAINT "directory_workspace_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "directory_name_check" CHECK (btrim(name) <> ''::text)
+);
 -- Create "document" table
 CREATE TABLE "public"."document" (
   "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
   "workspace_id" integer NOT NULL,
+  "directory_id" integer NULL,
   "kind" text NOT NULL,
   "title" text NOT NULL,
   "journal_date" date NULL,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("id"),
+  CONSTRAINT "document_directory_fk" FOREIGN KEY ("directory_id") REFERENCES "public"."directory" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
   CONSTRAINT "document_workspace_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "document_kind_check" CHECK (kind = ANY (ARRAY['journal'::text, 'note'::text])),
   CONSTRAINT "document_kind_date_check" CHECK (((kind = 'journal'::text) AND (journal_date IS NOT NULL)) OR ((kind = 'note'::text) AND (journal_date IS NULL))),
+  CONSTRAINT "document_kind_directory_check" CHECK (((kind = 'journal'::text) AND (directory_id IS NULL)) OR (kind = 'note'::text)),
   CONSTRAINT "document_workspace_journal_date_key" UNIQUE ("workspace_id", "journal_date")
 );
 -- Create "block" table
@@ -160,14 +177,12 @@ CREATE TABLE "public"."block" (
   "parent_block_id" integer NULL,
   "sort_order" integer NOT NULL,
   "text" text NOT NULL,
-  "status" text NOT NULL DEFAULT 'note',
   "todo_id" integer NULL,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("id"),
   CONSTRAINT "block_document_fk" FOREIGN KEY ("document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
-  CONSTRAINT "block_parent_fk" FOREIGN KEY ("parent_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
-  CONSTRAINT "block_status_check" CHECK (status = ANY (ARRAY['note'::text, 'todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]))
+  CONSTRAINT "block_parent_fk" FOREIGN KEY ("parent_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
 );
 -- Create "todo" table
 CREATE TABLE "public"."todo" (
@@ -200,6 +215,12 @@ CREATE INDEX "block_document_idx" ON "public"."block" ("document_id");
 CREATE INDEX "block_parent_idx" ON "public"."block" ("parent_block_id");
 -- Create index "block_todo_idx" to table: "block"
 CREATE INDEX "block_todo_idx" ON "public"."block" ("todo_id");
+-- Create index "directory_parent_idx" to table: "directory"
+CREATE INDEX "directory_parent_idx" ON "public"."directory" ("parent_id");
+-- Create index "directory_workspace_idx" to table: "directory"
+CREATE INDEX "directory_workspace_idx" ON "public"."directory" ("workspace_id");
+-- Create index "document_directory_idx" to table: "document"
+CREATE INDEX "document_directory_idx" ON "public"."document" ("directory_id");
 -- Create index "todo_source_block_idx" to table: "todo"
 CREATE UNIQUE INDEX "todo_source_block_idx" ON "public"."todo" ("source_block_id") WHERE (source_block_id IS NOT NULL);
 -- Create index "todo_workspace_idx" to table: "todo"

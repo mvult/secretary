@@ -1,9 +1,3 @@
-ALTER TABLE "public"."block"
-  DROP CONSTRAINT IF EXISTS "block_status_check";
-
-ALTER TABLE "public"."block"
-  ADD CONSTRAINT "block_status_check" CHECK (status = ANY (ARRAY['note'::text, 'todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]));
-
 ALTER TABLE "public"."todo"
   ADD COLUMN IF NOT EXISTS "workspace_id" integer NULL,
   ADD COLUMN IF NOT EXISTS "source_kind" text NOT NULL DEFAULT 'manual',

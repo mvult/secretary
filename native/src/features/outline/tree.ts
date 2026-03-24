@@ -31,8 +31,97 @@ function createSiblingNode(parentId: string | null): OutlineNode {
     id: createNodeId(),
     parentId,
     text: '',
-    status: 'note',
+    todoStatus: null,
   };
+}
+
+interface ParsedPasteNode {
+  depth: number;
+  text: string;
+}
+
+function countIndentDepth(value: string) {
+  let depth = 0;
+  let spaces = 0;
+
+  for (const char of value) {
+    if (char === '\t') {
+      depth += 1;
+      spaces = 0;
+      continue;
+    }
+
+    if (char === ' ') {
+      spaces += 1;
+      if (spaces === 2) {
+        depth += 1;
+        spaces = 0;
+      }
+      continue;
+    }
+
+    break;
+  }
+
+  return depth;
+}
+
+function parseStructuredPaste(text: string): ParsedPasteNode[] {
+  const lines = text.replace(/\r\n?/g, '\n').split('\n');
+  const result: ParsedPasteNode[] = [];
+  let minDepth = Number.POSITIVE_INFINITY;
+
+  for (const rawLine of lines) {
+    if (!rawLine.trim()) {
+      continue;
+    }
+
+    const trimmedStart = rawLine.trimStart();
+    const bulletMatch = trimmedStart.match(/^([-*+]|\d+[.)])\s*(.*)$/);
+    if (!bulletMatch) {
+      const previous = result[result.length - 1];
+      if (!previous) {
+        return [];
+      }
+      previous.text = `${previous.text}\n${trimmedStart}`;
+      continue;
+    }
+
+    const depth = countIndentDepth(rawLine.slice(0, rawLine.length - trimmedStart.length));
+    minDepth = Math.min(minDepth, depth);
+
+    result.push({
+      depth,
+      text: bulletMatch[2].trimEnd(),
+    });
+  }
+
+  if (result.length <= 1) {
+    return [];
+  }
+
+  const normalizedBaseDepth = Number.isFinite(minDepth) ? minDepth : 0;
+  return result.map((entry) => ({
+    ...entry,
+    depth: Math.max(0, entry.depth - normalizedBaseDepth),
+  }));
+}
+
+function buildStructuredPasteNodes(parsed: ParsedPasteNode[], parentId: string | null) {
+  const depthMap = new Map<number, string | null>();
+  depthMap.set(0, parentId);
+
+  return parsed.map((entry) => {
+    const normalizedDepth = Math.max(0, Math.min(entry.depth, depthMap.size - 1));
+    const node: OutlineNode = {
+      id: createNodeId(),
+      parentId: depthMap.get(normalizedDepth) ?? parentId,
+      text: entry.text,
+      todoStatus: null,
+    };
+    depthMap.set(normalizedDepth + 1, node.id);
+    return node;
+  });
 }
 
 function createBlankNotePage(): OutlinePage {
@@ -46,7 +135,7 @@ function createBlankNotePage(): OutlinePage {
         id: createNodeId(),
         parentId: null,
         text: '',
-        status: 'note',
+        todoStatus: null,
       },
     ],
   };
@@ -233,8 +322,17 @@ export function getJournalPage(state: OutlineState) {
 }
 
 export function getJournalPages(state: OutlineState) {
+  const seen = new Set<string>();
   return state.pages
     .filter((page) => page.kind === 'journal')
+    .filter((page) => {
+      const key = page.backendId ? `backend:${page.backendId}` : `journal:${page.date}`;
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
     .sort((left, right) => right.date.localeCompare(left.date));
 }
 
@@ -368,18 +466,75 @@ export function hydratePages(state: OutlineState, pages: OutlinePage[]): Outline
   };
 }
 
-export function mergeRemotePage(state: OutlineState, page: OutlinePage): OutlineState {
-  const existing = state.pages.some((entry) => entry.id === page.id);
-  const nextPages = existing
-    ? state.pages.map((entry) => (entry.id === page.id ? page : entry))
-    : [page, ...state.pages];
-  const activePage = nextPages.find((entry) => entry.id === state.activePageId) ?? page;
+function buildNodeIdMap(previousPage: OutlinePage, nextPage: OutlinePage) {
+  const byBackendId = new Map(nextPage.nodes.filter((node) => node.backendId).map((node) => [node.backendId!, node.id]));
+  const result = new Map<string, string>();
+
+  previousPage.nodes.forEach((node, index) => {
+    const nextId = (node.backendId ? byBackendId.get(node.backendId) : null) ?? nextPage.nodes[index]?.id;
+    if (nextId) {
+      result.set(node.id, nextId);
+    }
+  });
+
+  return result;
+}
+
+function remapNodeId(value: string | null, nodeIdMap: Map<string, string>) {
+  if (!value) {
+    return value;
+  }
+  return nodeIdMap.get(value) ?? value;
+}
+
+function findMergePageIndex(pages: OutlinePage[], page: OutlinePage, previousPageId?: string) {
+  if (previousPageId) {
+    const byPreviousId = pages.findIndex((entry) => entry.id === previousPageId);
+    if (byPreviousId !== -1) {
+      return byPreviousId;
+    }
+  }
+
+  if (page.backendId) {
+    const byBackendId = pages.findIndex((entry) => entry.backendId === page.backendId);
+    if (byBackendId !== -1) {
+      return byBackendId;
+    }
+  }
+
+  const byId = pages.findIndex((entry) => entry.id === page.id);
+  if (byId !== -1) {
+    return byId;
+  }
+
+  if (page.kind === 'journal') {
+    const byJournalDate = pages.findIndex((entry) => entry.kind === 'journal' && entry.date === page.date);
+    if (byJournalDate !== -1) {
+      return byJournalDate;
+    }
+  }
+
+  return -1;
+}
+
+export function mergeRemotePage(state: OutlineState, page: OutlinePage, previousPageId?: string): OutlineState {
+  const existingIndex = findMergePageIndex(state.pages, page, previousPageId);
+  const previousPage = existingIndex === -1 ? null : state.pages[existingIndex];
+  const nextPages = existingIndex === -1
+    ? [page, ...state.pages]
+    : state.pages.map((entry, index) => (index === existingIndex ? page : entry));
+  const nodeIdMap = previousPage ? buildNodeIdMap(previousPage, page) : new Map<string, string>();
+  const activePageId = previousPage && state.activePageId === previousPage.id ? page.id : state.activePageId;
+  const activePage = nextPages.find((entry) => entry.id === activePageId) ?? page;
+  const focusedId = remapNodeId(state.focusedId, nodeIdMap) ?? '';
 
   return {
     ...state,
     pages: nextPages,
     activePageId: activePage.id,
-    focusedId: activePage.nodes.some((node) => node.id === state.focusedId) ? state.focusedId : getSafeFocusedId(activePage.nodes),
+    focusedId: activePage.nodes.some((node) => node.id === focusedId) ? focusedId : getSafeFocusedId(activePage.nodes),
+    anchorId: remapNodeId(state.anchorId, nodeIdMap),
+    editingId: remapNodeId(state.editingId, nodeIdMap),
   };
 }
 
@@ -479,6 +634,34 @@ export function selectNote(state: OutlineState, pageId: string): OutlineState {
   };
 }
 
+export function deleteNotePage(state: OutlineState, pageId: string): OutlineState {
+  const committed = commitEdit(state);
+  const page = committed.pages.find((entry) => entry.id === pageId && entry.kind === 'note');
+  if (!page) {
+    return committed;
+  }
+
+  const remainingPages = committed.pages.filter((entry) => entry.id !== pageId);
+  const nextJournal = remainingPages.find((entry) => entry.kind === 'journal') ?? remainingPages[0] ?? null;
+  if (!nextJournal) {
+    return createTodayJournalPage({
+      ...committed,
+      pages: [],
+      activePageId: '',
+      focusedId: '',
+      anchorId: null,
+      editingId: null,
+      draftText: '',
+      editCursor: 'end',
+      mode: 'normal',
+    });
+  }
+
+  return nextJournal.kind === 'journal'
+    ? selectJournalPage({ ...committed, pages: remainingPages }, nextJournal.id)
+    : selectNote({ ...committed, pages: remainingPages }, nextJournal.id);
+}
+
 export function openSearchView(state: OutlineState): OutlineState {
   return {
     ...commitEdit(state),
@@ -503,6 +686,14 @@ export function openSettingsView(state: OutlineState): OutlineState {
   };
 }
 
+export function openDirectoryView(state: OutlineState): OutlineState {
+	return {
+		...commitEdit(state),
+		activeView: 'directory',
+		anchorId: null,
+	};
+}
+
 export function yankLine(state: OutlineState): OutlineState {
   const focusedNode = getFocusedNode(state);
   if (!focusedNode) {
@@ -513,30 +704,51 @@ export function yankLine(state: OutlineState): OutlineState {
     ...state,
     yankBuffer: {
       text: focusedNode.text,
-      status: focusedNode.status,
+      todoStatus: focusedNode.todoStatus ?? null,
     },
   };
 }
 
-export function pasteBelow(state: OutlineState, text?: string): OutlineState {
+export function pasteBelow(state: OutlineState, text?: string, preferStructured = false): OutlineState {
   const pastedText = text ?? state.yankBuffer?.text;
   if (!pastedText) {
     return state;
   }
 
   const nodes = getActiveNodes(state);
-  const focusedIndex = nodes.findIndex((node) => node.id === state.focusedId);
+  const targetId = preferStructured && state.editingId ? state.editingId : state.focusedId;
+  const focusedIndex = nodes.findIndex((node) => node.id === targetId);
   if (focusedIndex === -1) {
     return state;
   }
 
   const focusedNode = nodes[focusedIndex];
   const insertAt = getSubtreeEnd(nodes, focusedIndex);
+  const parsedNodes = preferStructured ? parseStructuredPaste(pastedText) : [];
+  if (parsedNodes.length > 0) {
+    const newNodes = buildStructuredPasteNodes(parsedNodes, focusedNode.parentId);
+    const nextState = replaceActivePage(commitEdit(state), (page) => ({
+      ...page,
+      nodes: [...page.nodes.slice(0, insertAt), ...newNodes, ...page.nodes.slice(insertAt)],
+    }));
+
+    return {
+      ...nextState,
+      focusedId: newNodes[0].id,
+      normalCursor: 0,
+      anchorId: null,
+      editingId: null,
+      draftText: '',
+      editCursor: 'end',
+      mode: 'normal',
+    };
+  }
+
   const newNode: OutlineNode = {
     id: createNodeId(),
     parentId: focusedNode.parentId,
     text: pastedText,
-    status: text && text !== state.yankBuffer?.text ? 'note' : (state.yankBuffer?.status ?? 'note'),
+    todoStatus: text && text !== state.yankBuffer?.text ? null : (state.yankBuffer?.todoStatus ?? null),
   };
   const nextState = replaceActivePage(state, (page) => ({
     ...page,
@@ -849,7 +1061,7 @@ export function splitNodeAtCursor(state: OutlineState, selectionStart: number, s
     };
     nextNodes.splice(insertAt, 0, {
       ...newNode,
-      status: currentNode.status,
+      todoStatus: currentNode.todoStatus ?? null,
       text: after,
     });
 
@@ -918,7 +1130,7 @@ export function deleteSelection(state: OutlineState): OutlineState {
     yankBuffer: focusedNode
       ? {
           text: focusedNode.text,
-          status: focusedNode.status,
+          todoStatus: focusedNode.todoStatus ?? null,
         }
       : state.yankBuffer,
   };
@@ -932,7 +1144,7 @@ export function cycleSelectedStatuses(state: OutlineState): OutlineState {
       selectedIds.has(node.id)
         ? {
             ...node,
-            status: cycleStatus(node.status),
+            todoStatus: cycleStatus(node.todoStatus),
           }
         : node,
     ),
@@ -942,15 +1154,15 @@ export function cycleSelectedStatuses(state: OutlineState): OutlineState {
 export function toggleNodeStatus(state: OutlineState, nodeId: string): OutlineState {
   const page = getCurrentPage(state);
   const node = page?.nodes.find((entry) => entry.id === nodeId);
-  if (!page || !node || (node.status !== 'todo' && node.status !== 'done')) {
+  if (!page || !node || (node.todoStatus !== 'todo' && node.todoStatus !== 'done')) {
     return state;
   }
 
-  const nextStatus = node.status === 'todo' ? 'done' : 'todo';
+  const nextStatus = node.todoStatus === 'todo' ? 'done' : 'todo';
   return {
     ...replaceActivePage(state, (currentPage) => ({
       ...currentPage,
-      nodes: currentPage.nodes.map((entry) => (entry.id === nodeId ? { ...entry, status: nextStatus } : entry)),
+      nodes: currentPage.nodes.map((entry) => (entry.id === nodeId ? { ...entry, todoStatus: nextStatus } : entry)),
     })),
     focusedId: nodeId,
     anchorId: null,

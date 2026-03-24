@@ -5,6 +5,7 @@ import {
   createTodayJournalPage,
   cycleSelectedStatuses,
   deleteSelection,
+  deleteNotePage,
   focusNode,
   indentSelection,
   jumpFocusInPage,
@@ -18,6 +19,7 @@ import {
   openSearchView,
   openTodosView,
   openSettingsView,
+  openDirectoryView,
   openAbove,
   openBelow,
   outdentSelection,
@@ -40,7 +42,8 @@ export type OutlineAction =
   | { type: 'moveFocus'; direction: 1 | -1; extendSelection: boolean }
   | { type: 'jumpFocus'; position: 'start' | 'end' }
   | { type: 'yankLine' }
-  | { type: 'pasteBelow'; text?: string }
+  | { type: 'pasteBelow'; text?: string; preferStructured?: boolean }
+  | { type: 'pasteStructured'; text: string }
   | { type: 'startEditing'; placement?: 'current' | 'after' | 'start' | 'end' }
   | { type: 'updateDraft'; text: string }
   | { type: 'commitEdit'; text?: string; cursor?: number }
@@ -55,15 +58,17 @@ export type OutlineAction =
   | { type: 'selectJournal' }
   | { type: 'selectJournalPage'; pageId: string }
   | { type: 'selectNote'; pageId: string }
+  | { type: 'deleteNote'; pageId: string }
   | { type: 'openSearch' }
   | { type: 'openTodos' }
   | { type: 'openSettings' }
+  | { type: 'openDirectory' }
   | { type: 'createNote'; title?: string }
   | { type: 'createTodayJournal' }
   | { type: 'toggleNodeStatus'; nodeId: string }
   | { type: 'updatePageTitle'; title: string }
   | { type: 'hydrate'; pages: OutlineState['pages'] }
-  | { type: 'mergeRemotePage'; page: OutlineState['pages'][number] }
+  | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string }
   | { type: 'undo' };
 
 const initialState: OutlineState = {
@@ -93,7 +98,7 @@ function withHistory(state: OutlineState, updater: (current: OutlineState) => Ou
   };
 }
 
-function reducer(state: OutlineState, action: OutlineAction): OutlineState {
+export function reduceOutlineState(state: OutlineState, action: OutlineAction): OutlineState {
   const currentState = state;
 
   switch (action.type) {
@@ -108,7 +113,9 @@ function reducer(state: OutlineState, action: OutlineAction): OutlineState {
     case 'yankLine':
       return yankLine(currentState);
     case 'pasteBelow':
-      return withHistory(currentState, (active) => pasteBelow(active, action.text));
+      return withHistory(currentState, (active) => pasteBelow(active, action.text, action.preferStructured));
+    case 'pasteStructured':
+      return withHistory(currentState, (active) => pasteBelow(active, action.text, true));
     case 'startEditing':
       return startEditing(currentState, action.placement ?? 'current');
     case 'updateDraft':
@@ -139,12 +146,16 @@ function reducer(state: OutlineState, action: OutlineAction): OutlineState {
       return selectJournalPage(currentState, action.pageId);
     case 'selectNote':
       return selectNote(currentState, action.pageId);
+    case 'deleteNote':
+      return withHistory(currentState, (active) => deleteNotePage(active, action.pageId));
     case 'openSearch':
       return openSearchView(currentState);
     case 'openTodos':
       return openTodosView(currentState);
     case 'openSettings':
       return openSettingsView(currentState);
+    case 'openDirectory':
+      return openDirectoryView(currentState);
     case 'createNote':
       return withHistory(currentState, (active) => createNotePage(active, action.title));
     case 'createTodayJournal':
@@ -156,7 +167,7 @@ function reducer(state: OutlineState, action: OutlineAction): OutlineState {
     case 'hydrate':
       return hydratePages(currentState, action.pages);
     case 'mergeRemotePage':
-      return mergeRemotePage(currentState, action.page);
+      return mergeRemotePage(currentState, action.page, action.previousPageId);
     case 'undo': {
       const previous = currentState.history[currentState.history.length - 1];
       if (!previous) {
@@ -175,5 +186,5 @@ function reducer(state: OutlineState, action: OutlineAction): OutlineState {
 }
 
 export function useOutlineState() {
-  return useReducer(reducer, initialState);
+  return useReducer(reduceOutlineState, initialState);
 }

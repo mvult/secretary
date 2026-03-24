@@ -117,7 +117,7 @@ func TestTodoLifecycle(t *testing.T) {
 	createReq := secretaryv1.CreateTodoRequest{
 		Name:                 "Test todo",
 		Desc:                 "Test desc",
-		Status:               secretaryv1.TodoStatus_TODO_STATUS_NOT_STARTED,
+		Status:               secretaryv1.TodoStatus_TODO_STATUS_TODO,
 		UserId:               userID,
 		CreatedAtRecordingId: recordingID,
 		UpdatedAtRecordingId: recordingID,
@@ -222,16 +222,27 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	workspaceID := workspacePayload.Workspace.Id
 	defer cleanupWorkspace(t, ctx, pool, workspaceID)
 
+	var directoryID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO directory (workspace_id, name, position)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`, workspaceID, "Projects", 1).Scan(&directoryID)
+	if err != nil {
+		t.Fatalf("insert directory: %v", err)
+	}
+
 	saveURL := ts.URL + secretaryv1connect.DocumentsServiceSaveDocumentProcedure
 	createResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{
 		Document: &secretaryv1.Document{
 			ClientKey:   "note-local-1",
 			WorkspaceId: workspaceID,
+			DirectoryId: directoryID,
 			Kind:        "note",
 			Title:       "Persistence flow",
 			Blocks: []*secretaryv1.Block{
-				{ClientKey: "block-a", SortOrder: 1, Text: "Top level", Status: "note"},
-				{ClientKey: "block-b", ParentClientKey: "block-a", SortOrder: 2, Text: "Nested", Status: "todo"},
+				{ClientKey: "block-a", SortOrder: 1, Text: "Top level"},
+				{ClientKey: "block-b", ParentClientKey: "block-a", SortOrder: 2, Text: "Nested", TodoStatus: "todo"},
 			},
 		},
 	})
@@ -248,6 +259,9 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	createResp.Body.Close()
 	if createPayload.Document == nil || createPayload.Document.Id == 0 {
 		t.Fatalf("expected saved document id")
+	}
+	if createPayload.Document.DirectoryId != directoryID {
+		t.Fatalf("expected saved directory %d, got %d", directoryID, createPayload.Document.DirectoryId)
 	}
 	if len(createPayload.Document.Blocks) != 2 {
 		t.Fatalf("expected 2 saved blocks, got %d", len(createPayload.Document.Blocks))
@@ -281,8 +295,8 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if sourceBlockID != createPayload.Document.Blocks[1].Id {
 		t.Fatalf("expected source block %d, got %d", createPayload.Document.Blocks[1].Id, sourceBlockID)
 	}
-	if todoStatus != "not_started" {
-		t.Fatalf("expected new task todo status not_started, got %q", todoStatus)
+	if todoStatus != "todo" {
+		t.Fatalf("expected new task todo status todo, got %q", todoStatus)
 	}
 	removedTodoID := createPayload.Document.Blocks[1].TodoId
 
@@ -291,21 +305,22 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 			Id:          createPayload.Document.Id,
 			ClientKey:   createPayload.Document.ClientKey,
 			WorkspaceId: workspaceID,
+			DirectoryId: directoryID,
 			Kind:        "note",
 			Title:       "Persistence flow updated",
 			Blocks: []*secretaryv1.Block{
 				{
-					Id:        createPayload.Document.Blocks[0].Id,
-					ClientKey: createPayload.Document.Blocks[0].ClientKey,
-					SortOrder: 1,
-					Text:      "Top level updated",
-					Status:    "doing",
+					Id:         createPayload.Document.Blocks[0].Id,
+					ClientKey:  createPayload.Document.Blocks[0].ClientKey,
+					SortOrder:  1,
+					Text:       "Top level updated",
+					TodoStatus: "doing",
 				},
 				{
-					ClientKey: "block-c",
-					SortOrder: 2,
-					Text:      "Fresh second block",
-					Status:    "done",
+					ClientKey:  "block-c",
+					SortOrder:  2,
+					Text:       "Fresh second block",
+					TodoStatus: "done",
 				},
 			},
 		},
@@ -343,8 +358,8 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load updated top todo: %v", err)
 	}
-	if topTodoStatus != "partial" {
-		t.Fatalf("expected doing block to map to partial, got %q", topTodoStatus)
+	if topTodoStatus != "doing" {
+		t.Fatalf("expected doing block to map to doing, got %q", topTodoStatus)
 	}
 	topTodoID := updatedPayload.Document.Blocks[0].TodoId
 
@@ -353,6 +368,7 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 			Id:          updatedPayload.Document.Id,
 			ClientKey:   updatedPayload.Document.ClientKey,
 			WorkspaceId: workspaceID,
+			DirectoryId: directoryID,
 			Kind:        "note",
 			Title:       "Persistence flow reverted",
 			Blocks: []*secretaryv1.Block{
@@ -361,14 +377,13 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 					ClientKey: updatedPayload.Document.Blocks[0].ClientKey,
 					SortOrder: 1,
 					Text:      "Top level reverted to note",
-					Status:    "note",
 				},
 				{
-					Id:        updatedPayload.Document.Blocks[1].Id,
-					ClientKey: updatedPayload.Document.Blocks[1].ClientKey,
-					SortOrder: 2,
-					Text:      "Fresh second block",
-					Status:    "done",
+					Id:         updatedPayload.Document.Blocks[1].Id,
+					ClientKey:  updatedPayload.Document.Blocks[1].ClientKey,
+					SortOrder:  2,
+					Text:       "Fresh second block",
+					TodoStatus: "done",
 				},
 			},
 		},
@@ -411,14 +426,198 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if len(listPayload.Documents) != 1 {
 		t.Fatalf("expected 1 document, got %d", len(listPayload.Documents))
 	}
+	if len(listPayload.Directories) != 1 {
+		t.Fatalf("expected 1 directory, got %d", len(listPayload.Directories))
+	}
 	if listPayload.Documents[0].Title != "Persistence flow reverted" {
 		t.Fatalf("expected updated title, got %q", listPayload.Documents[0].Title)
+	}
+	if listPayload.Documents[0].DirectoryId != directoryID {
+		t.Fatalf("expected list response directory %d, got %d", directoryID, listPayload.Documents[0].DirectoryId)
 	}
 	if len(listPayload.Documents[0].Blocks) != 2 {
 		t.Fatalf("expected 2 blocks from list, got %d", len(listPayload.Documents[0].Blocks))
 	}
 	if listPayload.Documents[0].Blocks[0].TodoId != 0 {
 		t.Fatalf("expected list response to reflect removed todo link")
+	}
+
+	deleteURL := ts.URL + secretaryv1connect.DocumentsServiceDeleteDocumentProcedure
+	deleteResp, err := authPost(deleteURL, token, secretaryv1.DeleteDocumentRequest{Id: createPayload.Document.Id})
+	if err != nil {
+		t.Fatalf("delete document: %v", err)
+	}
+	if deleteResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete document status: %d", deleteResp.StatusCode)
+	}
+	deleteResp.Body.Close()
+
+	var deletedDocumentCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM document WHERE id = $1`, createPayload.Document.Id).Scan(&deletedDocumentCount)
+	if err != nil {
+		t.Fatalf("count deleted document: %v", err)
+	}
+	if deletedDocumentCount != 0 {
+		t.Fatalf("expected deleted document to be removed, found %d rows", deletedDocumentCount)
+	}
+
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM todo WHERE source_document_id = $1`, createPayload.Document.Id).Scan(&removedTodoCount)
+	if err != nil {
+		t.Fatalf("count deleted document todos: %v", err)
+	}
+	if removedTodoCount != 0 {
+		t.Fatalf("expected deleted document todos to be removed, found %d rows", removedTodoCount)
+	}
+}
+
+func TestDirectoryLifecycle(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	userID, email, password := insertUser(t, ctx, pool)
+	defer cleanupUser(t, ctx, pool, userID)
+
+	srv := New(pool, []byte("test-secret"), 24*time.Hour)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	token := login(t, ts.URL, email, password)
+	workspaceURL := ts.URL + secretaryv1connect.WorkspacesServiceCreateWorkspaceProcedure
+	workspaceResp, err := authPost(workspaceURL, token, secretaryv1.CreateWorkspaceRequest{Name: "Dirs"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if workspaceResp.StatusCode != http.StatusOK {
+		t.Fatalf("create workspace status: %d", workspaceResp.StatusCode)
+	}
+	var workspacePayload secretaryv1.CreateWorkspaceResponse
+	if err := decodeProtoBody(workspaceResp.Body, &workspacePayload); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	workspaceResp.Body.Close()
+	workspaceID := workspacePayload.Workspace.Id
+	defer cleanupWorkspace(t, ctx, pool, workspaceID)
+
+	createDirectoryURL := ts.URL + secretaryv1connect.DocumentsServiceCreateDirectoryProcedure
+	createDirectoryResp, err := authPost(createDirectoryURL, token, &secretaryv1.CreateDirectoryRequest{
+		WorkspaceId: workspaceID,
+		Name:        "Projects",
+	})
+	if err != nil {
+		t.Fatalf("create directory: %v", err)
+	}
+	if createDirectoryResp.StatusCode != http.StatusOK {
+		t.Fatalf("create directory status: %d", createDirectoryResp.StatusCode)
+	}
+	var createDirectoryPayload secretaryv1.CreateDirectoryResponse
+	if err := decodeProtoBody(createDirectoryResp.Body, &createDirectoryPayload); err != nil {
+		t.Fatalf("decode directory: %v", err)
+	}
+	createDirectoryResp.Body.Close()
+	if createDirectoryPayload.Directory == nil || createDirectoryPayload.Directory.Id == 0 {
+		t.Fatalf("expected created directory id")
+	}
+
+	parentDirectoryResp, err := authPost(createDirectoryURL, token, &secretaryv1.CreateDirectoryRequest{
+		WorkspaceId: workspaceID,
+		Name:        "Archive",
+	})
+	if err != nil {
+		t.Fatalf("create parent directory: %v", err)
+	}
+	if parentDirectoryResp.StatusCode != http.StatusOK {
+		t.Fatalf("create parent directory status: %d", parentDirectoryResp.StatusCode)
+	}
+	var parentDirectoryPayload secretaryv1.CreateDirectoryResponse
+	if err := decodeProtoBody(parentDirectoryResp.Body, &parentDirectoryPayload); err != nil {
+		t.Fatalf("decode parent directory: %v", err)
+	}
+	parentDirectoryResp.Body.Close()
+
+	renameDirectoryURL := ts.URL + secretaryv1connect.DocumentsServiceUpdateDirectoryProcedure
+	renameDirectoryResp, err := authPost(renameDirectoryURL, token, &secretaryv1.UpdateDirectoryRequest{
+		Id:       createDirectoryPayload.Directory.Id,
+		Name:     "Projects renamed",
+		ParentId: parentDirectoryPayload.Directory.Id,
+	})
+	if err != nil {
+		t.Fatalf("rename directory: %v", err)
+	}
+	if renameDirectoryResp.StatusCode != http.StatusOK {
+		t.Fatalf("rename directory status: %d", renameDirectoryResp.StatusCode)
+	}
+	var renameDirectoryPayload secretaryv1.UpdateDirectoryResponse
+	if err := decodeProtoBody(renameDirectoryResp.Body, &renameDirectoryPayload); err != nil {
+		t.Fatalf("decode renamed directory: %v", err)
+	}
+	renameDirectoryResp.Body.Close()
+	if renameDirectoryPayload.Directory.Name != "Projects renamed" {
+		t.Fatalf("expected renamed directory, got %q", renameDirectoryPayload.Directory.Name)
+	}
+	if renameDirectoryPayload.Directory.ParentId != parentDirectoryPayload.Directory.Id {
+		t.Fatalf("expected moved directory parent %d, got %d", parentDirectoryPayload.Directory.Id, renameDirectoryPayload.Directory.ParentId)
+	}
+
+	saveURL := ts.URL + secretaryv1connect.DocumentsServiceSaveDocumentProcedure
+	saveResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{Document: &secretaryv1.Document{
+		WorkspaceId: workspaceID,
+		DirectoryId: createDirectoryPayload.Directory.Id,
+		Kind:        "note",
+		Title:       "Inside dir",
+		Blocks:      []*secretaryv1.Block{{ClientKey: "block-a", SortOrder: 1, Text: "hello"}},
+	}})
+	if err != nil {
+		t.Fatalf("save document: %v", err)
+	}
+	if saveResp.StatusCode != http.StatusOK {
+		t.Fatalf("save document status: %d", saveResp.StatusCode)
+	}
+	saveResp.Body.Close()
+
+	deleteDirectoryURL := ts.URL + secretaryv1connect.DocumentsServiceDeleteDirectoryProcedure
+	deleteNonEmptyResp, err := authPost(deleteDirectoryURL, token, &secretaryv1.DeleteDirectoryRequest{Id: createDirectoryPayload.Directory.Id})
+	if err != nil {
+		t.Fatalf("delete non-empty directory: %v", err)
+	}
+	if deleteNonEmptyResp.StatusCode == http.StatusOK {
+		t.Fatalf("expected non-empty directory delete to fail")
+	}
+	deleteNonEmptyResp.Body.Close()
+
+	var emptyDirectoryID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO directory (workspace_id, name, position)
+		VALUES ($1, $2, $3)
+		RETURNING id
+	`, workspaceID, "Empty", 2).Scan(&emptyDirectoryID)
+	if err != nil {
+		t.Fatalf("insert empty directory: %v", err)
+	}
+
+	deleteEmptyResp, err := authPost(deleteDirectoryURL, token, &secretaryv1.DeleteDirectoryRequest{Id: emptyDirectoryID})
+	if err != nil {
+		t.Fatalf("delete empty directory: %v", err)
+	}
+	if deleteEmptyResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete empty directory status: %d", deleteEmptyResp.StatusCode)
+	}
+	deleteEmptyResp.Body.Close()
+
+	var deletedCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM directory WHERE id = $1`, emptyDirectoryID).Scan(&deletedCount)
+	if err != nil {
+		t.Fatalf("count deleted directory: %v", err)
+	}
+	if deletedCount != 0 {
+		t.Fatalf("expected empty directory to be deleted, found %d rows", deletedCount)
 	}
 }
 

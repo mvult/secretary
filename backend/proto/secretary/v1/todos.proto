@@ -6,8 +6,8 @@ option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secreta
 
 enum TodoStatus {
   TODO_STATUS_UNSPECIFIED = 0;
-  TODO_STATUS_NOT_STARTED = 1;
-  TODO_STATUS_PARTIAL = 2;
+  TODO_STATUS_TODO = 1;
+  TODO_STATUS_DOING = 2;
   TODO_STATUS_DONE = 3;
   TODO_STATUS_BLOCKED = 4;
   TODO_STATUS_SKIPPED = 5;

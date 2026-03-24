@@ -39,7 +39,16 @@ class RecordingsListWidget(Container):
     def on_mount(self):
         """Initialize the table"""
         table = self.query_one("#recordings-table", DataTable)
-        table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Analysis", "Status")
+        table.add_columns(
+            "ID",
+            "Name",
+            "Duration",
+            "Created",
+            "Transcript",
+            "Storage",
+            "Outputs",
+            "Status",
+        )
         table.cursor_type = "row"
         table.zebra_stripes = True
         table.focus()
@@ -93,7 +102,16 @@ class RecordingsListWidget(Container):
 
         # Ensure columns are set up
         if len(table.columns) == 0:
-            table.add_columns("ID", "Name", "Duration", "Created", "Storage", "Analysis", "Status")
+            table.add_columns(
+                "ID",
+                "Name",
+                "Duration",
+                "Created",
+                "Transcript",
+                "Storage",
+                "Outputs",
+                "Status",
+            )
             table.cursor_type = "row"
             table.zebra_stripes = True
 
@@ -108,13 +126,23 @@ class RecordingsListWidget(Container):
             created_str = (
                 recording.created_at_formatted if recording.created_at else "Unknown"
             )
-            storage_str = recording.storage_status
+            transcript_str = getattr(recording, "transcript_status", "Missing")
+            storage_str = getattr(
+                recording, "storage_status_readable", recording.storage_status
+            )
             analysis_str = getattr(recording, "analysis_status", "")
             status = "Archived" if recording.archived else "Active"
 
             try:
                 table.add_row(
-                    str(recording.id), recording.name, duration_str, created_str, storage_str, analysis_str, status
+                    str(recording.id),
+                    recording.name,
+                    duration_str,
+                    created_str,
+                    transcript_str,
+                    storage_str,
+                    analysis_str,
+                    status,
                 )
             except Exception as e:
                 logging.error(f"Error adding row to table: {e}")

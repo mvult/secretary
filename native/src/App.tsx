@@ -1,8 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { createWorkspace, listDocuments, listTodos, listWorkspaces, login, saveDocument, updateTodo } from './lib/backend';
+import {
+  createDirectory,
+  deleteDocument,
+  createWorkspace,
+  deleteDirectory,
+  listDocuments,
+  listTodos,
+  listWorkspaces,
+  login,
+  saveDocument,
+  updateDirectory,
+  updateTodo,
+} from './lib/backend';
 import { OutlineEditor } from './features/outline/OutlineEditor';
 import { documentToOutlinePage, outlinePageToDocument } from './features/outline/remote';
-import { useOutlineState } from './features/outline/state';
+import { reduceOutlineState, useOutlineState } from './features/outline/state';
 import {
   findMatchingNotes,
   getCurrentPage,
@@ -14,9 +26,11 @@ import {
   getPagesForPersistence,
 } from './features/outline/tree';
 import type { OutlinePage } from './features/outline/types';
-import type { BackendTodo } from './lib/backend';
+import type { BackendDirectory, BackendTodo } from './lib/backend';
 
 type TodoFilter = 'all' | 'open' | 'done' | 'blocked' | 'skipped';
+
+const TODO_STATUS_ORDER: BackendTodo['status'][] = ['todo', 'doing', 'done', 'blocked', 'skipped'];
 
 const SETTINGS_STORAGE_KEY = 'secretary-native-settings';
 
@@ -31,9 +45,9 @@ interface StoredSettings {
 
 function todoStatusTone(status: BackendTodo['status']) {
   switch (status) {
-    case 'not_started':
+    case 'todo':
       return 'todo';
-    case 'partial':
+    case 'doing':
       return 'doing';
     default:
       return status;
@@ -59,27 +73,10 @@ function formatTodoTimestamp(todo: BackendTodo) {
   }).format(parsed);
 }
 
-function todoStatusToNodeStatus(status: BackendTodo['status']) {
-  switch (status) {
-    case 'not_started':
-      return 'todo';
-    case 'partial':
-      return 'doing';
-    case 'done':
-      return 'done';
-    case 'blocked':
-      return 'blocked';
-    case 'skipped':
-      return 'skipped';
-    default:
-      return 'todo';
-  }
-}
-
 function matchesTodoFilter(todo: BackendTodo, filter: TodoFilter) {
   switch (filter) {
     case 'open':
-      return todo.status === 'not_started' || todo.status === 'partial';
+      return todo.status === 'todo' || todo.status === 'doing';
     case 'done':
       return todo.status === 'done';
     case 'blocked':
@@ -92,11 +89,19 @@ function matchesTodoFilter(todo: BackendTodo, filter: TodoFilter) {
   }
 }
 
+function cycleTodoStatus(status: BackendTodo['status'], direction: 1 | -1) {
+  const currentIndex = TODO_STATUS_ORDER.indexOf(status);
+  const safeIndex = currentIndex === -1 ? 0 : currentIndex;
+  const nextIndex = (safeIndex + direction + TODO_STATUS_ORDER.length) % TODO_STATUS_ORDER.length;
+  return TODO_STATUS_ORDER[nextIndex];
+}
+
 function pageHash(page: OutlinePage) {
   return JSON.stringify({
     id: page.id,
     backendId: page.backendId ?? 0,
     workspaceId: page.workspaceId ?? 0,
+    directoryId: page.directoryId ?? 0,
     kind: page.kind,
     date: page.date,
     title: page.title,
@@ -105,15 +110,52 @@ function pageHash(page: OutlinePage) {
       backendId: node.backendId ?? 0,
       parentId: node.parentId,
       text: node.text,
-      status: node.status,
+      todoStatus: node.todoStatus ?? '',
       todoId: node.todoId ?? 0,
     })),
   });
 }
 
+function pageMatchesTitle(page: OutlinePage, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return true;
+  }
+
+  return getPageTitle(page).toLowerCase().includes(normalized);
+}
+
+function pageMatchesBody(page: OutlinePage, query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const text = page.nodes.map((node) => node.text).join(' ').toLowerCase();
+  return text.includes(normalized);
+}
+
+interface DirectoryEntry {
+  key: string;
+  kind: 'directory' | 'note';
+  directory?: BackendDirectory;
+  page?: OutlinePage;
+}
+
+type DirectoryPrompt =
+  | { kind: 'create-directory' }
+  | { kind: 'rename-directory'; directoryId: number }
+  | { kind: 'rename-note'; pageId: string };
+
+type DirectoryClipboard =
+  | { kind: 'note'; pageId: string; mode: 'move' }
+  | { kind: 'directory'; directoryId: number; mode: 'move' | 'copy' };
+
 function App() {
   const [state, dispatch] = useOutlineState();
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchMode, setSearchMode] = useState<'insert' | 'select'>('insert');
+  const [searchScope, setSearchScope] = useState<'title' | 'fulltext'>('title');
   const [backendUrl, setBackendUrl] = useState('http://localhost:8080');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -122,14 +164,31 @@ function App() {
   const [authToken, setAuthToken] = useState('');
   const [userId, setUserId] = useState<number | null>(null);
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
+  const [directories, setDirectories] = useState<BackendDirectory[]>([]);
   const [todos, setTodos] = useState<BackendTodo[]>([]);
   const [todoFilter, setTodoFilter] = useState<TodoFilter>('all');
+  const [activeTodoId, setActiveTodoId] = useState<number | null>(null);
+  const [activeDirectoryId, setActiveDirectoryId] = useState<number | null>(null);
+  const [activeDirectoryEntryKey, setActiveDirectoryEntryKey] = useState<string | null>(null);
+  const [isToolbarMenuOpen, setIsToolbarMenuOpen] = useState(false);
+  const [pendingDeleteNoteId, setPendingDeleteNoteId] = useState<string | null>(null);
+  const [directoryClipboard, setDirectoryClipboard] = useState<DirectoryClipboard | null>(null);
+  const [directoryPrompt, setDirectoryPrompt] = useState<DirectoryPrompt | null>(null);
+  const [directoryPromptValue, setDirectoryPromptValue] = useState('');
+  const [isSubmittingDirectoryPrompt, setIsSubmittingDirectoryPrompt] = useState(false);
   const [updatingTodoId, setUpdatingTodoId] = useState<number | null>(null);
   const [isLoadingTodos, setIsLoadingTodos] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [bootstrapped, setBootstrapped] = useState(false);
   const [initialLoadResolved, setInitialLoadResolved] = useState(false);
+  const [activeSearchResultId, setActiveSearchResultId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const directoryPromptInputRef = useRef<HTMLInputElement | null>(null);
+  const toolbarMenuRef = useRef<HTMLDivElement | null>(null);
+  const lastSearchJPressRef = useRef<number | null>(null);
+  const lastTodoGPressRef = useRef<number | null>(null);
+  const lastDirectoryDPressRef = useRef<number | null>(null);
+  const pendingDirectoryMoveTimerRef = useRef<number | null>(null);
   const stateRef = useRef(state);
   const pagesForPersistence = useMemo(() => getPagesForPersistence(state), [state]);
   const pagesRef = useRef(pagesForPersistence);
@@ -140,16 +199,103 @@ function App() {
   const page = getCurrentPage(state);
   const journalPage = getJournalPage(state);
   const journals = getJournalPages(state);
+  const notes = useMemo(() => state.pages.filter((entry) => entry.kind === 'note'), [state.pages]);
+  const directoryMap = useMemo(() => new Map(directories.map((directory) => [directory.id, directory])), [directories]);
+  const currentDirectory = activeDirectoryId ? directoryMap.get(activeDirectoryId) ?? null : null;
+  const directoryPath = useMemo(() => {
+    const path: BackendDirectory[] = [];
+    let cursor = currentDirectory;
+    const seen = new Set<number>();
+    while (cursor && !seen.has(cursor.id)) {
+      path.unshift(cursor);
+      seen.add(cursor.id);
+      cursor = cursor.parentId ? directoryMap.get(cursor.parentId) ?? null : null;
+    }
+    return path;
+  }, [currentDirectory, directoryMap]);
+  const activeNoteDirectoryPath = useMemo(() => {
+    if (!page || page.kind !== 'note' || !page.directoryId) {
+      return [] as BackendDirectory[];
+    }
+
+    const path: BackendDirectory[] = [];
+    let cursor = directoryMap.get(page.directoryId) ?? null;
+    const seen = new Set<number>();
+    while (cursor && !seen.has(cursor.id)) {
+      path.unshift(cursor);
+      seen.add(cursor.id);
+      cursor = cursor.parentId ? directoryMap.get(cursor.parentId) ?? null : null;
+    }
+    return path;
+  }, [directoryMap, page]);
+  const directoryEntries = useMemo<DirectoryEntry[]>(() => {
+    const childDirectories = directories
+      .filter((directory) => (directory.parentId || 0) === (activeDirectoryId || 0))
+      .sort((left, right) => left.position - right.position || left.name.localeCompare(right.name) || left.id - right.id)
+      .map((directory) => ({ key: `directory-${directory.id}`, kind: 'directory' as const, directory }));
+    const childNotes = notes
+      .filter((entry) => (entry.directoryId ?? 0) === (activeDirectoryId || 0))
+      .sort((left, right) => getPageTitle(left).localeCompare(getPageTitle(right)) || left.id.localeCompare(right.id))
+      .map((entry) => ({ key: `note-${entry.id}`, kind: 'note' as const, page: entry }));
+    return [...childDirectories, ...childNotes];
+  }, [activeDirectoryId, directories, notes]);
+  const activeDirectoryEntry = useMemo(() => {
+    if (directoryEntries.length === 0) {
+      return null;
+    }
+    if (activeDirectoryEntryKey) {
+      return directoryEntries.find((entry) => entry.key === activeDirectoryEntryKey) ?? directoryEntries[0];
+    }
+    return directoryEntries[0];
+  }, [activeDirectoryEntryKey, directoryEntries]);
+  const directoryClipboardPage = useMemo(
+    () => directoryClipboard?.kind === 'note'
+      ? state.pages.find((entry) => entry.id === directoryClipboard.pageId && entry.kind === 'note') ?? null
+      : null,
+    [directoryClipboard, state.pages],
+  );
+  const directoryClipboardDirectory = useMemo(
+    () => directoryClipboard?.kind === 'directory'
+      ? directories.find((entry) => entry.id === directoryClipboard.directoryId) ?? null
+      : null,
+    [directories, directoryClipboard],
+  );
   const filteredTodos = useMemo(() => todos.filter((todo) => matchesTodoFilter(todo, todoFilter)), [todoFilter, todos]);
+  const activeTodo = useMemo(() => {
+    if (filteredTodos.length === 0) {
+      return null;
+    }
+    if (activeTodoId != null) {
+      return filteredTodos.find((todo) => todo.id === activeTodoId) ?? filteredTodos[0] ?? null;
+    }
+    return filteredTodos[0] ?? null;
+  }, [activeTodoId, filteredTodos]);
   const matches = useMemo(() => findMatchingNotes(state, searchQuery), [searchQuery, state]);
+  const titleMatches = useMemo(
+    () => matches.filter(({ page }) => pageMatchesTitle(page, searchQuery)),
+    [matches, searchQuery],
+  );
+  const fullTextMatches = useMemo(
+    () => matches.filter(({ page }) => !pageMatchesTitle(page, searchQuery) && pageMatchesBody(page, searchQuery)),
+    [matches, searchQuery],
+  );
+  const searchMatches = searchScope === 'fulltext' ? fullTextMatches : titleMatches;
+  const visibleMatches = useMemo(() => searchMatches.slice(0, 8), [searchMatches]);
   const topMatch = useMemo(() => {
     const normalized = searchQuery.trim().toLowerCase();
     if (!normalized) {
-      return matches[0]?.page ?? null;
+      return searchMatches[0]?.page ?? null;
     }
 
-    return matches.find((entry) => getPageTitle(entry.page).trim().toLowerCase() === normalized)?.page ?? matches[0]?.page ?? null;
-  }, [matches, searchQuery]);
+    return searchMatches.find((entry) => getPageTitle(entry.page).trim().toLowerCase() === normalized)?.page ?? searchMatches[0]?.page ?? null;
+  }, [searchMatches, searchQuery]);
+  const activeSearchMatch = useMemo(() => {
+    if (searchMode !== 'select') {
+      return topMatch;
+    }
+
+    return visibleMatches.find((entry) => entry.page.id === activeSearchResultId)?.page ?? visibleMatches[0]?.page ?? null;
+  }, [activeSearchResultId, searchMode, topMatch, visibleMatches]);
   const syncEnabled = Boolean(backendUrl.trim() && authToken && workspaceId);
 
   useEffect(() => {
@@ -207,10 +353,110 @@ function App() {
 
   useEffect(() => {
     if (state.activeView === 'search') {
+      setSearchMode('insert');
+      setSearchScope('title');
+      setActiveSearchResultId(null);
+      lastSearchJPressRef.current = null;
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
     }
   }, [state.activeView]);
+
+  useEffect(() => {
+    if (!isToolbarMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (toolbarMenuRef.current?.contains(event.target as Node)) {
+        return;
+      }
+      setIsToolbarMenuOpen(false);
+    };
+
+    window.addEventListener('mousedown', handlePointerDown);
+    return () => window.removeEventListener('mousedown', handlePointerDown);
+  }, [isToolbarMenuOpen]);
+
+  useEffect(() => {
+    setIsToolbarMenuOpen(false);
+  }, [state.activePageId, state.activeView]);
+
+  useEffect(() => () => {
+    if (pendingDirectoryMoveTimerRef.current) {
+      window.clearTimeout(pendingDirectoryMoveTimerRef.current);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (searchMode !== 'select') {
+      if (activeSearchResultId !== null) {
+        setActiveSearchResultId(null);
+      }
+      return;
+    }
+
+    if (visibleMatches.length === 0) {
+      if (activeSearchResultId !== null) {
+        setActiveSearchResultId(null);
+      }
+      return;
+    }
+
+    if (!activeSearchResultId || !visibleMatches.some((entry) => entry.page.id === activeSearchResultId)) {
+      setActiveSearchResultId(visibleMatches[0].page.id);
+    }
+  }, [activeSearchResultId, searchMode, visibleMatches]);
+
+  useEffect(() => {
+    if (!directoryPrompt) {
+      return;
+    }
+    directoryPromptInputRef.current?.focus();
+    directoryPromptInputRef.current?.select();
+  }, [directoryPrompt]);
+
+  useEffect(() => {
+    if (filteredTodos.length === 0) {
+      if (activeTodoId !== null) {
+        setActiveTodoId(null);
+      }
+      return;
+    }
+
+    if (activeTodoId == null || !filteredTodos.some((todo) => todo.id === activeTodoId)) {
+      setActiveTodoId(filteredTodos[0].id);
+    }
+  }, [activeTodoId, filteredTodos]);
+
+  useEffect(() => {
+    if (activeDirectoryId != null && !directories.some((directory) => directory.id === activeDirectoryId)) {
+      setActiveDirectoryId(null);
+    }
+  }, [activeDirectoryId, directories]);
+
+  useEffect(() => {
+    if (directoryEntries.length === 0) {
+      if (activeDirectoryEntryKey !== null) {
+        setActiveDirectoryEntryKey(null);
+      }
+      return;
+    }
+    if (!activeDirectoryEntryKey || !directoryEntries.some((entry) => entry.key === activeDirectoryEntryKey)) {
+      setActiveDirectoryEntryKey(directoryEntries[0].key);
+    }
+  }, [activeDirectoryEntryKey, directoryEntries]);
+
+  useEffect(() => {
+    if (state.activeView !== 'todos' || !activeTodo) {
+      return;
+    }
+
+    document.querySelector<HTMLElement>(`[data-todo-id="${activeTodo.id}"]`)?.scrollIntoView({
+      block: 'nearest',
+      behavior: 'smooth',
+    });
+  }, [activeTodo, state.activeView]);
 
   const applyRemotePages = useCallback((nextPages: OutlinePage[]) => {
     dispatch({ type: 'hydrate', pages: nextPages });
@@ -252,8 +498,7 @@ function App() {
     if (!node) {
       return;
     }
-    const nextStatus = todoStatusToNodeStatus(todo.status);
-    if (node.status === nextStatus) {
+    if (node.todoStatus === todo.status) {
       return;
     }
     dispatch({
@@ -262,7 +507,7 @@ function App() {
         ...page,
         nodes: page.nodes.map((entry) => (
           entry.id === node.id
-            ? { ...entry, status: nextStatus, todoId: todo.id, updatedAt: todo.updatedAt || entry.updatedAt }
+            ? { ...entry, todoStatus: todo.status, todoId: todo.id, updatedAt: todo.updatedAt || entry.updatedAt }
             : entry
         )),
       },
@@ -299,11 +544,12 @@ function App() {
         throw new Error('No workspace is available for this account.');
       }
 
-      const documents = await listDocuments(backendUrl, nextToken, nextWorkspaceId);
+      const { documents, directories: nextDirectories } = await listDocuments(backendUrl, nextToken, nextWorkspaceId);
       const pages = documents.map(documentToOutlinePage);
       applyRemotePages(pages);
+      setDirectories(nextDirectories);
       setWorkspaceId(nextWorkspaceId);
-      setSyncMessage(`Loaded ${documents.length} document${documents.length === 1 ? '' : 's'}.`);
+      setSyncMessage(`Loaded ${documents.length} document${documents.length === 1 ? '' : 's'} and ${nextDirectories.length} director${nextDirectories.length === 1 ? 'y' : 'ies'}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Sync failed.';
       setSyncMessage(message);
@@ -341,18 +587,21 @@ function App() {
     void loadTodoList();
   }, [loadTodoList, state.activeView]);
 
-  const flushDirtyPages = useCallback(async () => {
+  const flushDirtyPages = useCallback(async (snapshotOverride?: OutlinePage[]) => {
     if (!syncEnabled) {
       return;
     }
 
     if (flushPromiseRef.current) {
       await flushPromiseRef.current;
-      return;
+      if (!snapshotOverride) {
+        return;
+      }
     }
 
     const run = (async () => {
-      const snapshot = pagesRef.current;
+      const snapshot = snapshotOverride ?? pagesRef.current;
+      let savedAnyPage = false;
       for (const nextPage of snapshot) {
         const nextHash = pageHash(nextPage);
         if (lastSavedHashesRef.current.get(nextPage.id) === nextHash) {
@@ -361,8 +610,13 @@ function App() {
 
         const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(nextPage, workspaceId!));
         const savedPage = documentToOutlinePage(savedDocument);
-        dispatch({ type: 'mergeRemotePage', page: savedPage });
+        dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: nextPage.id });
         lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
+        savedAnyPage = true;
+      }
+
+      if (savedAnyPage && userId) {
+        await loadTodoList();
       }
     })();
 
@@ -370,7 +624,7 @@ function App() {
       flushPromiseRef.current = null;
     });
     await flushPromiseRef.current;
-  }, [authToken, backendUrl, dispatch, syncEnabled, workspaceId]);
+  }, [authToken, backendUrl, dispatch, loadTodoList, syncEnabled, userId, workspaceId]);
 
   const persistSignature = useMemo(
     () => pagesForPersistence.map((nextPage) => `${nextPage.id}:${pageHash(nextPage)}`).join('|'),
@@ -418,27 +672,625 @@ function App() {
   }, [flushDirtyPages]);
 
   const dispatchAfterFlush = useCallback((action: Parameters<typeof dispatch>[0]) => {
+    const nextState = reduceOutlineState(stateRef.current, action);
+    dispatch(action);
+
     if (!syncEnabled) {
-      dispatch(action);
       return;
     }
 
-    void flushDirtyPages()
-      .catch((error) => {
-        setSyncMessage(error instanceof Error ? error.message : 'Save failed before navigation.');
-      })
-      .finally(() => {
-        dispatch(action);
-      });
+    void flushDirtyPages(getPagesForPersistence(nextState)).catch((error) => {
+      setSyncMessage(error instanceof Error ? error.message : 'Save failed after navigation.');
+    });
   }, [dispatch, flushDirtyPages, syncEnabled]);
+
+  const openDirectoryBrowser = useCallback(() => {
+    const activeNote = page?.kind === 'note' ? page : null;
+    const nextDirectoryId = activeNote?.directoryId ?? null;
+    setActiveDirectoryId(nextDirectoryId);
+    setActiveDirectoryEntryKey(activeNote ? `note-${activeNote.id}` : null);
+    dispatchAfterFlush({ type: 'openDirectory' });
+  }, [dispatchAfterFlush, page]);
+
+  const enterDirectory = useCallback((directoryId: number | null) => {
+    setActiveDirectoryId(directoryId);
+    setActiveDirectoryEntryKey(null);
+  }, []);
+
+  const openDirectoryEntry = useCallback((entry: DirectoryEntry | null) => {
+    if (!entry) {
+      return;
+    }
+    if (entry.kind === 'directory') {
+      enterDirectory(entry.directory?.id ?? null);
+      return;
+    }
+    if (entry.page) {
+      dispatchAfterFlush({ type: 'selectNote', pageId: entry.page.id });
+    }
+  }, [dispatchAfterFlush, enterDirectory]);
+
+  const openCreateDirectoryPrompt = useCallback(() => {
+    setDirectoryPrompt({ kind: 'create-directory' });
+    setDirectoryPromptValue('');
+  }, []);
+
+  const openRenameDirectoryPrompt = useCallback((directory: BackendDirectory) => {
+    setDirectoryPrompt({ kind: 'rename-directory', directoryId: directory.id });
+    setDirectoryPromptValue(directory.name);
+  }, []);
+
+  const openRenameNotePrompt = useCallback((entryPage: OutlinePage) => {
+    setDirectoryPrompt({ kind: 'rename-note', pageId: entryPage.id });
+    setDirectoryPromptValue(entryPage.title);
+  }, []);
+
+  const upsertDirectory = useCallback((directory: BackendDirectory) => {
+    setDirectories((current) => {
+      const existingIndex = current.findIndex((entry) => entry.id === directory.id);
+      if (existingIndex === -1) {
+        return [...current, directory];
+      }
+      return current.map((entry, index) => (index === existingIndex ? directory : entry));
+    });
+  }, []);
+
+  const renameDirectoryEntry = useCallback(async () => {
+    if (!activeDirectoryEntry) {
+      return;
+    }
+    if (activeDirectoryEntry.kind === 'directory') {
+      if (activeDirectoryEntry.directory) {
+        openRenameDirectoryPrompt(activeDirectoryEntry.directory);
+      }
+      return;
+    }
+
+    if (!activeDirectoryEntry.page) {
+      return;
+    }
+    openRenameNotePrompt(activeDirectoryEntry.page);
+  }, [activeDirectoryEntry, openRenameDirectoryPrompt, openRenameNotePrompt]);
+
+  const clearPendingDirectoryMove = useCallback(() => {
+    if (pendingDirectoryMoveTimerRef.current) {
+      window.clearTimeout(pendingDirectoryMoveTimerRef.current);
+      pendingDirectoryMoveTimerRef.current = null;
+    }
+    lastDirectoryDPressRef.current = null;
+  }, []);
+
+  const createDirectoryHere = useCallback(async () => {
+    if (isSubmittingDirectoryPrompt) {
+      return;
+    }
+    const name = directoryPromptValue.trim();
+    if (!name) {
+      return;
+    }
+    if (!authToken || !workspaceId) {
+      setSyncMessage('Log in first to create directories.');
+      return;
+    }
+    setIsSubmittingDirectoryPrompt(true);
+    try {
+      const savedDirectory = await createDirectory(backendUrl, authToken, workspaceId, activeDirectoryId ?? 0, name);
+      upsertDirectory(savedDirectory);
+      setActiveDirectoryEntryKey(`directory-${savedDirectory.id}`);
+      setDirectoryPrompt(null);
+      setDirectoryPromptValue('');
+      setSyncMessage(`Created ${savedDirectory.name}.`);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'Directory create failed.');
+    } finally {
+      setIsSubmittingDirectoryPrompt(false);
+    }
+  }, [activeDirectoryId, authToken, backendUrl, directoryPromptValue, isSubmittingDirectoryPrompt, upsertDirectory, workspaceId]);
+
+  const submitDirectoryPrompt = useCallback(async () => {
+    if (!directoryPrompt || isSubmittingDirectoryPrompt) {
+      return;
+    }
+    if (directoryPrompt.kind === 'create-directory') {
+      await createDirectoryHere();
+      return;
+    }
+    if (directoryPrompt.kind === 'rename-directory') {
+      const nextName = directoryPromptValue.trim();
+      const target = directories.find((entry) => entry.id === directoryPrompt.directoryId);
+      if (!target || !nextName || nextName === target.name) {
+        setDirectoryPrompt(null);
+        return;
+      }
+      if (!authToken) {
+        setSyncMessage('Log in first to rename directories.');
+        return;
+      }
+      setIsSubmittingDirectoryPrompt(true);
+      try {
+        const savedDirectory = await updateDirectory(backendUrl, authToken, target.id, nextName, target.parentId);
+        upsertDirectory(savedDirectory);
+        setDirectoryPrompt(null);
+        setDirectoryPromptValue('');
+        setSyncMessage(`Renamed directory to ${savedDirectory.name}.`);
+      } catch (error) {
+        setSyncMessage(error instanceof Error ? error.message : 'Directory rename failed.');
+      } finally {
+        setIsSubmittingDirectoryPrompt(false);
+      }
+      return;
+    }
+    const nextTitle = directoryPromptValue.trim();
+    const pageToRename = stateRef.current.pages.find((entry) => entry.id === directoryPrompt.pageId && entry.kind === 'note');
+    if (!pageToRename || !nextTitle || nextTitle === pageToRename.title) {
+      setDirectoryPrompt(null);
+      return;
+    }
+    const renamedPage = { ...pageToRename, title: nextTitle };
+    dispatch({ type: 'mergeRemotePage', page: renamedPage, previousPageId: pageToRename.id });
+    setIsSubmittingDirectoryPrompt(true);
+    try {
+      if (syncEnabled) {
+        const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(renamedPage, workspaceId!));
+        dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: pageToRename.id });
+      }
+      setDirectoryPrompt(null);
+      setDirectoryPromptValue('');
+      setSyncMessage(`Renamed note to ${nextTitle}.`);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'Note rename failed.');
+    } finally {
+      setIsSubmittingDirectoryPrompt(false);
+    }
+  }, [authToken, backendUrl, createDirectoryHere, directories, directoryPrompt, directoryPromptValue, dispatch, isSubmittingDirectoryPrompt, syncEnabled, upsertDirectory, workspaceId]);
+
+  const deleteSelectedDirectory = useCallback(async () => {
+    if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'directory' || !activeDirectoryEntry.directory) {
+      return;
+    }
+    if (!authToken) {
+      setSyncMessage('Log in first to delete directories.');
+      return;
+    }
+    try {
+      await deleteDirectory(backendUrl, authToken, activeDirectoryEntry.directory.id);
+      setDirectories((current) => current.filter((entry) => entry.id !== activeDirectoryEntry.directory?.id));
+      setActiveDirectoryEntryKey(null);
+      setSyncMessage(`Deleted ${activeDirectoryEntry.directory.name}.`);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'Directory delete failed.');
+    }
+  }, [activeDirectoryEntry, authToken, backendUrl]);
+
+  const duplicateNoteIntoDirectory = useCallback(async (sourcePage: OutlinePage, targetDirectoryId: number | null) => {
+    if (!authToken || !workspaceId) {
+      throw new Error('Log in first to copy directories.');
+    }
+
+    const nodeIdMap = new Map<string, string>();
+    for (const node of sourcePage.nodes) {
+      nodeIdMap.set(node.id, `node-${crypto.randomUUID()}`);
+    }
+
+    const duplicatedPage: OutlinePage = {
+      ...sourcePage,
+      id: `note-${crypto.randomUUID()}`,
+      backendId: undefined,
+      workspaceId,
+      directoryId: targetDirectoryId,
+      createdAt: undefined,
+      updatedAt: undefined,
+      nodes: sourcePage.nodes.map((node) => ({
+        ...node,
+        id: nodeIdMap.get(node.id) ?? `node-${crypto.randomUUID()}`,
+        backendId: undefined,
+        todoId: null,
+        createdAt: undefined,
+        updatedAt: undefined,
+        parentId: node.parentId ? (nodeIdMap.get(node.parentId) ?? null) : null,
+      })),
+    };
+
+    const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(duplicatedPage, workspaceId));
+    const savedPage = documentToOutlinePage(savedDocument);
+    dispatch({ type: 'mergeRemotePage', page: savedPage });
+    return savedPage;
+  }, [authToken, backendUrl, dispatch, workspaceId]);
+
+  const duplicateDirectoryIntoParent = useCallback(async (sourceDirectory: BackendDirectory, targetParentId: number | null) => {
+    if (!authToken || !workspaceId) {
+      throw new Error('Log in first to copy directories.');
+    }
+
+    const savedDirectory = await createDirectory(backendUrl, authToken, workspaceId, targetParentId ?? 0, sourceDirectory.name);
+    upsertDirectory(savedDirectory);
+
+    const childNotes = stateRef.current.pages
+      .filter((entry) => entry.kind === 'note' && (entry.directoryId ?? 0) === sourceDirectory.id)
+      .sort((left, right) => getPageTitle(left).localeCompare(getPageTitle(right)) || left.id.localeCompare(right.id));
+    for (const childNote of childNotes) {
+      await duplicateNoteIntoDirectory(childNote, savedDirectory.id);
+    }
+
+    const childDirectories = directories
+      .filter((entry) => (entry.parentId || 0) === sourceDirectory.id)
+      .sort((left, right) => left.position - right.position || left.name.localeCompare(right.name) || left.id - right.id);
+    for (const childDirectory of childDirectories) {
+      await duplicateDirectoryIntoParent(childDirectory, savedDirectory.id);
+    }
+
+    return savedDirectory;
+  }, [authToken, backendUrl, directories, duplicateNoteIntoDirectory, upsertDirectory, workspaceId]);
+
+  const pasteClipboardHere = useCallback(async () => {
+    if (!directoryClipboard) {
+      setSyncMessage('Clipboard is empty. Use d on a note or directory, or y on a directory first.');
+      return;
+    }
+
+    if (directoryClipboard.kind === 'note') {
+      const clipboardPage = stateRef.current.pages.find((entry) => entry.id === directoryClipboard.pageId && entry.kind === 'note');
+      if (!clipboardPage) {
+        setSyncMessage('Clipboard note is no longer available.');
+        return;
+      }
+      const movedPage = { ...clipboardPage, directoryId: activeDirectoryId ?? null };
+      dispatch({ type: 'mergeRemotePage', page: movedPage, previousPageId: clipboardPage.id });
+      try {
+        if (syncEnabled) {
+          const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(movedPage, workspaceId!));
+          dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: clipboardPage.id });
+        }
+        setActiveDirectoryEntryKey(`note-${movedPage.id}`);
+        setDirectoryClipboard(null);
+        setSyncMessage(`Moved ${getPageTitle(movedPage)}.`);
+      } catch (error) {
+        setSyncMessage(error instanceof Error ? error.message : 'Move failed.');
+      }
+      return;
+    }
+
+    const sourceDirectory = directories.find((entry) => entry.id === directoryClipboard.directoryId);
+    if (!sourceDirectory) {
+      setSyncMessage('Clipboard directory is no longer available.');
+      return;
+    }
+
+    if (directoryClipboard.mode === 'move') {
+      if (!authToken) {
+        setSyncMessage('Log in first to move directories.');
+        return;
+      }
+      try {
+        const savedDirectory = await updateDirectory(
+          backendUrl,
+          authToken,
+          sourceDirectory.id,
+          sourceDirectory.name,
+          activeDirectoryId ?? 0,
+        );
+        upsertDirectory(savedDirectory);
+        setDirectoryClipboard(null);
+        setActiveDirectoryEntryKey(`directory-${savedDirectory.id}`);
+        setSyncMessage(`Moved ${savedDirectory.name}.`);
+      } catch (error) {
+        setSyncMessage(error instanceof Error ? error.message : 'Directory move failed.');
+      }
+      return;
+    }
+
+    try {
+      const savedDirectory = await duplicateDirectoryIntoParent(sourceDirectory, activeDirectoryId ?? null);
+      setActiveDirectoryEntryKey(`directory-${savedDirectory.id}`);
+      setSyncMessage(`Copied ${sourceDirectory.name}.`);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'Directory copy failed.');
+    }
+  }, [activeDirectoryId, authToken, backendUrl, directories, directoryClipboard, dispatch, duplicateDirectoryIntoParent, syncEnabled, upsertDirectory, workspaceId]);
+
+  const cutSelectedNoteToClipboard = useCallback(() => {
+    if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'note' || !activeDirectoryEntry.page) {
+      setSyncMessage('Select a note to move.');
+      return;
+    }
+    setDirectoryClipboard({ kind: 'note', pageId: activeDirectoryEntry.page.id, mode: 'move' });
+    setSyncMessage(`Ready to move ${getPageTitle(activeDirectoryEntry.page)}. Press p in the destination directory.`);
+  }, [activeDirectoryEntry]);
+
+  const copySelectedDirectoryToClipboard = useCallback(() => {
+    if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'directory' || !activeDirectoryEntry.directory) {
+      setSyncMessage('Select a directory to copy.');
+      return;
+    }
+    clearPendingDirectoryMove();
+    setDirectoryClipboard({ kind: 'directory', directoryId: activeDirectoryEntry.directory.id, mode: 'copy' });
+    setSyncMessage(`Ready to copy ${activeDirectoryEntry.directory.name}. Press p in the destination directory.`);
+  }, [activeDirectoryEntry, clearPendingDirectoryMove]);
+
+  const moveSelectedDirectoryToClipboard = useCallback(() => {
+    if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'directory' || !activeDirectoryEntry.directory) {
+      setSyncMessage('Select a directory to move.');
+      return;
+    }
+    clearPendingDirectoryMove();
+    setDirectoryClipboard({ kind: 'directory', directoryId: activeDirectoryEntry.directory.id, mode: 'move' });
+    setSyncMessage(`Ready to move ${activeDirectoryEntry.directory.name}. Press p in the destination directory.`);
+  }, [activeDirectoryEntry, clearPendingDirectoryMove]);
+
+  const activeNotePage = page?.kind === 'note' ? page : null;
+  const canDeleteNote = state.activeView === 'note' && activeNotePage !== null;
+  const pendingDeleteNote = pendingDeleteNoteId
+    ? state.pages.find((entry) => entry.id === pendingDeleteNoteId && entry.kind === 'note') ?? null
+    : null;
+
+  const handleDeleteNote = useCallback(() => {
+    console.log('[toolbar] delete note pressed', {
+      activeView: state.activeView,
+      activePageId: state.activePageId,
+      activeNotePageId: activeNotePage?.id ?? null,
+      activeNoteBackendId: activeNotePage?.backendId ?? null,
+      syncEnabled,
+    });
+
+    if (!activeNotePage || state.activeView !== 'note') {
+      console.log('[toolbar] delete note blocked: no active note view');
+      setIsToolbarMenuOpen(false);
+      setSyncMessage('Open a note to delete it.');
+      return;
+    }
+
+    setIsToolbarMenuOpen(false);
+
+    console.log('[toolbar] opening inline delete confirmation');
+    setPendingDeleteNoteId(activeNotePage.id);
+  }, [activeNotePage, syncEnabled, state.activeView, state.activePageId]);
+
+  const confirmDeleteNote = useCallback(() => {
+    if (!pendingDeleteNote) {
+      setPendingDeleteNoteId(null);
+      return;
+    }
+
+    setPendingDeleteNoteId(null);
+
+    if (pendingDeleteNote.backendId && syncEnabled) {
+      console.log('[toolbar] deleting synced note', { backendId: pendingDeleteNote.backendId });
+      void (async () => {
+        try {
+          await flushDirtyPages();
+          await deleteDocument(backendUrl, authToken, pendingDeleteNote.backendId!);
+          dispatch({ type: 'deleteNote', pageId: pendingDeleteNote.id });
+          setSyncMessage(`Deleted ${getPageTitle(pendingDeleteNote)}.`);
+        } catch (error) {
+          console.error('[toolbar] synced delete failed', error);
+          setSyncMessage(error instanceof Error ? error.message : 'Delete failed.');
+        }
+      })();
+      return;
+    }
+
+    console.log('[toolbar] deleting local note', { pageId: pendingDeleteNote.id });
+    dispatch({ type: 'deleteNote', pageId: pendingDeleteNote.id });
+    setSyncMessage(`Deleted ${getPageTitle(pendingDeleteNote)}.`);
+  }, [authToken, backendUrl, dispatch, flushDirtyPages, pendingDeleteNote, syncEnabled]);
+
+  const openSettingsFromMenu = useCallback(() => {
+    setIsToolbarMenuOpen(false);
+    dispatchAfterFlush({ type: 'openSettings' });
+  }, [dispatchAfterFlush]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos')) {
+      const target = event.target;
+      const isFormTarget = target instanceof HTMLElement && (
+        target.isContentEditable
+        || target.tagName === 'INPUT'
+        || target.tagName === 'TEXTAREA'
+        || target.tagName === 'SELECT'
+      );
+
+      if (event.key === 'Escape' && isToolbarMenuOpen) {
+        event.preventDefault();
+        setIsToolbarMenuOpen(false);
+        return;
+      }
+
+      if (event.key === 'Escape' && pendingDeleteNoteId) {
+        event.preventDefault();
+        setPendingDeleteNoteId(null);
+        return;
+      }
+
+      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos' || state.activeView === 'directory')) {
         event.preventDefault();
         setSearchQuery('');
+        setDirectoryPrompt(null);
+        lastTodoGPressRef.current = null;
         dispatchAfterFlush({ type: 'selectJournal' });
         return;
+      }
+
+      if (state.activeView === 'directory' && directoryPrompt && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setDirectoryPrompt(null);
+          setDirectoryPromptValue('');
+          return;
+        }
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          void submitDirectoryPrompt();
+          return;
+        }
+      }
+
+      if (state.activeView === 'directory' && !event.metaKey && !event.ctrlKey && !event.altKey && !isFormTarget) {
+        const currentIndex = activeDirectoryEntry ? directoryEntries.findIndex((entry) => entry.key === activeDirectoryEntry.key) : -1;
+        const lowerKey = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+        const moveSelection = (direction: 1 | -1) => {
+          if (directoryEntries.length === 0) {
+            return;
+          }
+          const nextIndex = currentIndex === -1
+            ? 0
+            : Math.max(0, Math.min(directoryEntries.length - 1, currentIndex + direction));
+          setActiveDirectoryEntryKey(directoryEntries[nextIndex]?.key ?? null);
+        };
+
+        if (lowerKey === 'a') {
+          event.preventDefault();
+          openCreateDirectoryPrompt();
+          return;
+        }
+
+        if (lowerKey === 'r') {
+          event.preventDefault();
+          void renameDirectoryEntry();
+          return;
+        }
+
+        if (lowerKey === 'p') {
+          event.preventDefault();
+          clearPendingDirectoryMove();
+          void pasteClipboardHere();
+          return;
+        }
+
+        if (lowerKey === 'd') {
+          event.preventDefault();
+          if (activeDirectoryEntry?.kind === 'directory') {
+            if (lastDirectoryDPressRef.current && Date.now() - lastDirectoryDPressRef.current <= 320) {
+              clearPendingDirectoryMove();
+              void deleteSelectedDirectory();
+              return;
+            }
+
+            clearPendingDirectoryMove();
+            lastDirectoryDPressRef.current = Date.now();
+            pendingDirectoryMoveTimerRef.current = window.setTimeout(() => {
+              moveSelectedDirectoryToClipboard();
+              pendingDirectoryMoveTimerRef.current = null;
+              lastDirectoryDPressRef.current = null;
+            }, 320);
+            return;
+          }
+
+          clearPendingDirectoryMove();
+          cutSelectedNoteToClipboard();
+          return;
+        }
+
+        if (lowerKey === 'y') {
+          event.preventDefault();
+          clearPendingDirectoryMove();
+          copySelectedDirectoryToClipboard();
+          return;
+        }
+
+        clearPendingDirectoryMove();
+
+        if (event.key === 'j' || event.key === 'ArrowDown') {
+          event.preventDefault();
+          moveSelection(1);
+          return;
+        }
+
+        if (event.key === 'k' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          moveSelection(-1);
+          return;
+        }
+
+        if (event.key === 'h' || event.key === 'ArrowLeft') {
+          if (!currentDirectory) {
+            return;
+          }
+          event.preventDefault();
+          enterDirectory(currentDirectory.parentId || null);
+          return;
+        }
+
+        if (event.key === 'l' || event.key === 'ArrowRight') {
+          if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'directory') {
+            return;
+          }
+          event.preventDefault();
+          openDirectoryEntry(activeDirectoryEntry);
+          return;
+        }
+
+        if (event.key === 'Enter') {
+          if (!activeDirectoryEntry) {
+            return;
+          }
+          event.preventDefault();
+          openDirectoryEntry(activeDirectoryEntry);
+          return;
+        }
+      }
+
+      if (state.activeView === 'todos' && !event.metaKey && !event.ctrlKey && !event.altKey && !isFormTarget) {
+        const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+
+        if (key === 'g') {
+          event.preventDefault();
+          if (lastTodoGPressRef.current && Date.now() - lastTodoGPressRef.current <= 320) {
+            if (filteredTodos.length > 0) {
+              setActiveTodoId(filteredTodos[0].id);
+            }
+            lastTodoGPressRef.current = null;
+            return;
+          }
+
+          lastTodoGPressRef.current = Date.now();
+          return;
+        }
+
+        lastTodoGPressRef.current = null;
+
+        if (event.key === 'j' || event.key === 'ArrowDown') {
+          if (filteredTodos.length === 0) {
+            return;
+          }
+          event.preventDefault();
+          const currentIndex = activeTodo ? filteredTodos.findIndex((todo) => todo.id === activeTodo.id) : -1;
+          const nextTodo = filteredTodos[Math.min(filteredTodos.length - 1, currentIndex + 1)] ?? filteredTodos[0];
+          setActiveTodoId(nextTodo.id);
+          return;
+        }
+
+        if (event.key === 'k' || event.key === 'ArrowUp') {
+          if (filteredTodos.length === 0) {
+            return;
+          }
+          event.preventDefault();
+          const currentIndex = activeTodo ? filteredTodos.findIndex((todo) => todo.id === activeTodo.id) : filteredTodos.length;
+          const nextTodo = filteredTodos[Math.max(0, currentIndex - 1)] ?? filteredTodos[0];
+          setActiveTodoId(nextTodo.id);
+          return;
+        }
+
+        if (event.key === 'Enter' && activeTodo) {
+          event.preventDefault();
+          openTodoSource(activeTodo);
+          return;
+        }
+      } else {
+        lastTodoGPressRef.current = null;
+      }
+
+      if (state.activeView === 'todos' && (event.metaKey || event.ctrlKey) && event.shiftKey && !isFormTarget) {
+        if (event.key === 'ArrowDown') {
+          event.preventDefault();
+          cycleActiveTodoStatus(1);
+          return;
+        }
+
+        if (event.key === 'ArrowUp') {
+          event.preventDefault();
+          cycleActiveTodoStatus(-1);
+          return;
+        }
       }
 
       if (!(event.metaKey || event.ctrlKey)) {
@@ -454,7 +1306,17 @@ function App() {
       if (event.key.toLowerCase() === 'k') {
         event.preventDefault();
         setSearchQuery('');
+        setSearchMode('insert');
+        setSearchScope('title');
+        setActiveSearchResultId(null);
+        lastSearchJPressRef.current = null;
         dispatchAfterFlush({ type: 'openSearch' });
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'o') {
+        event.preventDefault();
+        openDirectoryBrowser();
         return;
       }
 
@@ -472,24 +1334,85 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [dispatchAfterFlush, state.activeView]);
+  }, [
+    activeDirectoryEntry,
+    activeTodo,
+    clearPendingDirectoryMove,
+    copySelectedDirectoryToClipboard,
+    createDirectoryHere,
+    currentDirectory,
+    cycleActiveTodoStatus,
+    cutSelectedNoteToClipboard,
+    deleteSelectedDirectory,
+    directoryEntries,
+    directoryPrompt,
+    dispatchAfterFlush,
+    enterDirectory,
+    filteredTodos,
+    isToolbarMenuOpen,
+    moveSelectedDirectoryToClipboard,
+    pendingDeleteNoteId,
+    openDirectoryBrowser,
+    openCreateDirectoryPrompt,
+    openDirectoryEntry,
+    moveActiveSearchResult,
+    pasteClipboardHere,
+    renameDirectoryEntry,
+    state.activeView,
+    submitDirectoryPrompt,
+  ]);
+
+  const toolbarMenu = (
+    <div className="toolbar-menu-shell" ref={toolbarMenuRef}>
+      <button
+        type="button"
+        className="settings-trigger"
+        aria-label="Open menu"
+        aria-expanded={isToolbarMenuOpen}
+        onClick={() => setIsToolbarMenuOpen((current) => !current)}
+      >
+        <span />
+        <span />
+        <span />
+      </button>
+
+      {isToolbarMenuOpen ? (
+        <div className="toolbar-menu-dropdown" role="menu" aria-label="Workspace menu">
+          <button
+            type="button"
+            className="toolbar-menu-item"
+            role="menuitem"
+            data-disabled={canDeleteNote ? 'false' : 'true'}
+            onMouseDown={(event) => {
+              console.log('[toolbar] delete note mouse down');
+              event.preventDefault();
+              handleDeleteNote();
+            }}
+          >
+            Delete Note
+          </button>
+          <button type="button" className="toolbar-menu-item" role="menuitem" disabled>
+            Export to Markdown
+          </button>
+          <button type="button" className="toolbar-menu-item" role="menuitem" disabled>
+            See properties
+          </button>
+          <button type="button" className="toolbar-menu-item" role="menuitem" disabled>
+            Reindex for AI
+          </button>
+          <button type="button" className="toolbar-menu-item toolbar-menu-item-settings" role="menuitem" onClick={openSettingsFromMenu}>
+            Settings
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
 
   if (!page) {
     return (
       <main className="app-shell">
         <section className="page-shell" data-center-column={centerColumn}>
-          <header className="workspace-toolbar">
-            <button
-              type="button"
-              className="settings-trigger"
-              aria-label="Open settings"
-              onClick={() => dispatchAfterFlush({ type: 'openSettings' })}
-            >
-              <span />
-              <span />
-              <span />
-            </button>
-          </header>
+          <header className="workspace-toolbar">{toolbarMenu}</header>
 
           <div className="workspace-content">
             {state.activeView === 'settings' ? (
@@ -591,6 +1514,8 @@ function App() {
   const openSearchResult = (pageId: string) => {
     dispatchAfterFlush({ type: 'selectNote', pageId });
     setSearchQuery('');
+    setSearchMode('insert');
+    setActiveSearchResultId(null);
   };
 
   const submitSearch = () => {
@@ -599,14 +1524,30 @@ function App() {
       return;
     }
 
-    if (topMatch) {
-      openSearchResult(topMatch.id);
+    if (activeSearchMatch) {
+      openSearchResult(activeSearchMatch.id);
       return;
     }
 
     dispatch({ type: 'createNote', title: nextTitle });
     setSearchQuery('');
+    setSearchMode('insert');
+    setActiveSearchResultId(null);
   };
+
+  function moveActiveSearchResult(direction: 1 | -1) {
+    if (visibleMatches.length === 0) {
+      return;
+    }
+
+    setSearchMode('select');
+    setActiveSearchResultId((current) => {
+      const currentIndex = current ? visibleMatches.findIndex((entry) => entry.page.id === current) : -1;
+      const baseIndex = currentIndex === -1 ? 0 : currentIndex;
+      const nextIndex = Math.max(0, Math.min(visibleMatches.length - 1, baseIndex + direction));
+      return visibleMatches[nextIndex]?.page.id ?? visibleMatches[0].page.id;
+    });
+  }
 
   const runLogin = async () => {
     if (!backendUrl.trim()) {
@@ -650,6 +1591,7 @@ function App() {
     setAuthToken('');
     setUserId(null);
     setWorkspaceId(null);
+    setDirectories([]);
     setTodos([]);
     setSyncMessage('Logged out.');
     bootSyncRef.current = false;
@@ -657,6 +1599,9 @@ function App() {
 
   const openTodoSource = (todo: BackendTodo) => {
     if (!todo.sourceDocumentId) {
+      if (todo.createdAtRecordingName) {
+        setSyncMessage('Opening recording sources is not available yet in the native app.');
+      }
       return;
     }
     const sourcePage = state.pages.find((entry) => entry.backendId === todo.sourceDocumentId);
@@ -703,21 +1648,17 @@ function App() {
     }
   };
 
+  function cycleActiveTodoStatus(direction: 1 | -1) {
+    if (!activeTodo || updatingTodoId === activeTodo.id) {
+      return;
+    }
+    void handleTodoStatusChange(activeTodo, cycleTodoStatus(activeTodo.status, direction));
+  }
+
   return (
     <main className="app-shell">
       <section className="page-shell" data-center-column={centerColumn}>
-        <header className="workspace-toolbar">
-          <button
-            type="button"
-            className="settings-trigger"
-            aria-label="Open settings"
-            onClick={() => dispatchAfterFlush({ type: 'openSettings' })}
-          >
-            <span />
-            <span />
-            <span />
-          </button>
-        </header>
+        <header className="workspace-toolbar">{toolbarMenu}</header>
 
         <div className="workspace-content">
         {state.activeView === 'journals' ? (
@@ -758,16 +1699,16 @@ function App() {
                             <span className="row-gutter" aria-hidden="true">
                               •
                             </span>
-                            {node.status === 'note' ? null : (
+                            {node.todoStatus ? (
                               <button
                                 type="button"
                                 className="status-chip status-chip-button"
-                                data-status={node.status}
+                                data-status={node.todoStatus}
                                 onClick={() => dispatch({ type: 'toggleNodeStatus', nodeId: node.id })}
                               >
-                                {node.status}
+                                {node.todoStatus}
                               </button>
-                            )}
+                            ) : null}
                             <div className="journal-preview-content">
                               <p className="row-text">{node.text}</p>
                             </div>
@@ -784,7 +1725,7 @@ function App() {
 
         {state.activeView === 'note' ? (
           <>
-            <header className="page-header">
+            <header className="page-header note-header-sticky">
               {page.kind === 'note' ? <p className="page-date">{getPageDateLabel(page)}</p> : null}
               <div className="page-heading-row">
                 <input
@@ -794,7 +1735,9 @@ function App() {
                   placeholder="Untitled note"
                   onChange={(event) => dispatch({ type: 'updatePageTitle', title: event.target.value })}
                 />
-                <span className="page-kind">Note</span>
+                {activeNoteDirectoryPath.length > 0 ? (
+                  <span className="page-kind">{activeNoteDirectoryPath.map((entry) => entry.name).join(' / ')}</span>
+                ) : null}
               </div>
             </header>
 
@@ -802,11 +1745,94 @@ function App() {
           </>
         ) : null}
 
+        {state.activeView === 'directory' ? (
+          <section className="directory-shell">
+            <header className="page-header">
+              <p className="page-date">Open note</p>
+              <div className="page-heading-row page-heading-row-directory">
+                <div>
+                  <h2 className="page-title settings-title">Directories</h2>
+                  <p className="directory-breadcrumb">
+                    Root{directoryPath.length > 0 ? ` / ${directoryPath.map((entry) => entry.name).join(' / ')}` : ''}
+                  </p>
+                </div>
+                <span className="page-kind">{directoryEntries.length}</span>
+              </div>
+            </header>
+
+            <div className="directory-panel">
+              {directoryPrompt ? (
+                <div className="settings-card directory-inline-form">
+                  <label className="settings-label" htmlFor="directory-prompt-input">
+                    {directoryPrompt.kind === 'create-directory'
+                      ? 'New directory'
+                      : directoryPrompt.kind === 'rename-directory'
+                        ? 'Rename directory'
+                        : 'Rename note'}
+                  </label>
+                  <input
+                    id="directory-prompt-input"
+                    ref={directoryPromptInputRef}
+                    className="settings-input"
+                    type="text"
+                    value={directoryPromptValue}
+                    onChange={(event) => setDirectoryPromptValue(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void submitDirectoryPrompt();
+                      }
+                    }}
+                  />
+                </div>
+              ) : null}
+
+              <div className="directory-toolbar">
+                {directoryClipboardPage ? <span className="settings-message">Move note: {getPageTitle(directoryClipboardPage)}</span> : null}
+                {directoryClipboardDirectory && directoryClipboard?.mode === 'move' ? <span className="settings-message">Move dir: {directoryClipboardDirectory.name}</span> : null}
+                {directoryClipboardDirectory && directoryClipboard?.mode === 'copy' ? <span className="settings-message">Copy dir: {directoryClipboardDirectory.name}</span> : null}
+              </div>
+
+              <div className="search-results">
+                {directoryEntries.length > 0 ? directoryEntries.map((entry, index) => {
+                  const isActive = activeDirectoryEntry?.key === entry.key;
+                  const previousEntry = index > 0 ? directoryEntries[index - 1] : null;
+                  const startsNoteGroup = entry.kind === 'note' && previousEntry?.kind === 'directory';
+                  return (
+                    <button
+                      key={entry.key}
+                      type="button"
+                      className="search-result directory-result"
+                      data-active={isActive ? 'true' : 'false'}
+                      data-kind={entry.kind}
+                      data-starts-note-group={startsNoteGroup ? 'true' : 'false'}
+                      onClick={() => {
+                        setActiveDirectoryEntryKey(entry.key);
+                        openDirectoryEntry(entry);
+                      }}
+                    >
+                      <span className="directory-result-icon" data-kind={entry.kind} aria-hidden="true">
+                        <span className="directory-result-icon-shape" />
+                      </span>
+                      <span className="search-result-title">{entry.kind === 'directory' ? entry.directory?.name : getPageTitle(entry.page!)}</span>
+                      <span className="search-result-date">{entry.kind === 'directory' ? 'Directory' : 'Note'}</span>
+                    </button>
+                  );
+                }) : (
+                  <div className="search-empty">Nothing here yet. Root-level notes still show up outside any directory.</div>
+                )}
+              </div>
+            </div>
+          </section>
+        ) : null}
+
         {state.activeView === 'search' ? (
           <section className="search-shell">
             <header className="page-header search-header">
               <p className="page-date">New or existing note</p>
               <div className="page-heading-row page-heading-row-search">
+                <span className="page-kind">{searchScope === 'title' ? 'Title' : 'Full text'}</span>
                 <input
                   ref={searchInputRef}
                   className="page-title-input search-input"
@@ -815,6 +1841,61 @@ function App() {
                   placeholder="Type a note title"
                   onChange={(event) => setSearchQuery(event.target.value)}
                   onKeyDown={(event) => {
+                    const isPlainKey = !event.metaKey && !event.ctrlKey && !event.altKey;
+
+                    if (event.key === 'Tab') {
+                      event.preventDefault();
+                      setSearchScope((current) => (current === 'title' ? 'fulltext' : 'title'));
+                      setActiveSearchResultId(null);
+                      return;
+                    }
+
+                    if (searchMode === 'select') {
+                      if (event.key === 'j' || event.key === 'ArrowDown') {
+                        event.preventDefault();
+                        moveActiveSearchResult(1);
+                        return;
+                      }
+
+                      if (event.key === 'k' || event.key === 'ArrowUp') {
+                        event.preventDefault();
+                        moveActiveSearchResult(-1);
+                        return;
+                      }
+
+                      if (event.key === 'Enter') {
+                        event.preventDefault();
+                        submitSearch();
+                        return;
+                      }
+
+                      if (isPlainKey && event.key.length === 1) {
+                        setSearchMode('insert');
+                        setActiveSearchResultId(null);
+                        lastSearchJPressRef.current = event.key === 'j' ? Date.now() : null;
+                      }
+
+                      return;
+                    }
+
+                    if (isPlainKey && event.key === 'j') {
+                      lastSearchJPressRef.current = Date.now();
+                    } else if (
+                      isPlainKey
+                      && event.key === 'k'
+                      && lastSearchJPressRef.current
+                      && Date.now() - lastSearchJPressRef.current <= 250
+                    ) {
+                      event.preventDefault();
+                      setSearchQuery((current) => (current.endsWith('j') ? current.slice(0, -1) : current));
+                      setSearchMode('select');
+                      setActiveSearchResultId(visibleMatches[0]?.page.id ?? null);
+                      lastSearchJPressRef.current = null;
+                      return;
+                    } else {
+                      lastSearchJPressRef.current = null;
+                    }
+
                     if (event.key === 'Enter') {
                       event.preventDefault();
                       submitSearch();
@@ -825,24 +1906,26 @@ function App() {
             </header>
 
             <div className="search-results">
-              {matches.length > 0 ? (
-                matches.slice(0, 8).map(({ page: match }) => (
+              {visibleMatches.length > 0 ? (
+                visibleMatches.map(({ page: match }) => (
                   <button
                     key={match.id}
                     type="button"
                     className="search-result"
-                    data-active={topMatch?.id === match.id ? 'true' : 'false'}
+                    data-active={activeSearchMatch?.id === match.id ? 'true' : 'false'}
                     onClick={() => openSearchResult(match.id)}
                   >
                     <span className="search-result-title">{getPageTitle(match)}</span>
                     <span className="search-result-date">{getPageDateLabel(match)}</span>
                   </button>
                 ))
-              ) : searchQuery.trim() ? (
+              ) : searchQuery.trim() && searchScope === 'title' ? (
                 <button type="button" className="search-result search-result-create" data-active="true" onClick={submitSearch}>
                   <span className="search-result-title">Create "{searchQuery.trim()}"</span>
                   <span className="search-result-date">Press Enter to make a new page</span>
                 </button>
+              ) : searchQuery.trim() ? (
+                <div className="search-empty">No full text matches. Press Shift+Tab for title matches.</div>
               ) : (
                 <div className="search-empty">Start typing to jump to an existing note or create a new one.</div>
               )}
@@ -860,7 +1943,7 @@ function App() {
               </div>
             </header>
 
-            <div className="search-results">
+            <div className="todo-list-panel">
               <div className="todo-filter-row">
                 {(['all', 'open', 'done', 'blocked', 'skipped'] as TodoFilter[]).map((filter) => (
                   <button
@@ -868,63 +1951,76 @@ function App() {
                     type="button"
                     className="todo-filter-button"
                     data-active={todoFilter === filter}
-                    onClick={() => setTodoFilter(filter)}
+                    onClick={() => {
+                      setTodoFilter(filter);
+                      setActiveTodoId(null);
+                    }}
                   >
                     {filter}
                   </button>
                 ))}
               </div>
-              {!authToken || !userId ? (
-                <div className="search-empty">Log in again to load your todos.</div>
-              ) : isLoadingTodos ? (
-                <div className="search-empty">Loading todos...</div>
-              ) : filteredTodos.length === 0 ? (
-                <div className="search-empty">No todos yet. Mark a block as a task and it will show up here.</div>
-              ) : (
-                filteredTodos.map((todo) => (
-                  <article key={todo.id} className="todo-card">
-                    <div className="todo-card-header">
-                      <div>
-                        <h3 className="search-result-title">{todo.name}</h3>
-                        <p className="todo-card-meta">{formatTodoTimestamp(todo)}</p>
-                      </div>
-                      <label
-                        className="todo-status-control"
-                        data-status={todoStatusTone(todo.status)}
-                        data-busy={updatingTodoId === todo.id}
+              <div className="todo-list-scroll">
+                <div className="search-results">
+                  {!authToken || !userId ? (
+                    <div className="search-empty">Log in again to load your todos.</div>
+                  ) : isLoadingTodos ? (
+                    <div className="search-empty">Loading todos...</div>
+                  ) : filteredTodos.length === 0 ? (
+                    <div className="search-empty">No todos yet. Mark a block as a task and it will show up here.</div>
+                  ) : (
+                    filteredTodos.map((todo) => (
+                      <article
+                        key={todo.id}
+                        className="todo-card"
+                        data-active={activeTodo?.id === todo.id ? 'true' : 'false'}
+                        data-todo-id={todo.id}
+                        onClick={() => setActiveTodoId(todo.id)}
                       >
-                        <span className="todo-status-dot" aria-hidden="true" />
-                        <select
-                          className="todo-status-select"
-                          value={todo.status}
-                          disabled={updatingTodoId === todo.id}
-                          aria-label={`Set status for ${todo.name}`}
-                          onChange={(event) => void handleTodoStatusChange(todo, event.target.value as BackendTodo['status'])}
-                        >
-                          <option value="not_started">Todo</option>
-                          <option value="partial">Doing</option>
-                          <option value="done">Done</option>
-                          <option value="blocked">Blocked</option>
-                          <option value="skipped">Skipped</option>
-                        </select>
-                        <span className="todo-status-caret" aria-hidden="true">
-                          v
-                        </span>
-                      </label>
-                    </div>
-                    {todo.desc ? <p className="todo-card-desc">{todo.desc}</p> : null}
-                    <div className="todo-card-footer">
-                      <span className="todo-card-meta">#{todo.id}</span>
-                      {todo.sourceDocumentId ? (
-                        <button type="button" className="todo-link-button" onClick={() => openTodoSource(todo)}>
-                          Open source
-                        </button>
-                      ) : null}
-                      {todo.createdAtRecordingName ? <span className="todo-card-meta">From {todo.createdAtRecordingName}</span> : null}
-                    </div>
-                  </article>
-                ))
-              )}
+                        <div className="todo-card-header">
+                          <div>
+                            <h3 className="search-result-title">{todo.name}</h3>
+                            <p className="todo-card-meta">{formatTodoTimestamp(todo)}</p>
+                          </div>
+                          <label
+                            className="todo-status-control"
+                            data-status={todoStatusTone(todo.status)}
+                            data-busy={updatingTodoId === todo.id}
+                          >
+                            <span className="todo-status-dot" aria-hidden="true" />
+                            <select
+                              className="todo-status-select"
+                              value={todo.status}
+                              disabled={updatingTodoId === todo.id}
+                              aria-label={`Set status for ${todo.name}`}
+                              onChange={(event) => void handleTodoStatusChange(todo, event.target.value as BackendTodo['status'])}
+                            >
+                              <option value="todo">Todo</option>
+                              <option value="doing">Doing</option>
+                              <option value="done">Done</option>
+                              <option value="blocked">Blocked</option>
+                              <option value="skipped">Skipped</option>
+                            </select>
+                            <span className="todo-status-caret" aria-hidden="true">
+                              v
+                            </span>
+                          </label>
+                        </div>
+                        {todo.desc ? <p className="todo-card-desc">{todo.desc}</p> : null}
+                        <div className="todo-card-footer">
+                          <span className="todo-card-meta">#{todo.id}</span>
+                          {todo.sourceDocumentId ? (
+                            <button type="button" className="todo-link-button" onClick={() => openTodoSource(todo)}>
+                              Open source
+                            </button>
+                          ) : null}
+                          {todo.createdAtRecordingName ? <span className="todo-card-meta">From {todo.createdAtRecordingName}</span> : null}
+                        </div>
+                      </article>
+                    ))
+                  )}
+                </div>
+              </div>
             </div>
           </section>
         ) : null}
@@ -999,7 +2095,7 @@ function App() {
 
               <div className="settings-hotkeys">
                 <span className="settings-label">Hotkeys</span>
-                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+T` todos. `Cmd+,` settings. `Esc` returns to journals from overlays.</p>
+                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+T` todos. `Cmd+,` settings. `Esc` returns to journals from overlays.</p>
               </div>
 
               <div className="settings-actions">
@@ -1023,6 +2119,24 @@ function App() {
               </div>
             </div>
           </section>
+        ) : null}
+
+        {pendingDeleteNote ? (
+          <div className="confirm-overlay" role="presentation" onClick={() => setPendingDeleteNoteId(null)}>
+            <div className="confirm-dialog" role="alertdialog" aria-modal="true" aria-label="Delete note confirmation" onClick={(event) => event.stopPropagation()}>
+              <p className="page-date">Delete note</p>
+              <h2 className="page-title settings-title">{getPageTitle(pendingDeleteNote)}</h2>
+              <p className="settings-message">This deletes the note and its blocks.</p>
+              <div className="confirm-actions">
+                <button type="button" className="settings-button settings-button-secondary" onClick={() => setPendingDeleteNoteId(null)}>
+                  Cancel
+                </button>
+                <button type="button" className="settings-button settings-button-danger" onClick={confirmDeleteNote}>
+                  Delete Note
+                </button>
+              </div>
+            </div>
+          </div>
         ) : null}
         </div>
       </section>

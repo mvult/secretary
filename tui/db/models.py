@@ -47,17 +47,34 @@ class Recording(Model):
     def storage_status(self) -> str:
         """Return storage status as local/NAS/cloud boolean string"""
         import os
-        
+
         # Check local storage
         has_local = bool(self.local_audio and os.path.exists(self.local_audio))
-        
-        # Check NAS storage  
+
+        # Check NAS storage
         has_nas = bool(self.nas_audio and os.path.exists(self.nas_audio))
-        
+
         # Check cloud storage (Azure)
-        has_cloud = bool(self.audio_url and self.audio_url.startswith('https://'))
-        
+        has_cloud = bool(self.audio_url and self.audio_url.startswith("https://"))
+
         return f"{'t' if has_local else 'f'}/{'t' if has_nas else 'f'}/{'t' if has_cloud else 'f'}"
+
+    @property
+    def storage_status_readable(self) -> str:
+        """Return storage status as readable labels."""
+        import os
+
+        has_local = bool(self.local_audio and os.path.exists(self.local_audio))
+        has_nas = bool(self.nas_audio and os.path.exists(self.nas_audio))
+        has_cloud = bool(self.audio_url and self.audio_url.startswith("https://"))
+
+        return " | ".join(
+            [
+                f"Local {'yes' if has_local else 'no'}",
+                f"NAS {'yes' if has_nas else 'no'}",
+                f"Cloud {'yes' if has_cloud else 'no'}",
+            ]
+        )
 
 
 class User(Model):
@@ -106,4 +123,3 @@ class Todo(Model):
 
     def __str__(self):
         return f"Todo({self.id}, {self.name})"
-

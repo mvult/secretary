@@ -1,8 +1,11 @@
-h1:qJYEj8qZDT69yJPU37hnHXYLcmDficA3g+kP+TH7jug=
+h1:49V5hlTez8FNTR0FTtPPEjgQsaJO2zcxb+a+zm8rdZA=
 001_baseline.sql h1:NpRqek3jkdlw0PqgobS3KI+Bjv6ABCSS2gi6MuY+9Hc=
 002_add_todo_history.sql h1:/ZUkDcKj7AEHv7znBs19CzFP2U+OUIlO0TCGKwMvbJ8=
 20260126052726_test_change.sql h1:1TzEPbEbkfUe7tIxkMR2yN9IvECpxoq/bpNYZ+mNqcY=
 20260126055601_add_auth.sql h1:N9Pkfp7+ozQZKc85bCxLOku5MYucgRbR/HMa/W36z50=
 20260323120000_add_workspace_and_documents.sql h1:KVHyTt/th2BYP9koIufCthvJPO18z2UNYR0ZoyHR4gA=
-20260323123000_add_block_table.sql h1:Pahwdzv9BUEaz8Q34Ce+qVHdo/mQ+HR0eaMxR6LMOas=
-20260323140000_canonical_todos.sql h1:iWMXrkzKmcu5DaeZV9KH4GqvBX97fLTa0cTetxPIaVM=
+20260323123000_add_block_table.sql h1:2UqJoV01GuusE0A3UjBUOcv2ssjQxupyvqXH2c1t4Cs=
+20260323140000_canonical_todos.sql h1:xy3D7Uqr3C+8++GPRHU+4usbUFdyFcHgJ+mz3F22VWM=
+20260323153000_rename_todo_statuses.sql h1:R9wHOZEo1+4+SS6GT+YAlctqnmlrXWYJNeBxqOm/7eo=
+20260324100000_drop_block_status.sql h1:e+r6d8b5vaw7nxMVLMopxf/IXfjnQt+PKfSRxGz2zDY=
+20260324120000_add_directories.sql h1:yS5a8FcB5eiVWC8LSbyXuu8VWNsdZsINqDXUwbe1BSk=

@@ -654,7 +654,7 @@ func validateTodoInput(name, status string) error {
 
 func validStatus(status string) bool {
 	switch status {
-	case "not_started", "partial", "done", "blocked", "skipped":
+	case "todo", "doing", "done", "blocked", "skipped":
 		return true
 	default:
 		return false
@@ -705,31 +705,29 @@ func todoRowToProto(
 }
 
 func mapStatus(status string) secretaryv1.TodoStatus {
-	// Normalize status to handle potential case/whitespace issues
 	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {
-	case "not_started", "pending": // Handle legacy "pending"
-		return secretaryv1.TodoStatus_TODO_STATUS_NOT_STARTED
-	case "partial", "in_progress", "in progress": // Handle variations
-		return secretaryv1.TodoStatus_TODO_STATUS_PARTIAL
-	case "done", "completed":
+	case "todo":
+		return secretaryv1.TodoStatus_TODO_STATUS_TODO
+	case "doing":
+		return secretaryv1.TodoStatus_TODO_STATUS_DOING
+	case "done":
 		return secretaryv1.TodoStatus_TODO_STATUS_DONE
 	case "blocked":
 		return secretaryv1.TodoStatus_TODO_STATUS_BLOCKED
 	case "skipped":
 		return secretaryv1.TodoStatus_TODO_STATUS_SKIPPED
 	default:
-		// Fallback for unknown status strings
 		return secretaryv1.TodoStatus_TODO_STATUS_UNSPECIFIED
 	}
 }
 
 func mapStatusToString(status secretaryv1.TodoStatus) string {
 	switch status {
-	case secretaryv1.TodoStatus_TODO_STATUS_NOT_STARTED:
-		return "not_started"
-	case secretaryv1.TodoStatus_TODO_STATUS_PARTIAL:
-		return "partial"
+	case secretaryv1.TodoStatus_TODO_STATUS_TODO:
+		return "todo"
+	case secretaryv1.TodoStatus_TODO_STATUS_DOING:
+		return "doing"
 	case secretaryv1.TodoStatus_TODO_STATUS_DONE:
 		return "done"
 	case secretaryv1.TodoStatus_TODO_STATUS_BLOCKED:

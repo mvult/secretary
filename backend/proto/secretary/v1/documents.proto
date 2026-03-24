@@ -12,7 +12,7 @@ message Block {
   string parent_client_key = 5;
   int32 sort_order = 6;
   string text = 7;
-  string status = 8;
+  string todo_status = 8;
   int64 todo_id = 9;
   string created_at = 10;
   string updated_at = 11;
@@ -28,6 +28,17 @@ message Document {
   string created_at = 7;
   string updated_at = 8;
   repeated Block blocks = 9;
+  int64 directory_id = 10;
+}
+
+message Directory {
+  int64 id = 1;
+  int64 workspace_id = 2;
+  string name = 3;
+  int64 parent_id = 4;
+  int32 position = 5;
+  string created_at = 6;
+  string updated_at = 7;
 }
 
 message ListDocumentsRequest {
@@ -36,6 +47,7 @@ message ListDocumentsRequest {
 
 message ListDocumentsResponse {
   repeated Document documents = 1;
+  repeated Directory directories = 2;
 }
 
 message GetDocumentRequest {
@@ -54,8 +66,44 @@ message SaveDocumentResponse {
   Document document = 1;
 }
 
+message DeleteDocumentRequest {
+  int64 id = 1;
+}
+
+message DeleteDocumentResponse {}
+
+message CreateDirectoryRequest {
+  int64 workspace_id = 1;
+  int64 parent_id = 2;
+  string name = 3;
+}
+
+message CreateDirectoryResponse {
+  Directory directory = 1;
+}
+
+message UpdateDirectoryRequest {
+  int64 id = 1;
+  string name = 2;
+  int64 parent_id = 3;
+}
+
+message UpdateDirectoryResponse {
+  Directory directory = 1;
+}
+
+message DeleteDirectoryRequest {
+  int64 id = 1;
+}
+
+message DeleteDirectoryResponse {}
+
 service DocumentsService {
   rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
   rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
   rpc SaveDocument(SaveDocumentRequest) returns (SaveDocumentResponse);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  rpc CreateDirectory(CreateDirectoryRequest) returns (CreateDirectoryResponse);
+  rpc UpdateDirectory(UpdateDirectoryRequest) returns (UpdateDirectoryResponse);
+  rpc DeleteDirectory(DeleteDirectoryRequest) returns (DeleteDirectoryResponse);
 }

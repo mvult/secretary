@@ -87,9 +87,19 @@ func (s *Server) ListDocuments(ctx context.Context, req *connect.Request[secreta
 		return nil, err
 	}
 
+	directories, err := s.queries.ListDirectoriesByWorkspace(ctx, int32(workspaceID))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list directories"))
+	}
+
 	docs, err := s.queries.ListDocumentsByWorkspace(ctx, int32(workspaceID))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list documents"))
+	}
+
+	directoryResult := make([]*secretaryv1.Directory, 0, len(directories))
+	for _, directory := range directories {
+		directoryResult = append(directoryResult, directoryToProto(directory))
 	}
 
 	result := make([]*secretaryv1.Document, 0, len(docs))
@@ -98,10 +108,14 @@ func (s *Server) ListDocuments(ctx context.Context, req *connect.Request[secreta
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list document blocks"))
 		}
-		result = append(result, documentToProto(doc, blocks, nil))
+		blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, s.queries, blocks)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, documentToProto(doc, blocks, blockTodoStatuses, nil))
 	}
 
-	return connect.NewResponse(&secretaryv1.ListDocumentsResponse{Documents: result}), nil
+	return connect.NewResponse(&secretaryv1.ListDocumentsResponse{Documents: result, Directories: directoryResult}), nil
 }
 
 func (s *Server) GetDocument(ctx context.Context, req *connect.Request[secretaryv1.GetDocumentRequest]) (*connect.Response[secretaryv1.GetDocumentResponse], error) {
@@ -114,8 +128,118 @@ func (s *Server) GetDocument(ctx context.Context, req *connect.Request[secretary
 	if err != nil {
 		return nil, err
 	}
+	blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, s.queries, blocks)
+	if err != nil {
+		return nil, err
+	}
 
-	return connect.NewResponse(&secretaryv1.GetDocumentResponse{Document: documentToProto(doc, blocks, nil)}), nil
+	return connect.NewResponse(&secretaryv1.GetDocumentResponse{Document: documentToProto(doc, blocks, blockTodoStatuses, nil)}), nil
+}
+
+func (s *Server) CreateDirectory(ctx context.Context, req *connect.Request[secretaryv1.CreateDirectoryRequest]) (*connect.Response[secretaryv1.CreateDirectoryResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	workspaceID := int32(req.Msg.WorkspaceId)
+	if workspaceID <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workspace_id is required"))
+	}
+	if err := s.ensureWorkspaceAccess(ctx, workspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+	name := strings.TrimSpace(req.Msg.Name)
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("directory name is required"))
+	}
+	parentID := toNullInt4(req.Msg.ParentId)
+	if err := validateDirectoryParent(ctx, s.queries, workspaceID, parentID); err != nil {
+		return nil, err
+	}
+	directory, err := s.queries.CreateDirectory(ctx, db.CreateDirectoryParams{
+		WorkspaceID: workspaceID,
+		ParentID:    parentID,
+		Name:        name,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create directory"))
+	}
+	return connect.NewResponse(&secretaryv1.CreateDirectoryResponse{Directory: directoryToProto(directory)}), nil
+}
+
+func (s *Server) UpdateDirectory(ctx context.Context, req *connect.Request[secretaryv1.UpdateDirectoryRequest]) (*connect.Response[secretaryv1.UpdateDirectoryResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.Id <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+	name := strings.TrimSpace(req.Msg.Name)
+	if name == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("directory name is required"))
+	}
+	parentID := toNullInt4(req.Msg.ParentId)
+	directory, err := s.queries.GetDirectory(ctx, int32(req.Msg.Id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("directory not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch directory"))
+	}
+	if err := s.ensureWorkspaceAccess(ctx, directory.WorkspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+	if err := validateDirectoryParent(ctx, s.queries, directory.WorkspaceID, parentID); err != nil {
+		return nil, err
+	}
+	if err := validateDirectoryMove(ctx, s.queries, directory.ID, parentID); err != nil {
+		return nil, err
+	}
+	updatedDirectory, err := s.queries.UpdateDirectory(ctx, db.UpdateDirectoryParams{ID: directory.ID, Name: name, ParentID: parentID})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update directory"))
+	}
+	return connect.NewResponse(&secretaryv1.UpdateDirectoryResponse{Directory: directoryToProto(updatedDirectory)}), nil
+}
+
+func (s *Server) DeleteDirectory(ctx context.Context, req *connect.Request[secretaryv1.DeleteDirectoryRequest]) (*connect.Response[secretaryv1.DeleteDirectoryResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.Id <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+	directory, err := s.queries.GetDirectory(ctx, int32(req.Msg.Id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("directory not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch directory"))
+	}
+	if err := s.ensureWorkspaceAccess(ctx, directory.WorkspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+	directoryID := pgtype.Int4{Int32: directory.ID, Valid: true}
+	childCount, err := s.queries.CountChildDirectories(ctx, directoryID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check child directories"))
+	}
+	if childCount > 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("directory is not empty"))
+	}
+	documentCount, err := s.queries.CountDocumentsInDirectory(ctx, directoryID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check directory documents"))
+	}
+	if documentCount > 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("directory is not empty"))
+	}
+	if err := s.queries.DeleteDirectory(ctx, directory.ID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete directory"))
+	}
+	return connect.NewResponse(&secretaryv1.DeleteDirectoryResponse{}), nil
 }
 
 func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretaryv1.SaveDocumentRequest]) (*connect.Response[secretaryv1.SaveDocumentResponse], error) {
@@ -137,6 +261,7 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	directoryID := toNullInt4(incoming.DirectoryId)
 
 	title := incoming.Title
 	if kind == "journal" && strings.TrimSpace(title) == "" {
@@ -166,9 +291,13 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		if incoming.WorkspaceId != 0 && int32(incoming.WorkspaceId) != existingDoc.WorkspaceID {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workspace_id cannot be changed"))
 		}
+		if err := validateDocumentDirectory(ctx, qtx, existingDoc.WorkspaceID, kind, directoryID); err != nil {
+			return nil, err
+		}
 
 		savedDoc, err = qtx.UpdateDocument(ctx, db.UpdateDocumentParams{
 			ID:          existingDoc.ID,
+			DirectoryID: directoryID,
 			Kind:        kind,
 			Title:       title,
 			JournalDate: journalDate,
@@ -183,9 +312,13 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		if err := s.ensureWorkspaceAccessWithQueries(ctx, qtx, int32(incoming.WorkspaceId), int32(userID)); err != nil {
 			return nil, err
 		}
+		if err := validateDocumentDirectory(ctx, qtx, int32(incoming.WorkspaceId), kind, directoryID); err != nil {
+			return nil, err
+		}
 
 		savedDoc, err = qtx.CreateDocument(ctx, db.CreateDocumentParams{
 			WorkspaceID: int32(incoming.WorkspaceId),
+			DirectoryID: directoryID,
 			Kind:        kind,
 			Title:       title,
 			JournalDate: journalDate,
@@ -233,24 +366,27 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 			ParentBlockID: parentID,
 			SortOrder:     blockMsg.SortOrder,
 			Text:          blockMsg.Text,
-			Status:        blockMsg.Status,
 			TodoID:        todoID,
 		}
 
 		var savedBlock db.Block
 		if blockMsg.Id > 0 {
-			if _, ok := existingByID[int32(blockMsg.Id)]; !ok {
+			existingBlock, ok := existingByID[int32(blockMsg.Id)]
+			if !ok {
 				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("block %d does not belong to document", blockMsg.Id))
 			}
-			savedBlock, err = qtx.UpdateBlock(ctx, db.UpdateBlockParams{
-				ID:            int32(blockMsg.Id),
-				DocumentID:    params.DocumentID,
-				ParentBlockID: params.ParentBlockID,
-				SortOrder:     params.SortOrder,
-				Text:          params.Text,
-				Status:        params.Status,
-				TodoID:        params.TodoID,
-			})
+			if blockMatchesParams(existingBlock, params) {
+				savedBlock = existingBlock
+			} else {
+				savedBlock, err = qtx.UpdateBlock(ctx, db.UpdateBlockParams{
+					ID:            int32(blockMsg.Id),
+					DocumentID:    params.DocumentID,
+					ParentBlockID: params.ParentBlockID,
+					SortOrder:     params.SortOrder,
+					Text:          params.Text,
+					TodoID:        params.TodoID,
+				})
+			}
 		} else {
 			savedBlock, err = qtx.CreateBlock(ctx, params)
 		}
@@ -302,6 +438,10 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reload blocks"))
 	}
+	blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, qtx, finalBlocks)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit document transaction"))
@@ -311,10 +451,34 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	if clientKey == "" {
 		clientKey = defaultDocumentClientKey(int64(finalDoc.ID))
 	}
-	protoDoc := documentToProto(finalDoc, finalBlocks, clientKeyByServerID)
+	protoDoc := documentToProto(finalDoc, finalBlocks, blockTodoStatuses, clientKeyByServerID)
 	protoDoc.ClientKey = clientKey
 
 	return connect.NewResponse(&secretaryv1.SaveDocumentResponse{Document: protoDoc}), nil
+}
+
+func (s *Server) DeleteDocument(ctx context.Context, req *connect.Request[secretaryv1.DeleteDocumentRequest]) (*connect.Response[secretaryv1.DeleteDocumentResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.Id <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+
+	doc, _, err := s.loadAuthorizedDocument(ctx, int32(req.Msg.Id), int32(userID))
+	if err != nil {
+		return nil, err
+	}
+	if doc.Kind != "note" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("only notes can be deleted"))
+	}
+
+	if err := s.queries.DeleteDocument(ctx, doc.ID); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete document"))
+	}
+
+	return connect.NewResponse(&secretaryv1.DeleteDocumentResponse{}), nil
 }
 
 func (s *Server) loadAuthorizedDocument(ctx context.Context, documentID int32, userID int32) (db.Document, []db.Block, error) {
@@ -369,7 +533,22 @@ func workspaceToProto(workspace db.Workspace) *secretaryv1.Workspace {
 	}
 }
 
-func documentToProto(doc db.Document, blocks []db.Block, clientKeyByServerID map[int32]string) *secretaryv1.Document {
+func directoryToProto(directory db.Directory) *secretaryv1.Directory {
+	result := &secretaryv1.Directory{
+		Id:          int64(directory.ID),
+		WorkspaceId: int64(directory.WorkspaceID),
+		Name:        directory.Name,
+		Position:    directory.Position,
+		CreatedAt:   formatTime(directory.CreatedAt),
+		UpdatedAt:   formatTime(directory.UpdatedAt),
+	}
+	if directory.ParentID.Valid {
+		result.ParentId = int64(directory.ParentID.Int32)
+	}
+	return result
+}
+
+func documentToProto(doc db.Document, blocks []db.Block, blockTodoStatuses map[int32]string, clientKeyByServerID map[int32]string) *secretaryv1.Document {
 	clientKey := defaultDocumentClientKey(int64(doc.ID))
 	result := &secretaryv1.Document{
 		Id:          int64(doc.ID),
@@ -381,13 +560,16 @@ func documentToProto(doc db.Document, blocks []db.Block, clientKeyByServerID map
 		CreatedAt:   formatTime(doc.CreatedAt),
 		UpdatedAt:   formatTime(doc.UpdatedAt),
 	}
+	if doc.DirectoryID.Valid {
+		result.DirectoryId = int64(doc.DirectoryID.Int32)
+	}
 	for _, block := range blocks {
-		result.Blocks = append(result.Blocks, blockToProto(block, clientKeyByServerID[block.ID]))
+		result.Blocks = append(result.Blocks, blockToProto(block, blockTodoStatuses[block.ID], clientKeyByServerID[block.ID]))
 	}
 	return result
 }
 
-func blockToProto(block db.Block, clientKey string) *secretaryv1.Block {
+func blockToProto(block db.Block, todoStatus string, clientKey string) *secretaryv1.Block {
 	if clientKey == "" {
 		clientKey = defaultBlockClientKey(int64(block.ID))
 	}
@@ -397,7 +579,7 @@ func blockToProto(block db.Block, clientKey string) *secretaryv1.Block {
 		DocumentId: int64(block.DocumentID),
 		SortOrder:  block.SortOrder,
 		Text:       block.Text,
-		Status:     block.Status,
+		TodoStatus: todoStatus,
 		CreatedAt:  formatTime(block.CreatedAt),
 		UpdatedAt:  formatTime(block.UpdatedAt),
 	}
@@ -408,6 +590,39 @@ func blockToProto(block db.Block, clientKey string) *secretaryv1.Block {
 		result.TodoId = int64(block.TodoID.Int32)
 	}
 	return result
+}
+
+func blockMatchesParams(block db.Block, params db.CreateBlockParams) bool {
+	return block.DocumentID == params.DocumentID &&
+		block.ParentBlockID == params.ParentBlockID &&
+		block.SortOrder == params.SortOrder &&
+		block.Text == params.Text &&
+		block.TodoID == params.TodoID
+}
+
+func (s *Server) loadBlockTodoStatuses(ctx context.Context, queries *db.Queries, blocks []db.Block) (map[int32]string, error) {
+	if len(blocks) == 0 {
+		return map[int32]string{}, nil
+	}
+
+	statuses := make(map[int32]string, len(blocks))
+	for _, block := range blocks {
+		if !block.TodoID.Valid {
+			continue
+		}
+
+		todo, err := queries.GetTodo(ctx, block.TodoID.Int32)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to load block todo"))
+		}
+
+		statuses[block.ID] = todo.Status.String
+	}
+
+	return statuses, nil
 }
 
 func validDocumentKind(kind string) bool {
@@ -437,6 +652,77 @@ func parseJournalDate(kind, value string) (pgtype.Date, error) {
 	return pgtype.Date{}, nil
 }
 
+func validateDocumentDirectory(ctx context.Context, queries *db.Queries, workspaceID int32, kind string, directoryID pgtype.Int4) error {
+	if kind == "journal" {
+		if directoryID.Valid {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("journals cannot belong to a directory"))
+		}
+		return nil
+	}
+	if !directoryID.Valid {
+		return nil
+	}
+
+	directory, err := queries.GetDirectory(ctx, directoryID.Int32)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("directory not found"))
+	}
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to validate directory"))
+	}
+	if directory.WorkspaceID != workspaceID {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("directory must belong to the same workspace as the document"))
+	}
+	return nil
+}
+
+func validateDirectoryParent(ctx context.Context, queries *db.Queries, workspaceID int32, parentID pgtype.Int4) error {
+	if !parentID.Valid {
+		return nil
+	}
+	parent, err := queries.GetDirectory(ctx, parentID.Int32)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("parent directory not found"))
+	}
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to validate parent directory"))
+	}
+	if parent.WorkspaceID != workspaceID {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("parent directory must belong to the same workspace"))
+	}
+	return nil
+}
+
+func validateDirectoryMove(ctx context.Context, queries *db.Queries, directoryID int32, parentID pgtype.Int4) error {
+	if !parentID.Valid {
+		return nil
+	}
+	if parentID.Int32 == directoryID {
+		return connect.NewError(connect.CodeInvalidArgument, errors.New("directory cannot be its own parent"))
+	}
+
+	cursor := parentID.Int32
+	seen := map[int32]struct{}{directoryID: {}}
+	for cursor != 0 {
+		if _, ok := seen[cursor]; ok {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("directory cannot be moved into itself"))
+		}
+		seen[cursor] = struct{}{}
+		directory, err := queries.GetDirectory(ctx, cursor)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return connect.NewError(connect.CodeInvalidArgument, errors.New("parent directory not found"))
+		}
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, errors.New("failed to validate directory move"))
+		}
+		if !directory.ParentID.Valid {
+			break
+		}
+		cursor = directory.ParentID.Int32
+	}
+	return nil
+}
+
 func formatDate(value pgtype.Date) string {
 	if !value.Valid {
 		return ""
@@ -448,8 +734,8 @@ func validateBlockMessage(block *secretaryv1.Block) error {
 	if block == nil {
 		return errors.New("block is required")
 	}
-	if !validBlockStatus(block.Status) {
-		return fmt.Errorf("invalid block status %q", block.Status)
+	if !validBlockTodoStatus(block.TodoStatus) {
+		return fmt.Errorf("invalid block todo_status %q", block.TodoStatus)
 	}
 	if block.SortOrder <= 0 {
 		return errors.New("sort_order must be positive")
@@ -457,38 +743,15 @@ func validateBlockMessage(block *secretaryv1.Block) error {
 	return nil
 }
 
-func validBlockStatus(status string) bool {
+func validBlockTodoStatus(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
 	switch status {
-	case "note", "todo", "doing", "done", "blocked", "skipped":
+	case "":
 		return true
-	default:
-		return false
-	}
-}
-
-func isTaskBlockStatus(status string) bool {
-	switch status {
 	case "todo", "doing", "done", "blocked", "skipped":
 		return true
 	default:
 		return false
-	}
-}
-
-func mapBlockStatusToTodoStatus(status string) string {
-	switch status {
-	case "todo":
-		return "not_started"
-	case "doing":
-		return "partial"
-	case "done":
-		return "done"
-	case "blocked":
-		return "blocked"
-	case "skipped":
-		return "skipped"
-	default:
-		return ""
 	}
 }
 
@@ -508,7 +771,8 @@ func removedBlocksByID(existingBlocks []db.Block, keptIDs []int32) []db.Block {
 }
 
 func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db.Document, block db.Block, msg *secretaryv1.Block, userID int64) (db.Block, error) {
-	if !isTaskBlockStatus(msg.Status) {
+	status := strings.ToLower(strings.TrimSpace(msg.TodoStatus))
+	if status == "" {
 		if block.TodoID.Valid {
 			if err := deleteTodoWithHistory(ctx, qtx, block.TodoID.Int32, userID); err != nil {
 				return db.Block{}, err
@@ -519,7 +783,6 @@ func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db
 	}
 
 	name := strings.TrimSpace(msg.Text)
-	status := mapBlockStatusToTodoStatus(msg.Status)
 	if err := validateTodoInput(name, status); err != nil {
 		return db.Block{}, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("task block %q is invalid: %w", msg.ClientKey, err))
 	}
@@ -576,7 +839,6 @@ func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db
 		ParentBlockID: block.ParentBlockID,
 		SortOrder:     block.SortOrder,
 		Text:          block.Text,
-		Status:        block.Status,
 		TodoID:        pgtype.Int4{Int32: todo.ID, Valid: true},
 	})
 	if err != nil {

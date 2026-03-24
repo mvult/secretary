@@ -10,7 +10,7 @@ export interface LoginResponse {
   user: BackendUser;
 }
 
-export type BackendTodoStatus = 'not_started' | 'partial' | 'done' | 'blocked' | 'skipped';
+export type BackendTodoStatus = 'todo' | 'doing' | 'done' | 'blocked' | 'skipped';
 
 export interface BackendTodo {
   id: number;
@@ -37,11 +37,11 @@ function todoStatusToProto(status: BackendTodoStatus) {
       return 'TODO_STATUS_BLOCKED';
     case 'skipped':
       return 'TODO_STATUS_SKIPPED';
-    case 'partial':
-      return 'TODO_STATUS_PARTIAL';
-    case 'not_started':
+    case 'doing':
+      return 'TODO_STATUS_DOING';
+    case 'todo':
     default:
-      return 'TODO_STATUS_NOT_STARTED';
+      return 'TODO_STATUS_TODO';
   }
 }
 
@@ -49,6 +49,16 @@ export interface BackendWorkspace {
   id: number;
   name: string;
   createdAt: string;
+}
+
+export interface BackendDirectory {
+  id: number;
+  workspaceId: number;
+  parentId: number;
+  name: string;
+  position: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface BackendBlock {
@@ -59,7 +69,7 @@ export interface BackendBlock {
   parentClientKey: string;
   sortOrder: number;
   text: string;
-  status: 'note' | 'todo' | 'doing' | 'done' | 'blocked' | 'skipped';
+  todoStatus?: BackendTodoStatus | null;
   todoId: number;
   createdAt: string;
   updatedAt: string;
@@ -69,12 +79,18 @@ export interface BackendDocument {
   id: number;
   clientKey: string;
   workspaceId: number;
+  directoryId: number;
   kind: 'journal' | 'note';
   title: string;
   journalDate: string;
   createdAt: string;
   updatedAt: string;
   blocks: BackendBlock[];
+}
+
+export interface BackendDocumentIndex {
+  documents: BackendDocument[];
+  directories: BackendDirectory[];
 }
 
 function normalizeBaseUrl(baseUrl: string) {
@@ -99,6 +115,18 @@ function normalizeWorkspace(value: any): BackendWorkspace {
   };
 }
 
+function normalizeDirectory(value: any): BackendDirectory {
+  return {
+    id: toNumber(value?.id),
+    workspaceId: toNumber(value?.workspaceId),
+    parentId: toNumber(value?.parentId),
+    name: typeof value?.name === 'string' ? value.name : '',
+    position: toNumber(value?.position),
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+    updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
+  };
+}
+
 function normalizeTodoStatus(value: unknown): BackendTodoStatus {
   switch (value) {
     case 'TODO_STATUS_DONE':
@@ -113,17 +141,23 @@ function normalizeTodoStatus(value: unknown): BackendTodoStatus {
     case 'skipped':
     case 5:
       return 'skipped';
-    case 'TODO_STATUS_PARTIAL':
-    case 'partial':
-    case 'in_progress':
+    case 'TODO_STATUS_DOING':
+    case 'doing':
     case 2:
-      return 'partial';
-    case 'TODO_STATUS_NOT_STARTED':
-    case 'not_started':
+      return 'doing';
+    case 'TODO_STATUS_TODO':
+    case 'todo':
     case 1:
     default:
-      return 'not_started';
+      return 'todo';
   }
+}
+
+function normalizeBlockTodoStatus(value: unknown): BackendTodoStatus | null {
+  if (value === '' || value == null) {
+    return null;
+  }
+  return normalizeTodoStatus(value);
 }
 
 function normalizeTodo(value: any): BackendTodo {
@@ -146,7 +180,6 @@ function normalizeTodo(value: any): BackendTodo {
 }
 
 function normalizeBlock(value: any): BackendBlock {
-  const status = value?.status;
   return {
     id: toNumber(value?.id),
     clientKey: typeof value?.clientKey === 'string' ? value.clientKey : '',
@@ -155,7 +188,7 @@ function normalizeBlock(value: any): BackendBlock {
     parentClientKey: typeof value?.parentClientKey === 'string' ? value.parentClientKey : '',
     sortOrder: toNumber(value?.sortOrder),
     text: typeof value?.text === 'string' ? value.text : '',
-    status: status === 'todo' || status === 'doing' || status === 'done' || status === 'blocked' || status === 'skipped' ? status : 'note',
+    todoStatus: normalizeBlockTodoStatus(value?.todoStatus),
     todoId: toNumber(value?.todoId),
     createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
     updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
@@ -167,6 +200,7 @@ function normalizeDocument(value: any): BackendDocument {
     id: toNumber(value?.id),
     clientKey: typeof value?.clientKey === 'string' ? value.clientKey : '',
     workspaceId: toNumber(value?.workspaceId),
+    directoryId: toNumber(value?.directoryId),
     kind: value?.kind === 'journal' ? 'journal' : 'note',
     title: typeof value?.title === 'string' ? value.title : '',
     journalDate: typeof value?.journalDate === 'string' ? value.journalDate : '',
@@ -267,13 +301,16 @@ export async function createWorkspace(baseUrl: string, token: string, name: stri
 }
 
 export async function listDocuments(baseUrl: string, token: string, workspaceId: number) {
-  const payload = await postJson<{ documents?: BackendDocument[] }>(
+  const payload = await postJson<{ documents?: BackendDocument[]; directories?: BackendDirectory[] }>(
     baseUrl,
     '/secretary.v1.DocumentsService/ListDocuments',
     { workspaceId },
     token,
   );
-  return Array.isArray(payload.documents) ? payload.documents.map(normalizeDocument) : [];
+  return {
+    documents: Array.isArray(payload.documents) ? payload.documents.map(normalizeDocument) : [],
+    directories: Array.isArray(payload.directories) ? payload.directories.map(normalizeDirectory) : [],
+  } satisfies BackendDocumentIndex;
 }
 
 export async function saveDocument(baseUrl: string, token: string, document: BackendDocument) {
@@ -287,4 +324,48 @@ export async function saveDocument(baseUrl: string, token: string, document: Bac
     throw new Error('Document was not returned by the server.');
   }
   return normalizeDocument(payload.document);
+}
+
+export async function deleteDocument(baseUrl: string, token: string, id: number) {
+  await postJson(
+    baseUrl,
+    '/secretary.v1.DocumentsService/DeleteDocument',
+    { id },
+    token,
+  );
+}
+
+export async function createDirectory(baseUrl: string, token: string, workspaceId: number, parentId: number, name: string) {
+  const payload = await postJson<{ directory?: BackendDirectory }>(
+    baseUrl,
+    '/secretary.v1.DocumentsService/CreateDirectory',
+    { workspaceId, parentId, name },
+    token,
+  );
+  if (!payload.directory) {
+    throw new Error('Directory was not returned by the server.');
+  }
+  return normalizeDirectory(payload.directory);
+}
+
+export async function updateDirectory(baseUrl: string, token: string, id: number, name: string, parentId = 0) {
+  const payload = await postJson<{ directory?: BackendDirectory }>(
+    baseUrl,
+    '/secretary.v1.DocumentsService/UpdateDirectory',
+    { id, name, parentId },
+    token,
+  );
+  if (!payload.directory) {
+    throw new Error('Directory was not returned by the server.');
+  }
+  return normalizeDirectory(payload.directory);
+}
+
+export async function deleteDirectory(baseUrl: string, token: string, id: number) {
+  await postJson(
+    baseUrl,
+    '/secretary.v1.DocumentsService/DeleteDirectory',
+    { id },
+    token,
+  );
 }

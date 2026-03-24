@@ -201,15 +201,25 @@ type Block struct {
 	ParentBlockID pgtype.Int4
 	SortOrder     int32
 	Text          string
-	Status        string
 	TodoID        pgtype.Int4
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
 }
 
+type Directory struct {
+	ID          int32
+	WorkspaceID int32
+	ParentID    pgtype.Int4
+	Name        string
+	Position    int32
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+}
+
 type Document struct {
 	ID          int32
 	WorkspaceID int32
+	DirectoryID pgtype.Int4
 	Kind        string
 	Title       string
 	JournalDate pgtype.Date

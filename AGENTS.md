@@ -5,3 +5,14 @@ This is an system that records audio meetings and then provides summaries/TODOs.
 ## PRD
 - Use `PRD.md` as the source of truth for scope, priorities, and checkpoints.
 
+## Backend Reminder
+- AFTER ANY BACKEND GO CHANGE, TELL THE USER IN ALL CAPS TO REBUILD/RESTART THE GOLANG SERVER OR THE CHANGE WILL NOT BE LIVE.
+
+## Skills
+- For backend schema and Atlas migration work, use the project skill at `.agents/skills/atlas-migrations/SKILL.md`.
+
+## Python Tooling
+- Prefer `uv` over base `python`/`pip` when possible for running Python scripts or managing Python dependencies in this repo.
+
+## Product Direction
+- Treat the native app as a keyboard-first power-user tool, not a mass-market hand-holding UI. Prefer minimal chrome, dense utility, and explicit shortcuts over tutorial-like buttons or helper clutter.

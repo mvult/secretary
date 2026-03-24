@@ -11,16 +11,41 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countChildDirectories = `-- name: CountChildDirectories :one
+SELECT COUNT(*)
+FROM directory
+WHERE parent_id = $1
+`
+
+func (q *Queries) CountChildDirectories(ctx context.Context, parentID pgtype.Int4) (int64, error) {
+	row := q.db.QueryRow(ctx, countChildDirectories, parentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countDocumentsInDirectory = `-- name: CountDocumentsInDirectory :one
+SELECT COUNT(*)
+FROM document
+WHERE directory_id = $1
+`
+
+func (q *Queries) CountDocumentsInDirectory(ctx context.Context, directoryID pgtype.Int4) (int64, error) {
+	row := q.db.QueryRow(ctx, countDocumentsInDirectory, directoryID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createBlock = `-- name: CreateBlock :one
 INSERT INTO block (
   document_id,
   parent_block_id,
   sort_order,
   text,
-  status,
   todo_id
-) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, document_id, parent_block_id, sort_order, text, status, todo_id, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
 `
 
 type CreateBlockParams struct {
@@ -28,7 +53,6 @@ type CreateBlockParams struct {
 	ParentBlockID pgtype.Int4
 	SortOrder     int32
 	Text          string
-	Status        string
 	TodoID        pgtype.Int4
 }
 
@@ -38,7 +62,6 @@ func (q *Queries) CreateBlock(ctx context.Context, arg CreateBlockParams) (Block
 		arg.ParentBlockID,
 		arg.SortOrder,
 		arg.Text,
-		arg.Status,
 		arg.TodoID,
 	)
 	var i Block
@@ -48,7 +71,6 @@ func (q *Queries) CreateBlock(ctx context.Context, arg CreateBlockParams) (Block
 		&i.ParentBlockID,
 		&i.SortOrder,
 		&i.Text,
-		&i.Status,
 		&i.TodoID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -109,18 +131,56 @@ func (q *Queries) CreateCanonicalTodoForBlock(ctx context.Context, arg CreateCan
 	return i, err
 }
 
+const createDirectory = `-- name: CreateDirectory :one
+INSERT INTO directory (
+  workspace_id,
+  parent_id,
+  name,
+  position
+) VALUES (
+  $1,
+  $2,
+  $3,
+  COALESCE((SELECT MAX(position) + 1 FROM directory WHERE workspace_id = $1 AND parent_id IS NOT DISTINCT FROM $2), 0)
+)
+RETURNING id, workspace_id, parent_id, name, position, created_at, updated_at
+`
+
+type CreateDirectoryParams struct {
+	WorkspaceID int32
+	ParentID    pgtype.Int4
+	Name        string
+}
+
+func (q *Queries) CreateDirectory(ctx context.Context, arg CreateDirectoryParams) (Directory, error) {
+	row := q.db.QueryRow(ctx, createDirectory, arg.WorkspaceID, arg.ParentID, arg.Name)
+	var i Directory
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ParentID,
+		&i.Name,
+		&i.Position,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createDocument = `-- name: CreateDocument :one
 INSERT INTO document (
   workspace_id,
+  directory_id,
   kind,
   title,
   journal_date
-) VALUES ($1, $2, $3, $4)
-RETURNING id, workspace_id, kind, title, journal_date, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at
 `
 
 type CreateDocumentParams struct {
 	WorkspaceID int32
+	DirectoryID pgtype.Int4
 	Kind        string
 	Title       string
 	JournalDate pgtype.Date
@@ -129,6 +189,7 @@ type CreateDocumentParams struct {
 func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, createDocument,
 		arg.WorkspaceID,
+		arg.DirectoryID,
 		arg.Kind,
 		arg.Title,
 		arg.JournalDate,
@@ -137,9 +198,58 @@ func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) 
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
+		&i.DirectoryID,
 		&i.Kind,
 		&i.Title,
 		&i.JournalDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const deleteDirectory = `-- name: DeleteDirectory :exec
+DELETE FROM directory
+WHERE id = $1
+`
+
+func (q *Queries) DeleteDirectory(ctx context.Context, id int32) error {
+	_, err := q.db.Exec(ctx, deleteDirectory, id)
+	return err
+}
+
+const deleteDocument = `-- name: DeleteDocument :exec
+DELETE FROM document
+WHERE id = $1
+`
+
+func (q *Queries) DeleteDocument(ctx context.Context, id int32) error {
+	_, err := q.db.Exec(ctx, deleteDocument, id)
+	return err
+}
+
+const getDirectory = `-- name: GetDirectory :one
+SELECT
+  id,
+  workspace_id,
+  parent_id,
+  name,
+  position,
+  created_at,
+  updated_at
+FROM directory
+WHERE id = $1
+`
+
+func (q *Queries) GetDirectory(ctx context.Context, id int32) (Directory, error) {
+	row := q.db.QueryRow(ctx, getDirectory, id)
+	var i Directory
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ParentID,
+		&i.Name,
+		&i.Position,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -150,6 +260,7 @@ const getDocument = `-- name: GetDocument :one
 SELECT
   d.id,
   d.workspace_id,
+  d.directory_id,
   d.kind,
   d.title,
   d.journal_date,
@@ -165,6 +276,7 @@ func (q *Queries) GetDocument(ctx context.Context, id int32) (Document, error) {
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
+		&i.DirectoryID,
 		&i.Kind,
 		&i.Title,
 		&i.JournalDate,
@@ -181,7 +293,6 @@ SELECT
   b.parent_block_id,
   b.sort_order,
   b.text,
-  b.status,
   b.todo_id,
   b.created_at,
   b.updated_at
@@ -205,8 +316,49 @@ func (q *Queries) ListBlocksByDocument(ctx context.Context, documentID int32) ([
 			&i.ParentBlockID,
 			&i.SortOrder,
 			&i.Text,
-			&i.Status,
 			&i.TodoID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDirectoriesByWorkspace = `-- name: ListDirectoriesByWorkspace :many
+SELECT
+  id,
+  workspace_id,
+  parent_id,
+  name,
+  position,
+  created_at,
+  updated_at
+FROM directory
+WHERE workspace_id = $1
+ORDER BY parent_id NULLS FIRST, position ASC, lower(name) ASC, id ASC
+`
+
+func (q *Queries) ListDirectoriesByWorkspace(ctx context.Context, workspaceID int32) ([]Directory, error) {
+	rows, err := q.db.Query(ctx, listDirectoriesByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Directory
+	for rows.Next() {
+		var i Directory
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ParentID,
+			&i.Name,
+			&i.Position,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -224,6 +376,7 @@ const listDocumentsByWorkspace = `-- name: ListDocumentsByWorkspace :many
 SELECT
   d.id,
   d.workspace_id,
+  d.directory_id,
   d.kind,
   d.title,
   d.journal_date,
@@ -250,6 +403,7 @@ func (q *Queries) ListDocumentsByWorkspace(ctx context.Context, workspaceID int3
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
+			&i.DirectoryID,
 			&i.Kind,
 			&i.Title,
 			&i.JournalDate,
@@ -273,11 +427,10 @@ SET
   parent_block_id = $3,
   sort_order = $4,
   text = $5,
-  status = $6,
-  todo_id = $7,
+  todo_id = $6,
   updated_at = now()
 WHERE id = $1
-RETURNING id, document_id, parent_block_id, sort_order, text, status, todo_id, created_at, updated_at
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
 `
 
 type UpdateBlockParams struct {
@@ -286,7 +439,6 @@ type UpdateBlockParams struct {
 	ParentBlockID pgtype.Int4
 	SortOrder     int32
 	Text          string
-	Status        string
 	TodoID        pgtype.Int4
 }
 
@@ -297,7 +449,6 @@ func (q *Queries) UpdateBlock(ctx context.Context, arg UpdateBlockParams) (Block
 		arg.ParentBlockID,
 		arg.SortOrder,
 		arg.Text,
-		arg.Status,
 		arg.TodoID,
 	)
 	var i Block
@@ -307,7 +458,6 @@ func (q *Queries) UpdateBlock(ctx context.Context, arg UpdateBlockParams) (Block
 		&i.ParentBlockID,
 		&i.SortOrder,
 		&i.Text,
-		&i.Status,
 		&i.TodoID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -372,19 +522,52 @@ func (q *Queries) UpdateCanonicalTodoForBlock(ctx context.Context, arg UpdateCan
 	return i, err
 }
 
+const updateDirectory = `-- name: UpdateDirectory :one
+UPDATE directory
+SET
+  name = $2,
+  parent_id = $3,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, parent_id, name, position, created_at, updated_at
+`
+
+type UpdateDirectoryParams struct {
+	ID       int32
+	Name     string
+	ParentID pgtype.Int4
+}
+
+func (q *Queries) UpdateDirectory(ctx context.Context, arg UpdateDirectoryParams) (Directory, error) {
+	row := q.db.QueryRow(ctx, updateDirectory, arg.ID, arg.Name, arg.ParentID)
+	var i Directory
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ParentID,
+		&i.Name,
+		&i.Position,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateDocument = `-- name: UpdateDocument :one
 UPDATE document
 SET
-  kind = $2,
-  title = $3,
-  journal_date = $4,
+  directory_id = $2,
+  kind = $3,
+  title = $4,
+  journal_date = $5,
   updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, kind, title, journal_date, created_at, updated_at
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at
 `
 
 type UpdateDocumentParams struct {
 	ID          int32
+	DirectoryID pgtype.Int4
 	Kind        string
 	Title       string
 	JournalDate pgtype.Date
@@ -393,6 +576,7 @@ type UpdateDocumentParams struct {
 func (q *Queries) UpdateDocument(ctx context.Context, arg UpdateDocumentParams) (Document, error) {
 	row := q.db.QueryRow(ctx, updateDocument,
 		arg.ID,
+		arg.DirectoryID,
 		arg.Kind,
 		arg.Title,
 		arg.JournalDate,
@@ -401,6 +585,7 @@ func (q *Queries) UpdateDocument(ctx context.Context, arg UpdateDocumentParams) 
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
+		&i.DirectoryID,
 		&i.Kind,
 		&i.Title,
 		&i.JournalDate,

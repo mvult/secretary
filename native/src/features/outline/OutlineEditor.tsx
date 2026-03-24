@@ -200,16 +200,16 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             return;
           }
 
-          if (key === 'p') {
-            event.preventDefault();
-            lastDPressRef.current = null;
-            lastGPressRef.current = null;
-            lastYPressRef.current = null;
-            void readSystemClipboard().then((text) => {
-              dispatch({ type: 'pasteBelow', text: text || undefined });
-            });
-            return;
-          }
+            if (key === 'p') {
+              event.preventDefault();
+              lastDPressRef.current = null;
+              lastGPressRef.current = null;
+              lastYPressRef.current = null;
+              void readSystemClipboard().then((text) => {
+                dispatch({ type: 'pasteBelow', text: text || undefined, preferStructured: true });
+              });
+              return;
+            }
 
           if (key === 'd') {
             event.preventDefault();
@@ -334,6 +334,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             onSplit={(selectionStart, selectionEnd) =>
               dispatch({ type: 'splitNodeAtCursor', selectionStart, selectionEnd })
             }
+            onStructuredPaste={(text) => dispatch({ type: 'pasteStructured', text })}
             onToggleStatus={(nodeId) => dispatch({ type: 'toggleNodeStatus', nodeId })}
           />
         ))}

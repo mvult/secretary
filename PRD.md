@@ -52,7 +52,7 @@
   - Meeting detail page: duration, participants, transcript, summary, and audio download link.
   - If audio URL missing/unavailable, show: “Ask Miguel for the recording if you need it.”
   - TODO list filtered by selected user.
-  - TODO CRUD with status values: `not_started`, `partial`, `done`, `blocked`, `skipped`.
+  - TODO CRUD with status values: `todo`, `doing`, `done`, `blocked`, `skipped`.
   - TODO history view showing edits over time.
 - **Non-functional requirements**:
   - Readable, fast UI for small dataset.
