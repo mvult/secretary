@@ -28,7 +28,7 @@ export interface OutlinePage {
   nodes: OutlineNode[];
 }
 
-export type EditorMode = 'normal' | 'insert';
+export type EditorMode = 'normal' | 'insert' | 'visual';
 
 export type CursorPlacement = 'start' | 'end' | number;
 

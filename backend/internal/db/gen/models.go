@@ -206,6 +206,11 @@ type Block struct {
 	UpdatedAt     pgtype.Timestamptz
 }
 
+type BlockDocumentLink struct {
+	BlockID          int32
+	TargetDocumentID int32
+}
+
 type Directory struct {
 	ID          int32
 	WorkspaceID int32

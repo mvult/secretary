@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -222,6 +223,36 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	workspaceID := workspacePayload.Workspace.Id
 	defer cleanupWorkspace(t, ctx, pool, workspaceID)
 
+	var linkedNoteID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO document (workspace_id, kind, title)
+		VALUES ($1, 'note', $2)
+		RETURNING id
+	`, workspaceID, "Linked note").Scan(&linkedNoteID)
+	if err != nil {
+		t.Fatalf("insert linked note: %v", err)
+	}
+
+	var linkedJournalID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO document (workspace_id, kind, title, journal_date)
+		VALUES ($1, 'journal', $2, $3)
+		RETURNING id
+	`, workspaceID, "Journal reference", "2026-03-24").Scan(&linkedJournalID)
+	if err != nil {
+		t.Fatalf("insert linked journal: %v", err)
+	}
+
+	var replacementLinkedNoteID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO document (workspace_id, kind, title)
+		VALUES ($1, 'note', $2)
+		RETURNING id
+	`, workspaceID, "Replacement note").Scan(&replacementLinkedNoteID)
+	if err != nil {
+		t.Fatalf("insert replacement linked note: %v", err)
+	}
+
 	var directoryID int64
 	err = pool.QueryRow(ctx, `
 		INSERT INTO directory (workspace_id, name, position)
@@ -241,7 +272,7 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 			Kind:        "note",
 			Title:       "Persistence flow",
 			Blocks: []*secretaryv1.Block{
-				{ClientKey: "block-a", SortOrder: 1, Text: "Top level"},
+				{ClientKey: "block-a", SortOrder: 1, Text: fmt.Sprintf("Top level [[doc:%d|Linked note]] [[doc:%d|Journal reference]]", linkedNoteID, linkedJournalID)},
 				{ClientKey: "block-b", ParentClientKey: "block-a", SortOrder: 2, Text: "Nested", TodoStatus: "todo"},
 			},
 		},
@@ -271,6 +302,28 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	}
 	if createPayload.Document.Blocks[0].TodoId != 0 {
 		t.Fatalf("expected note block to have no todo, got %d", createPayload.Document.Blocks[0].TodoId)
+	}
+	var initialLinkedTargets []int64
+	rows, err := pool.Query(ctx, `
+		SELECT target_document_id
+		FROM block_document_link
+		WHERE block_id = $1
+		ORDER BY target_document_id
+	`, createPayload.Document.Blocks[0].Id)
+	if err != nil {
+		t.Fatalf("list initial block document links: %v", err)
+	}
+	for rows.Next() {
+		var targetID int64
+		if err := rows.Scan(&targetID); err != nil {
+			rows.Close()
+			t.Fatalf("scan initial block document link: %v", err)
+		}
+		initialLinkedTargets = append(initialLinkedTargets, targetID)
+	}
+	rows.Close()
+	if len(initialLinkedTargets) != 2 || initialLinkedTargets[0] != linkedNoteID || initialLinkedTargets[1] != linkedJournalID {
+		t.Fatalf("expected initial links [%d %d], got %v", linkedNoteID, linkedJournalID, initialLinkedTargets)
 	}
 	if createPayload.Document.Blocks[1].TodoId == 0 {
 		t.Fatalf("expected task block to create canonical todo")
@@ -313,7 +366,7 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 					Id:         createPayload.Document.Blocks[0].Id,
 					ClientKey:  createPayload.Document.Blocks[0].ClientKey,
 					SortOrder:  1,
-					Text:       "Top level updated",
+					Text:       fmt.Sprintf("Top level updated [[doc:%d|Replacement note]]", replacementLinkedNoteID),
 					TodoStatus: "doing",
 				},
 				{
@@ -344,6 +397,21 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	}
 	if updatedPayload.Document.Blocks[0].TodoId == 0 || updatedPayload.Document.Blocks[1].TodoId == 0 {
 		t.Fatalf("expected task blocks to own canonical todos after update")
+	}
+	var updatedLinkCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM block_document_link WHERE target_document_id = $1`, replacementLinkedNoteID).Scan(&updatedLinkCount)
+	if err != nil {
+		t.Fatalf("count updated block document links: %v", err)
+	}
+	if updatedLinkCount != 1 {
+		t.Fatalf("expected replacement linked note to have 1 block link, found %d", updatedLinkCount)
+	}
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM block_document_link WHERE target_document_id = $1`, linkedNoteID).Scan(&updatedLinkCount)
+	if err != nil {
+		t.Fatalf("count removed linked note references: %v", err)
+	}
+	if updatedLinkCount != 0 {
+		t.Fatalf("expected linked note references to be removed, found %d", updatedLinkCount)
 	}
 	var removedTodoCount int
 	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM todo WHERE id = $1`, removedTodoID).Scan(&removedTodoCount)
@@ -467,6 +535,14 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	}
 	if removedTodoCount != 0 {
 		t.Fatalf("expected deleted document todos to be removed, found %d rows", removedTodoCount)
+	}
+
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM block_document_link WHERE target_document_id = $1`, replacementLinkedNoteID).Scan(&updatedLinkCount)
+	if err != nil {
+		t.Fatalf("count deleted document links: %v", err)
+	}
+	if updatedLinkCount != 0 {
+		t.Fatalf("expected deleted document links to be removed, found %d rows", updatedLinkCount)
 	}
 }
 

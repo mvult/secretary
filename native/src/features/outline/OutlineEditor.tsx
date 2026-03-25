@@ -25,11 +25,15 @@ interface OutlineEditorProps {
   page: OutlinePage;
   state: OutlineState;
   dispatch: Dispatch<OutlineAction>;
+  onOpenDocumentLinkPicker: () => void;
+  onFollowDocumentLink: () => void;
+  onOpenDocumentLink: (targetDocumentId: number) => void;
 }
 
-export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
+export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker, onFollowDocumentLink, onOpenDocumentLink }: OutlineEditorProps) {
   const lastDPressRef = useRef<number | null>(null);
   const lastGPressRef = useRef<number | null>(null);
+  const lastBracketPressRef = useRef<number | null>(null);
   const lastYPressRef = useRef<number | null>(null);
   const { focusedNode, selectedIds } = useMemo(() => getSelectedInfo(state), [state]);
 
@@ -45,6 +49,16 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
 
         const rawKey = event.key;
         const key = rawKey.length === 1 ? rawKey.toLowerCase() : rawKey;
+
+        if (rawKey === 'Escape' && state.mode === 'visual') {
+          event.preventDefault();
+          lastDPressRef.current = null;
+          lastGPressRef.current = null;
+          lastBracketPressRef.current = null;
+          lastYPressRef.current = null;
+          dispatch({ type: 'toggleVisualMode' });
+          return;
+        }
 
         if ((event.metaKey || event.ctrlKey) && key === 'Enter') {
           event.preventDefault();
@@ -87,6 +101,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'undo' });
             return;
@@ -96,6 +111,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             if (focusedNode) {
               void writeSystemClipboard(focusedNode.text);
@@ -108,6 +124,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'jumpFocus', position: 'end' });
             return;
@@ -117,6 +134,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'startEditing', placement: 'start' });
             return;
@@ -126,6 +144,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'startEditing', placement: 'end' });
             return;
@@ -135,6 +154,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'openAbove' });
             return;
@@ -143,6 +163,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
           if (key === 'g') {
             event.preventDefault();
             lastDPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
 
             if (lastGPressRef.current && Date.now() - lastGPressRef.current <= 320) {
@@ -159,6 +180,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
 
             if (lastYPressRef.current && Date.now() - lastYPressRef.current <= 320) {
               if (focusedNode) {
@@ -177,8 +199,19 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'startEditing', placement: 'current' });
+            return;
+          }
+
+          if (key === 'v') {
+            event.preventDefault();
+            lastDPressRef.current = null;
+            lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
+            lastYPressRef.current = null;
+            dispatch({ type: 'toggleVisualMode' });
             return;
           }
 
@@ -186,6 +219,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'startEditing', placement: 'after' });
             return;
@@ -195,8 +229,25 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'openBelow' });
+            return;
+          }
+
+          if (rawKey === '[') {
+            event.preventDefault();
+            lastDPressRef.current = null;
+            lastGPressRef.current = null;
+            lastYPressRef.current = null;
+
+            if (lastBracketPressRef.current && Date.now() - lastBracketPressRef.current <= 320) {
+              onOpenDocumentLinkPicker();
+              lastBracketPressRef.current = null;
+              return;
+            }
+
+            lastBracketPressRef.current = Date.now();
             return;
           }
 
@@ -204,6 +255,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
               event.preventDefault();
               lastDPressRef.current = null;
               lastGPressRef.current = null;
+              lastBracketPressRef.current = null;
               lastYPressRef.current = null;
               void readSystemClipboard().then((text) => {
                 dispatch({ type: 'pasteBelow', text: text || undefined, preferStructured: true });
@@ -214,6 +266,15 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
           if (key === 'd') {
             event.preventDefault();
 
+            if (lastGPressRef.current && Date.now() - lastGPressRef.current <= 320) {
+              onFollowDocumentLink();
+              lastDPressRef.current = null;
+              lastGPressRef.current = null;
+              lastBracketPressRef.current = null;
+              lastYPressRef.current = null;
+              return;
+            }
+
             if (lastDPressRef.current && Date.now() - lastDPressRef.current <= 320) {
               if (focusedNode) {
                 void writeSystemClipboard(focusedNode.text);
@@ -221,12 +282,14 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
               dispatch({ type: 'deleteSelection' });
               lastDPressRef.current = null;
               lastGPressRef.current = null;
+              lastBracketPressRef.current = null;
               lastYPressRef.current = null;
               return;
             }
 
             lastDPressRef.current = Date.now();
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             return;
           }
@@ -235,8 +298,9 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
-            dispatch({ type: 'moveFocus', direction: 1, extendSelection: event.shiftKey });
+            dispatch({ type: 'moveFocus', direction: 1, extendSelection: event.shiftKey || state.mode === 'visual' });
             return;
           }
 
@@ -244,8 +308,9 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
-            dispatch({ type: 'moveFocus', direction: -1, extendSelection: event.shiftKey });
+            dispatch({ type: 'moveFocus', direction: -1, extendSelection: event.shiftKey || state.mode === 'visual' });
             return;
           }
 
@@ -253,6 +318,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'left' });
             return;
@@ -262,6 +328,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'right' });
             return;
@@ -271,6 +338,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'wordForward' });
             return;
@@ -280,6 +348,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'wordBackward' });
             return;
@@ -289,6 +358,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'wordEnd' });
             return;
@@ -298,6 +368,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'lineStart' });
             return;
@@ -307,6 +378,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             event.preventDefault();
             lastDPressRef.current = null;
             lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
             lastYPressRef.current = null;
             dispatch({ type: 'moveCaret', motion: 'lineEnd' });
             return;
@@ -315,6 +387,7 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
 
         lastDPressRef.current = null;
         lastGPressRef.current = null;
+        lastBracketPressRef.current = null;
         lastYPressRef.current = null;
       }}
     >
@@ -331,11 +404,13 @@ export function OutlineEditor({ page, state, dispatch }: OutlineEditorProps) {
             onDraftChange={(text) => dispatch({ type: 'updateDraft', text })}
             onCommit={(text, cursor) => dispatch({ type: 'commitEdit', text, cursor })}
             onCycleStatus={() => dispatch({ type: 'cycleStatuses' })}
+            onIndent={(direction) => dispatch({ type: direction })}
             onSplit={(selectionStart, selectionEnd) =>
               dispatch({ type: 'splitNodeAtCursor', selectionStart, selectionEnd })
             }
             onStructuredPaste={(text) => dispatch({ type: 'pasteStructured', text })}
             onToggleStatus={(nodeId) => dispatch({ type: 'toggleNodeStatus', nodeId })}
+            onOpenDocumentLink={onOpenDocumentLink}
           />
         ))}
       </div>

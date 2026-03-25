@@ -8,6 +8,7 @@ import {
   deleteNotePage,
   focusNode,
   indentSelection,
+  insertTextAtCursor,
   jumpFocusInPage,
   hydratePages,
   makeSnapshot,
@@ -30,6 +31,7 @@ import {
   splitNodeAtCursor,
   startEditing,
   toggleNodeStatus,
+  toggleVisualMode,
   updatePageTitle,
   updateDraft,
   yankLine,
@@ -41,6 +43,7 @@ export type OutlineAction =
   | { type: 'moveCaret'; motion: 'left' | 'right' | 'wordForward' | 'wordBackward' | 'wordEnd' | 'lineStart' | 'lineEnd' }
   | { type: 'moveFocus'; direction: 1 | -1; extendSelection: boolean }
   | { type: 'jumpFocus'; position: 'start' | 'end' }
+  | { type: 'insertTextAtCursor'; text: string }
   | { type: 'yankLine' }
   | { type: 'pasteBelow'; text?: string; preferStructured?: boolean }
   | { type: 'pasteStructured'; text: string }
@@ -66,6 +69,7 @@ export type OutlineAction =
   | { type: 'createNote'; title?: string }
   | { type: 'createTodayJournal' }
   | { type: 'toggleNodeStatus'; nodeId: string }
+  | { type: 'toggleVisualMode' }
   | { type: 'updatePageTitle'; title: string }
   | { type: 'hydrate'; pages: OutlineState['pages'] }
   | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string }
@@ -110,6 +114,8 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return moveFocus(currentState, action.direction, action.extendSelection);
     case 'jumpFocus':
       return jumpFocusInPage(currentState, action.position);
+    case 'insertTextAtCursor':
+      return withHistory(currentState, (active) => insertTextAtCursor(active, action.text));
     case 'yankLine':
       return yankLine(currentState);
     case 'pasteBelow':
@@ -162,6 +168,8 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return withHistory(currentState, createTodayJournalPage);
     case 'toggleNodeStatus':
       return withHistory(currentState, (active) => toggleNodeStatus(active, action.nodeId));
+    case 'toggleVisualMode':
+      return toggleVisualMode(currentState);
     case 'updatePageTitle':
       return withHistory(currentState, (active) => updatePageTitle(active, action.title));
     case 'hydrate':

@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
+import { OutlineText } from './OutlineText';
 import { ESCAPE_SEQUENCE_MS } from './keymap';
 import { getCurrentPage, getNodeDepth } from './tree';
 import type { OutlineNode, OutlineState } from './types';
@@ -13,14 +14,29 @@ interface OutlineRowProps {
   onDraftChange: (text: string) => void;
   onCommit: (text?: string, cursor?: number) => void;
   onCycleStatus: () => void;
+  onIndent: (direction: 'indent' | 'outdent') => void;
   onSplit: (selectionStart: number, selectionEnd: number) => void;
   onStructuredPaste: (text: string) => void;
   onToggleStatus: (nodeId: string) => void;
+  onOpenDocumentLink: (targetDocumentId: number) => void;
 }
 
 function looksLikeStructuredPaste(text: string) {
   const lines = text.replace(/\r\n?/g, '\n').split('\n').filter((line) => line.trim());
   return lines.length > 1 && lines.every((line) => /^\s*[-*+]\s+/.test(line));
+}
+
+function formatTodoStatus(status: string) {
+  switch (status) {
+    case 'todo':
+      return '☐';
+    case 'doing':
+      return 'DOING';
+    case 'done':
+      return '☑';
+    default:
+      return status;
+  }
 }
 
 export function OutlineRow({
@@ -33,21 +49,24 @@ export function OutlineRow({
   onDraftChange,
   onCommit,
   onCycleStatus,
+  onIndent,
   onSplit,
   onStructuredPaste,
   onToggleStatus,
+  onOpenDocumentLink,
 }: OutlineRowProps) {
   const isEditing = state.editingId === node.id;
   const page = getCurrentPage(state);
   const depth = getNodeDepth(page?.nodes ?? [], node.id);
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const buttonRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastJPressRef = useRef<number | null>(null);
   const wasEditingRef = useRef(false);
   const normalCursor = Math.max(0, Math.min(state.normalCursor, node.text.length));
-  const beforeCursor = node.text.slice(0, normalCursor);
-  const atCursor = node.text.slice(normalCursor, normalCursor + 1);
-  const afterCursor = node.text.slice(normalCursor + 1);
+  const pagesByBackendId = useMemo(
+    () => new Map(state.pages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
+    [state.pages],
+  );
 
   useEffect(() => {
     if (isEditing) {
@@ -87,17 +106,24 @@ export function OutlineRow({
       </span>
 
       {node.todoStatus ? (
-        <button
-          type="button"
+        <span
+          role="button"
+          tabIndex={-1}
           className="status-chip status-chip-button"
           data-status={node.todoStatus}
           onClick={() => onToggleStatus(node.id)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onToggleStatus(node.id);
+            }
+          }}
         >
-          {node.todoStatus}
-        </button>
+          {formatTodoStatus(node.todoStatus)}
+        </span>
       ) : null}
 
-      <span className="row-content">
+      <div className="row-content">
         {isEditing ? (
           <textarea
             ref={textareaRef}
@@ -123,6 +149,13 @@ export function OutlineRow({
               if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
                 event.preventDefault();
                 onCycleStatus();
+                return;
+              }
+
+              if (event.key === 'Tab' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                event.preventDefault();
+                lastJPressRef.current = null;
+                onIndent(event.shiftKey ? 'outdent' : 'indent');
                 return;
               }
 
@@ -163,30 +196,27 @@ export function OutlineRow({
             }}
           />
         ) : (
-          <button
+          <div
             ref={buttonRef}
-            type="button"
             className="row-activator"
+            tabIndex={-1}
             onClick={() => onFocus(node.id)}
             onDoubleClick={() => {
               onFocus(node.id);
               onStartEditing();
             }}
           >
-            <p className="row-text">
-              {isFocused ? (
-                <>
-                  <span>{beforeCursor}</span>
-                  <span className="row-caret">{atCursor || ' '}</span>
-                  <span>{afterCursor}</span>
-                </>
-              ) : (
-                node.text
-              )}
+            <p className="row-text" data-status={node.todoStatus ?? 'none'}>
+              <OutlineText
+                text={node.text}
+                cursor={isFocused ? normalCursor : undefined}
+                pagesByBackendId={pagesByBackendId}
+                onOpenDocumentLink={onOpenDocumentLink}
+              />
             </p>
-          </button>
+          </div>
         )}
-      </span>
+      </div>
     </div>
   );
 }

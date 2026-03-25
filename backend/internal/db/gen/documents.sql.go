@@ -11,6 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countBlockDocumentLinksByTarget = `-- name: CountBlockDocumentLinksByTarget :one
+SELECT COUNT(*)
+FROM block_document_link
+WHERE target_document_id = $1
+`
+
+func (q *Queries) CountBlockDocumentLinksByTarget(ctx context.Context, targetDocumentID int32) (int64, error) {
+	row := q.db.QueryRow(ctx, countBlockDocumentLinksByTarget, targetDocumentID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const countChildDirectories = `-- name: CountChildDirectories :one
 SELECT COUNT(*)
 FROM directory
@@ -76,6 +89,24 @@ func (q *Queries) CreateBlock(ctx context.Context, arg CreateBlockParams) (Block
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const createBlockDocumentLink = `-- name: CreateBlockDocumentLink :exec
+INSERT INTO block_document_link (
+  block_id,
+  target_document_id
+) VALUES ($1, $2)
+ON CONFLICT (block_id, target_document_id) DO NOTHING
+`
+
+type CreateBlockDocumentLinkParams struct {
+	BlockID          int32
+	TargetDocumentID int32
+}
+
+func (q *Queries) CreateBlockDocumentLink(ctx context.Context, arg CreateBlockDocumentLinkParams) error {
+	_, err := q.db.Exec(ctx, createBlockDocumentLink, arg.BlockID, arg.TargetDocumentID)
+	return err
 }
 
 const createCanonicalTodoForBlock = `-- name: CreateCanonicalTodoForBlock :one
@@ -206,6 +237,16 @@ func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) 
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const deleteBlockDocumentLinksByBlock = `-- name: DeleteBlockDocumentLinksByBlock :exec
+DELETE FROM block_document_link
+WHERE block_id = $1
+`
+
+func (q *Queries) DeleteBlockDocumentLinksByBlock(ctx context.Context, blockID int32) error {
+	_, err := q.db.Exec(ctx, deleteBlockDocumentLinksByBlock, blockID)
+	return err
 }
 
 const deleteDirectory = `-- name: DeleteDirectory :exec

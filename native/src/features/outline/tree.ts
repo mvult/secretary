@@ -820,10 +820,30 @@ export function moveFocus(state: OutlineState, direction: 1 | -1, extendSelectio
 
   return {
     ...state,
-    mode: 'normal',
+    mode: state.mode === 'visual' ? 'visual' : 'normal',
     editingId: null,
     focusedId: nextId,
     normalCursor: nextCursor,
+    anchorId: state.anchorId ?? state.focusedId,
+  };
+}
+
+export function toggleVisualMode(state: OutlineState): OutlineState {
+  if (!state.focusedId || state.editingId) {
+    return state;
+  }
+
+  if (state.mode === 'visual') {
+    return {
+      ...state,
+      mode: 'normal',
+      anchorId: null,
+    };
+  }
+
+  return {
+    ...state,
+    mode: 'visual',
     anchorId: state.anchorId ?? state.focusedId,
   };
 }
@@ -890,6 +910,34 @@ export function moveCaret(
   return {
     ...state,
     normalCursor: nextCursor,
+  };
+}
+
+export function insertTextAtCursor(state: OutlineState, text: string): OutlineState {
+  if (state.editingId || !text) {
+    return state;
+  }
+
+  const target = getFocusedNode(state);
+  if (!target) {
+    return state;
+  }
+
+  const cursor = getNormalCursor(state);
+  const nextText = `${target.text.slice(0, cursor)}${text}${target.text.slice(cursor)}`;
+  const nextState = replaceActivePage(state, (page) => ({
+    ...page,
+    nodes: page.nodes.map((node) => (node.id === target.id ? { ...node, text: nextText } : node)),
+  }));
+
+  return {
+    ...nextState,
+    normalCursor: clampCursor(cursor + text.length, nextText),
+    anchorId: null,
+    editingId: null,
+    draftText: '',
+    editCursor: 'end',
+    mode: 'normal',
   };
 }
 
@@ -1181,6 +1229,7 @@ export function indentSelection(state: OutlineState): OutlineState {
   const indexMap = buildIndexMap(nodes);
   const nodeMap = getNodeMap(nodes);
   const updates = new Map<string, string | null>();
+  const selectedRootIds = new Set(selectedRoots.map((root) => root.id));
 
   for (const root of selectedRoots) {
     const index = indexMap.get(root.id);
@@ -1211,6 +1260,14 @@ export function indentSelection(state: OutlineState): OutlineState {
     }
 
     if (candidateId) {
+      if (selectedRootIds.has(candidateId)) {
+        const sharedParentId = updates.get(candidateId);
+        if (sharedParentId) {
+          updates.set(root.id, sharedParentId);
+        }
+        continue;
+      }
+
       updates.set(root.id, candidateId);
     }
   }

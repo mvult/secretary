@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +15,8 @@ import (
 	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
 	"github.com/mvult/secretary/backend/internal/db/gen"
 )
+
+var documentLinkPattern = regexp.MustCompile(`\[\[doc:(\d+)\|([^\]]+)\]\]`)
 
 func (s *Server) ListWorkspaces(ctx context.Context, _ *connect.Request[secretaryv1.ListWorkspacesRequest]) (*connect.Response[secretaryv1.ListWorkspacesResponse], error) {
 	userID, err := requireUserID(ctx)
@@ -423,6 +427,9 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 			}
 			return nil, connect.NewError(connect.CodeInternal, err)
 		}
+		if err := reconcileBlockDocumentLinks(ctx, qtx, savedDoc, updatedBlock); err != nil {
+			return nil, err
+		}
 		savedRecords[index].block = updatedBlock
 	}
 
@@ -753,6 +760,66 @@ func validBlockTodoStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func parseBlockDocumentLinkTargetIDs(text string) ([]int32, error) {
+	matches := documentLinkPattern.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return nil, nil
+	}
+
+	targetIDs := make([]int32, 0, len(matches))
+	seen := make(map[int32]struct{}, len(matches))
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		parsed, err := strconv.ParseInt(match[1], 10, 32)
+		if err != nil || parsed <= 0 {
+			return nil, errors.New("document link id must be a positive integer")
+		}
+		targetID := int32(parsed)
+		if _, ok := seen[targetID]; ok {
+			continue
+		}
+		seen[targetID] = struct{}{}
+		targetIDs = append(targetIDs, targetID)
+	}
+
+	return targetIDs, nil
+}
+
+func reconcileBlockDocumentLinks(ctx context.Context, queries *db.Queries, sourceDocument db.Document, block db.Block) error {
+	targetIDs, err := parseBlockDocumentLinkTargetIDs(block.Text)
+	if err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	if err := queries.DeleteBlockDocumentLinksByBlock(ctx, block.ID); err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to clear block document links"))
+	}
+
+	for _, targetID := range targetIDs {
+		targetDocument, err := queries.GetDocument(ctx, targetID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("linked document %d not found", targetID))
+		}
+		if err != nil {
+			return connect.NewError(connect.CodeInternal, errors.New("failed to validate linked document"))
+		}
+		if targetDocument.WorkspaceID != sourceDocument.WorkspaceID {
+			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("linked document %d must belong to the same workspace", targetID))
+		}
+
+		if err := queries.CreateBlockDocumentLink(ctx, db.CreateBlockDocumentLinkParams{
+			BlockID:          block.ID,
+			TargetDocumentID: targetID,
+		}); err != nil {
+			return connect.NewError(connect.CodeInternal, errors.New("failed to save block document link"))
+		}
+	}
+
+	return nil
 }
 
 func removedBlocksByID(existingBlocks []db.Block, keptIDs []int32) []db.Block {

@@ -184,6 +184,14 @@ CREATE TABLE "public"."block" (
   CONSTRAINT "block_document_fk" FOREIGN KEY ("document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "block_parent_fk" FOREIGN KEY ("parent_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
 );
+-- Create "block_document_link" table
+CREATE TABLE "public"."block_document_link" (
+  "block_id" integer NOT NULL,
+  "target_document_id" integer NOT NULL,
+  PRIMARY KEY ("block_id", "target_document_id"),
+  CONSTRAINT "block_document_link_block_fk" FOREIGN KEY ("block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "block_document_link_target_document_fk" FOREIGN KEY ("target_document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
+);
 -- Create "todo" table
 CREATE TABLE "public"."todo" (
   "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
@@ -211,6 +219,8 @@ CREATE TABLE "public"."todo" (
 ALTER TABLE "public"."block" ADD CONSTRAINT "block_todo_fk" FOREIGN KEY ("todo_id") REFERENCES "public"."todo" ("id") ON UPDATE NO ACTION ON DELETE SET NULL, ADD CONSTRAINT "block_document_parent_sort_key" UNIQUE ("document_id", "parent_block_id", "sort_order");
 -- Create index "block_document_idx" to table: "block"
 CREATE INDEX "block_document_idx" ON "public"."block" ("document_id");
+-- Create index "block_document_link_target_document_idx" to table: "block_document_link"
+CREATE INDEX "block_document_link_target_document_idx" ON "public"."block_document_link" ("target_document_id");
 -- Create index "block_parent_idx" to table: "block"
 CREATE INDEX "block_parent_idx" ON "public"."block" ("parent_block_id");
 -- Create index "block_todo_idx" to table: "block"

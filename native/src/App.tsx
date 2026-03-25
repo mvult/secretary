@@ -13,6 +13,8 @@ import {
   updateTodo,
 } from './lib/backend';
 import { OutlineEditor } from './features/outline/OutlineEditor';
+import { OutlineText } from './features/outline/OutlineText';
+import { findDocumentLinkAtCursor } from './features/outline/documentLinks';
 import { documentToOutlinePage, outlinePageToDocument } from './features/outline/remote';
 import { reduceOutlineState, useOutlineState } from './features/outline/state';
 import {
@@ -49,6 +51,19 @@ function todoStatusTone(status: BackendTodo['status']) {
       return 'todo';
     case 'doing':
       return 'doing';
+    default:
+      return status;
+  }
+}
+
+function formatInlineTodoStatus(status: string) {
+  switch (status) {
+    case 'todo':
+      return '☐';
+    case 'doing':
+      return 'DOING';
+    case 'done':
+      return '☑';
     default:
       return status;
   }
@@ -151,11 +166,19 @@ type DirectoryClipboard =
   | { kind: 'note'; pageId: string; mode: 'move' }
   | { kind: 'directory'; directoryId: number; mode: 'move' | 'copy' };
 
+interface JumpLocation {
+  pageId: string;
+  focusedId: string;
+}
+
+const JUMPLIST_LIMIT = 10;
+
 function App() {
   const [state, dispatch] = useOutlineState();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'insert' | 'select'>('insert');
   const [searchScope, setSearchScope] = useState<'title' | 'fulltext'>('title');
+  const [documentLinkQuery, setDocumentLinkQuery] = useState('');
   const [backendUrl, setBackendUrl] = useState('http://localhost:8080');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -182,13 +205,18 @@ function App() {
   const [bootstrapped, setBootstrapped] = useState(false);
   const [initialLoadResolved, setInitialLoadResolved] = useState(false);
   const [activeSearchResultId, setActiveSearchResultId] = useState<string | null>(null);
+  const [isDocumentLinkPickerOpen, setIsDocumentLinkPickerOpen] = useState(false);
+  const [activeDocumentLinkResultId, setActiveDocumentLinkResultId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const documentLinkInputRef = useRef<HTMLInputElement | null>(null);
   const directoryPromptInputRef = useRef<HTMLInputElement | null>(null);
   const toolbarMenuRef = useRef<HTMLDivElement | null>(null);
   const lastSearchJPressRef = useRef<number | null>(null);
   const lastTodoGPressRef = useRef<number | null>(null);
   const lastDirectoryDPressRef = useRef<number | null>(null);
   const pendingDirectoryMoveTimerRef = useRef<number | null>(null);
+  const jumpBackRef = useRef<JumpLocation[]>([]);
+  const jumpForwardRef = useRef<JumpLocation[]>([]);
   const stateRef = useRef(state);
   const pagesForPersistence = useMemo(() => getPagesForPersistence(state), [state]);
   const pagesRef = useRef(pagesForPersistence);
@@ -200,6 +228,10 @@ function App() {
   const journalPage = getJournalPage(state);
   const journals = getJournalPages(state);
   const notes = useMemo(() => state.pages.filter((entry) => entry.kind === 'note'), [state.pages]);
+  const pagesByBackendId = useMemo(
+    () => new Map(state.pages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
+    [state.pages],
+  );
   const directoryMap = useMemo(() => new Map(directories.map((directory) => [directory.id, directory])), [directories]);
   const currentDirectory = activeDirectoryId ? directoryMap.get(activeDirectoryId) ?? null : null;
   const directoryPath = useMemo(() => {
@@ -296,6 +328,28 @@ function App() {
 
     return visibleMatches.find((entry) => entry.page.id === activeSearchResultId)?.page ?? visibleMatches[0]?.page ?? null;
   }, [activeSearchResultId, searchMode, topMatch, visibleMatches]);
+  const documentLinkMatches = useMemo(() => {
+    const normalized = documentLinkQuery.trim().toLowerCase();
+    return state.pages
+      .filter((entry) => {
+        if (!normalized) {
+          return true;
+        }
+        return getPageTitle(entry).toLowerCase().includes(normalized);
+      })
+      .sort((left, right) => {
+        const kindOrder = left.kind === right.kind ? 0 : left.kind === 'note' ? -1 : 1;
+        if (kindOrder !== 0) {
+          return kindOrder;
+        }
+        return getPageTitle(left).localeCompare(getPageTitle(right)) || left.id.localeCompare(right.id);
+      })
+      .slice(0, 8);
+  }, [documentLinkQuery, state.pages]);
+  const activeDocumentLinkMatch = useMemo(
+    () => documentLinkMatches.find((entry) => entry.id === activeDocumentLinkResultId) ?? documentLinkMatches[0] ?? null,
+    [activeDocumentLinkResultId, documentLinkMatches],
+  );
   const syncEnabled = Boolean(backendUrl.trim() && authToken && workspaceId);
 
   useEffect(() => {
@@ -363,6 +417,14 @@ function App() {
   }, [state.activeView]);
 
   useEffect(() => {
+    if (!isDocumentLinkPickerOpen) {
+      return;
+    }
+    documentLinkInputRef.current?.focus();
+    documentLinkInputRef.current?.select();
+  }, [isDocumentLinkPickerOpen]);
+
+  useEffect(() => {
     if (!isToolbarMenuOpen) {
       return;
     }
@@ -415,6 +477,23 @@ function App() {
     directoryPromptInputRef.current?.focus();
     directoryPromptInputRef.current?.select();
   }, [directoryPrompt]);
+
+  useEffect(() => {
+    if (!isDocumentLinkPickerOpen) {
+      return;
+    }
+
+    if (documentLinkMatches.length === 0) {
+      if (activeDocumentLinkResultId !== null) {
+        setActiveDocumentLinkResultId(null);
+      }
+      return;
+    }
+
+    if (!activeDocumentLinkResultId || !documentLinkMatches.some((entry) => entry.id === activeDocumentLinkResultId)) {
+      setActiveDocumentLinkResultId(documentLinkMatches[0].id);
+    }
+  }, [activeDocumentLinkResultId, documentLinkMatches, isDocumentLinkPickerOpen]);
 
   useEffect(() => {
     if (filteredTodos.length === 0) {
@@ -684,6 +763,116 @@ function App() {
     });
   }, [dispatch, flushDirtyPages, syncEnabled]);
 
+  const getCurrentJumpLocation = useCallback((): JumpLocation | null => {
+    const currentPage = stateRef.current.pages.find((entry) => entry.id === stateRef.current.activePageId) ?? null;
+    if (!currentPage) {
+      return null;
+    }
+
+    return {
+      pageId: currentPage.id,
+      focusedId: currentPage.nodes.some((entry) => entry.id === stateRef.current.focusedId)
+        ? stateRef.current.focusedId
+        : currentPage.nodes[0]?.id ?? '',
+    };
+  }, []);
+
+  const pushJumpBack = useCallback((location: JumpLocation | null) => {
+    if (!location) {
+      return;
+    }
+
+    const current = jumpBackRef.current;
+    const previous = current[current.length - 1];
+    if (previous?.pageId === location.pageId && previous.focusedId === location.focusedId) {
+      return;
+    }
+
+    jumpBackRef.current = [...current.slice(-(JUMPLIST_LIMIT - 1)), location];
+  }, []);
+
+  const navigateToJumpLocation = useCallback((location: JumpLocation | null) => {
+    if (!location) {
+      return;
+    }
+
+    const targetPage = stateRef.current.pages.find((entry) => entry.id === location.pageId) ?? null;
+    if (!targetPage) {
+      return;
+    }
+
+    if (targetPage.kind === 'note') {
+      dispatchAfterFlush({ type: 'selectNote', pageId: targetPage.id });
+    } else {
+      dispatchAfterFlush({ type: 'selectJournalPage', pageId: targetPage.id });
+    }
+
+    window.setTimeout(() => {
+      const focusedNode = stateRef.current.pages
+        .find((entry) => entry.id === location.pageId)
+        ?.nodes.find((entry) => entry.id === location.focusedId);
+      if (!focusedNode) {
+        return;
+      }
+      dispatch({ type: 'focus', nodeId: focusedNode.id });
+      document.querySelector<HTMLElement>(`[data-node-id="${focusedNode.id}"]`)?.scrollIntoView({ block: 'center' });
+    }, 0);
+  }, [dispatch, dispatchAfterFlush]);
+
+  const jumpBack = useCallback(() => {
+    const destination = jumpBackRef.current[jumpBackRef.current.length - 1] ?? null;
+    if (!destination) {
+      return;
+    }
+    const current = getCurrentJumpLocation();
+    jumpBackRef.current = jumpBackRef.current.slice(0, -1);
+    if (current) {
+      jumpForwardRef.current = [...jumpForwardRef.current.slice(-(JUMPLIST_LIMIT - 1)), current];
+    }
+    navigateToJumpLocation(destination);
+  }, [getCurrentJumpLocation, navigateToJumpLocation]);
+
+  const jumpForward = useCallback(() => {
+    const destination = jumpForwardRef.current[jumpForwardRef.current.length - 1] ?? null;
+    if (!destination) {
+      return;
+    }
+    const current = getCurrentJumpLocation();
+    jumpForwardRef.current = jumpForwardRef.current.slice(0, -1);
+    if (current) {
+      pushJumpBack(current);
+    }
+    navigateToJumpLocation(destination);
+  }, [getCurrentJumpLocation, navigateToJumpLocation, pushJumpBack]);
+
+  const navigateToPage = useCallback((targetPage: OutlinePage, options?: { focusNodeId?: string; recordJump?: boolean }) => {
+    if (options?.recordJump) {
+      pushJumpBack(getCurrentJumpLocation());
+      jumpForwardRef.current = [];
+    }
+
+    if (targetPage.kind === 'note') {
+      dispatchAfterFlush({ type: 'selectNote', pageId: targetPage.id });
+    } else {
+      dispatchAfterFlush({ type: 'selectJournalPage', pageId: targetPage.id });
+    }
+
+    if (!options?.focusNodeId) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      const node = stateRef.current.pages
+        .find((entry) => entry.id === targetPage.id)
+        ?.nodes.find((entry) => entry.id === options.focusNodeId);
+      if (!node) {
+        return;
+      }
+      dispatch({ type: 'focus', nodeId: node.id });
+      document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)?.scrollIntoView({ block: 'center' });
+    }, 0);
+  }, [dispatch, dispatchAfterFlush, getCurrentJumpLocation, pushJumpBack]);
+
   const openDirectoryBrowser = useCallback(() => {
     const activeNote = page?.kind === 'note' ? page : null;
     const nextDirectoryId = activeNote?.directoryId ?? null;
@@ -706,9 +895,9 @@ function App() {
       return;
     }
     if (entry.page) {
-      dispatchAfterFlush({ type: 'selectNote', pageId: entry.page.id });
+      navigateToPage(entry.page, { recordJump: true });
     }
-  }, [dispatchAfterFlush, enterDirectory]);
+  }, [enterDirectory, navigateToPage]);
 
   const openCreateDirectoryPrompt = useCallback(() => {
     setDirectoryPrompt({ kind: 'create-directory' });
@@ -1101,6 +1290,14 @@ function App() {
         return;
       }
 
+      if (event.key === 'Escape' && isDocumentLinkPickerOpen) {
+        event.preventDefault();
+        setIsDocumentLinkPickerOpen(false);
+        setDocumentLinkQuery('');
+        setActiveDocumentLinkResultId(null);
+        return;
+      }
+
       if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos' || state.activeView === 'directory')) {
         event.preventDefault();
         setSearchQuery('');
@@ -1293,6 +1490,21 @@ function App() {
         }
       }
 
+      if (!event.metaKey && event.ctrlKey && !event.altKey && !isFormTarget) {
+        const lowerKey = event.key.toLowerCase();
+        if (lowerKey === 'o') {
+          event.preventDefault();
+          jumpBack();
+          return;
+        }
+
+        if (lowerKey === 'i' || event.key === 'Tab') {
+          event.preventDefault();
+          jumpForward();
+          return;
+        }
+      }
+
       if (!(event.metaKey || event.ctrlKey)) {
         return;
       }
@@ -1350,6 +1562,9 @@ function App() {
     enterDirectory,
     filteredTodos,
     isToolbarMenuOpen,
+    isDocumentLinkPickerOpen,
+    jumpBack,
+    jumpForward,
     moveSelectedDirectoryToClipboard,
     pendingDeleteNoteId,
     openDirectoryBrowser,
@@ -1407,6 +1622,15 @@ function App() {
       ) : null}
     </div>
   );
+
+  const openDocumentLinkTarget = useCallback((targetDocumentId: number) => {
+    const targetPage = stateRef.current.pages.find((entry) => entry.backendId === targetDocumentId) ?? null;
+    if (!targetPage) {
+      setSyncMessage('Linked document is not loaded locally yet. Sync to refresh documents.');
+      return;
+    }
+    navigateToPage(targetPage, { recordJump: true });
+  }, [navigateToPage]);
 
   if (!page) {
     return (
@@ -1512,10 +1736,63 @@ function App() {
   }
 
   const openSearchResult = (pageId: string) => {
-    dispatchAfterFlush({ type: 'selectNote', pageId });
+    const targetPage = state.pages.find((entry) => entry.id === pageId) ?? null;
+    if (targetPage) {
+      navigateToPage(targetPage, { recordJump: true });
+    }
     setSearchQuery('');
     setSearchMode('insert');
     setActiveSearchResultId(null);
+  };
+
+  const openDocumentLinkPicker = () => {
+    setDocumentLinkQuery('');
+    setActiveDocumentLinkResultId(null);
+    setIsDocumentLinkPickerOpen(true);
+  };
+
+  const closeDocumentLinkPicker = () => {
+    setIsDocumentLinkPickerOpen(false);
+    setDocumentLinkQuery('');
+    setActiveDocumentLinkResultId(null);
+  };
+
+  const moveActiveDocumentLinkResult = (direction: 1 | -1) => {
+    if (documentLinkMatches.length === 0) {
+      return;
+    }
+
+    setActiveDocumentLinkResultId((current) => {
+      const currentIndex = current ? documentLinkMatches.findIndex((entry) => entry.id === current) : -1;
+      const baseIndex = currentIndex === -1 ? 0 : currentIndex;
+      const nextIndex = Math.max(0, Math.min(documentLinkMatches.length - 1, baseIndex + direction));
+      return documentLinkMatches[nextIndex]?.id ?? documentLinkMatches[0].id;
+    });
+  };
+
+  const insertDocumentLink = (targetPage: OutlinePage | null) => {
+    if (!targetPage || !targetPage.backendId) {
+      return;
+    }
+
+    dispatch({ type: 'insertTextAtCursor', text: `[[doc:${targetPage.backendId}|${getPageTitle(targetPage)}]]` });
+    closeDocumentLinkPicker();
+  };
+
+  const followDocumentLink = () => {
+    const currentPage = stateRef.current.pages.find((entry) => entry.id === stateRef.current.activePageId) ?? null;
+    const currentNode = currentPage?.nodes.find((entry) => entry.id === stateRef.current.focusedId) ?? null;
+    if (!currentNode) {
+      return;
+    }
+
+    const link = findDocumentLinkAtCursor(currentNode.text, stateRef.current.normalCursor);
+    if (!link) {
+      setSyncMessage('No document link under cursor.');
+      return;
+    }
+
+    openDocumentLinkTarget(link.targetDocumentId);
   };
 
   const submitSearch = () => {
@@ -1610,26 +1887,13 @@ function App() {
       return;
     }
 
-    if (sourcePage.kind === 'note') {
-      dispatchAfterFlush({ type: 'selectNote', pageId: sourcePage.id });
-    } else {
-      dispatchAfterFlush({ type: 'selectJournalPage', pageId: sourcePage.id });
-    }
-
     if (!todo.sourceBlockId) {
+      navigateToPage(sourcePage, { recordJump: true });
       return;
     }
 
-    window.setTimeout(() => {
-      const node = stateRef.current.pages
-        .find((entry) => entry.id === sourcePage.id)
-        ?.nodes.find((entry) => entry.backendId === todo.sourceBlockId || entry.todoId === todo.id);
-      if (!node) {
-        return;
-      }
-      dispatch({ type: 'focus', nodeId: node.id });
-      document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)?.scrollIntoView({ block: 'center' });
-    }, 0);
+    const node = sourcePage.nodes.find((entry) => entry.backendId === todo.sourceBlockId || entry.todoId === todo.id);
+    navigateToPage(sourcePage, { focusNodeId: node?.id, recordJump: true });
   };
 
   const handleTodoStatusChange = async (todo: BackendTodo, nextStatus: BackendTodo['status']) => {
@@ -1687,30 +1951,54 @@ function App() {
                     </button>
 
                     {isActive ? (
-                      <OutlineEditor page={journal} state={state} dispatch={dispatch} />
+                      <OutlineEditor
+                        page={journal}
+                        state={state}
+                        dispatch={dispatch}
+                        onOpenDocumentLinkPicker={openDocumentLinkPicker}
+                        onFollowDocumentLink={followDocumentLink}
+                        onOpenDocumentLink={openDocumentLinkTarget}
+                      />
                     ) : (
                       <div className="journal-preview">
                         {journal.nodes.map((node) => (
                           <div
                             key={node.id}
-                            className="journal-preview-row"
+                            className="row journal-preview-row"
+                            data-has-status={Boolean(node.todoStatus)}
+                            data-focused="false"
+                            data-selected="false"
+                            data-editing="false"
                             style={{ paddingLeft: `${12 + getNodeDepth(journal.nodes, node.id) * 24}px` }}
                           >
                             <span className="row-gutter" aria-hidden="true">
                               •
                             </span>
                             {node.todoStatus ? (
-                              <button
-                                type="button"
+                              <span
+                                role="button"
+                                tabIndex={-1}
                                 className="status-chip status-chip-button"
                                 data-status={node.todoStatus}
                                 onClick={() => dispatch({ type: 'toggleNodeStatus', nodeId: node.id })}
+                                onKeyDown={(event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    dispatch({ type: 'toggleNodeStatus', nodeId: node.id });
+                                  }
+                                }}
                               >
-                                {node.todoStatus}
-                              </button>
+                                {formatInlineTodoStatus(node.todoStatus)}
+                              </span>
                             ) : null}
-                            <div className="journal-preview-content">
-                              <p className="row-text">{node.text}</p>
+                            <div className="row-content journal-preview-content">
+                              <p className="row-text" data-status={node.todoStatus ?? 'none'}>
+                                <OutlineText
+                                  text={node.text}
+                                  pagesByBackendId={pagesByBackendId}
+                                  onOpenDocumentLink={openDocumentLinkTarget}
+                                />
+                              </p>
                             </div>
                           </div>
                         ))}
@@ -1741,7 +2029,14 @@ function App() {
               </div>
             </header>
 
-            <OutlineEditor page={page} state={state} dispatch={dispatch} />
+             <OutlineEditor
+               page={page}
+               state={state}
+               dispatch={dispatch}
+               onOpenDocumentLinkPicker={openDocumentLinkPicker}
+               onFollowDocumentLink={followDocumentLink}
+               onOpenDocumentLink={openDocumentLinkTarget}
+             />
           </>
         ) : null}
 
@@ -2095,7 +2390,7 @@ function App() {
 
               <div className="settings-hotkeys">
                 <span className="settings-label">Hotkeys</span>
-                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+T` todos. `Cmd+,` settings. `Esc` returns to journals from overlays.</p>
+                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+T` todos. `Cmd+,` settings. `v` enters row selection. `[[` inserts a doc link. `gd` follows it. `Ctrl+O` / `Ctrl+I` move through jumps.</p>
               </div>
 
               <div className="settings-actions">
@@ -2118,7 +2413,71 @@ function App() {
                 {syncMessage ? <p className="settings-message">{syncMessage}</p> : null}
               </div>
             </div>
+
           </section>
+        ) : null}
+
+        {isDocumentLinkPickerOpen ? (
+          <div className="confirm-overlay" role="presentation" onClick={closeDocumentLinkPicker}>
+            <div className="confirm-dialog document-link-dialog" role="dialog" aria-modal="true" aria-label="Insert document link" onClick={(event) => event.stopPropagation()}>
+              <p className="page-date">Insert document link</p>
+              <div className="page-heading-row page-heading-row-search">
+                <h2 className="page-title settings-title">[[ target ]]</h2>
+                <span className="page-kind">{documentLinkMatches.length}</span>
+              </div>
+              <input
+                ref={documentLinkInputRef}
+                className="page-title-input search-input"
+                type="text"
+                value={documentLinkQuery}
+                placeholder="Find a note or journal"
+                onChange={(event) => setDocumentLinkQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'ArrowDown' || event.key === 'j') {
+                    event.preventDefault();
+                    moveActiveDocumentLinkResult(1);
+                    return;
+                  }
+
+                  if (event.key === 'ArrowUp' || event.key === 'k') {
+                    event.preventDefault();
+                    moveActiveDocumentLinkResult(-1);
+                    return;
+                  }
+
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    insertDocumentLink(activeDocumentLinkMatch);
+                    return;
+                  }
+
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    closeDocumentLinkPicker();
+                  }
+                }}
+              />
+              <div className="search-results document-link-results">
+                {documentLinkMatches.length > 0 ? (
+                  documentLinkMatches.map((entry) => (
+                    <button
+                      key={entry.id}
+                      type="button"
+                      className="search-result document-link-result"
+                      data-active={activeDocumentLinkMatch?.id === entry.id ? 'true' : 'false'}
+                      data-kind={entry.kind}
+                      onClick={() => insertDocumentLink(entry)}
+                    >
+                      <span className="search-result-title">{getPageTitle(entry)}</span>
+                      <span className="search-result-date">{entry.kind === 'journal' ? 'Journal' : 'Note'} - {getPageDateLabel(entry)}</span>
+                    </button>
+                  ))
+                ) : (
+                  <div className="search-empty">No matching documents.</div>
+                )}
+              </div>
+            </div>
+          </div>
         ) : null}
 
         {pendingDeleteNote ? (

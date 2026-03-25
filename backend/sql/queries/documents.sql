@@ -152,6 +152,22 @@ SET
 WHERE id = $1
 RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
 
+-- name: DeleteBlockDocumentLinksByBlock :exec
+DELETE FROM block_document_link
+WHERE block_id = $1;
+
+-- name: CreateBlockDocumentLink :exec
+INSERT INTO block_document_link (
+  block_id,
+  target_document_id
+) VALUES ($1, $2)
+ON CONFLICT (block_id, target_document_id) DO NOTHING;
+
+-- name: CountBlockDocumentLinksByTarget :one
+SELECT COUNT(*)
+FROM block_document_link
+WHERE target_document_id = $1;
+
 -- name: CreateCanonicalTodoForBlock :one
 INSERT INTO todo (
   name,
