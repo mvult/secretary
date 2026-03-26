@@ -1,9 +1,9 @@
 import type { BackendBlock, BackendDocument } from '../../lib/backend';
-import { getDateKey } from './sampleData';
+import { getCurrentJournalDate, getDateKey } from './sampleData';
 import type { OutlineNode, OutlinePage } from './types';
 
 function todayDateKey() {
-  return getDateKey(new Date());
+  return getDateKey(getCurrentJournalDate());
 }
 
 export function documentToOutlinePage(document: BackendDocument): OutlinePage {

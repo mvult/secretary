@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  createAIMessage,
+  createAIThread,
   createDirectory,
   deleteDocument,
+  deleteAIThread,
   createWorkspace,
   deleteDirectory,
+  getAIThread,
   listDocuments,
+  listAIThreads,
   listTodos,
   listWorkspaces,
   login,
@@ -13,6 +18,7 @@ import {
   updateTodo,
 } from './lib/backend';
 import { OutlineEditor } from './features/outline/OutlineEditor';
+import { getMarkdownHeadingLevel } from './features/outline/OutlineText';
 import { OutlineText } from './features/outline/OutlineText';
 import { findDocumentLinkAtCursor } from './features/outline/documentLinks';
 import { documentToOutlinePage, outlinePageToDocument } from './features/outline/remote';
@@ -28,7 +34,7 @@ import {
   getPagesForPersistence,
 } from './features/outline/tree';
 import type { OutlinePage } from './features/outline/types';
-import type { BackendDirectory, BackendTodo } from './lib/backend';
+import type { BackendAIThread, BackendAIThreadDetail, BackendDirectory, BackendTodo } from './lib/backend';
 
 type TodoFilter = 'all' | 'open' | 'done' | 'blocked' | 'skipped';
 
@@ -71,6 +77,24 @@ function formatInlineTodoStatus(status: string) {
 
 function formatTodoTimestamp(todo: BackendTodo) {
   const value = todo.updatedAt || todo.createdAt || todo.createdAtRecordingDate;
+  if (!value) {
+    return 'No timestamp';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function formatPanelTimestamp(value: string) {
   if (!value) {
     return 'No timestamp';
   }
@@ -131,6 +155,29 @@ function pageHash(page: OutlinePage) {
   });
 }
 
+type PageSaveIndicator = {
+  status: 'saving' | 'saved' | 'failed';
+  message: string;
+  hash?: string;
+};
+
+function pagePersistenceKey(page: OutlinePage) {
+  if (page.backendId) {
+    return `document:${page.backendId}`;
+  }
+  if (page.kind === 'journal') {
+    return `journal:${page.date}`;
+  }
+  return `local:${page.id}`;
+}
+
+function findPageForPersistence(pages: OutlinePage[], target: OutlinePage) {
+  return pages.find((page) => page.id === target.id)
+    ?? (target.backendId ? pages.find((page) => page.backendId === target.backendId) : null)
+    ?? (target.kind === 'journal' ? pages.find((page) => page.kind === 'journal' && page.date === target.date) : null)
+    ?? null;
+}
+
 function pageMatchesTitle(page: OutlinePage, query: string) {
   const normalized = query.trim().toLowerCase();
   if (!normalized) {
@@ -189,6 +236,10 @@ function App() {
   const [workspaceId, setWorkspaceId] = useState<number | null>(null);
   const [directories, setDirectories] = useState<BackendDirectory[]>([]);
   const [todos, setTodos] = useState<BackendTodo[]>([]);
+  const [aiThreads, setAIThreads] = useState<BackendAIThread[]>([]);
+  const [activeAIThreadId, setActiveAIThreadId] = useState<number | null>(null);
+  const [aiThreadDetail, setAIThreadDetail] = useState<BackendAIThreadDetail | null>(null);
+  const [aiDraftMessage, setAIDraftMessage] = useState('');
   const [todoFilter, setTodoFilter] = useState<TodoFilter>('all');
   const [activeTodoId, setActiveTodoId] = useState<number | null>(null);
   const [activeDirectoryId, setActiveDirectoryId] = useState<number | null>(null);
@@ -201,7 +252,11 @@ function App() {
   const [isSubmittingDirectoryPrompt, setIsSubmittingDirectoryPrompt] = useState(false);
   const [updatingTodoId, setUpdatingTodoId] = useState<number | null>(null);
   const [isLoadingTodos, setIsLoadingTodos] = useState(false);
+  const [isLoadingAIThreads, setIsLoadingAIThreads] = useState(false);
+  const [isLoadingAIThread, setIsLoadingAIThread] = useState(false);
+  const [isSendingAIMessage, setIsSendingAIMessage] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [pageSaveIndicators, setPageSaveIndicators] = useState<Record<string, PageSaveIndicator>>({});
   const [bootstrapped, setBootstrapped] = useState(false);
   const [initialLoadResolved, setInitialLoadResolved] = useState(false);
   const [activeSearchResultId, setActiveSearchResultId] = useState<string | null>(null);
@@ -223,6 +278,7 @@ function App() {
   const lastSavedHashesRef = useRef<Map<string, string>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
   const flushPromiseRef = useRef<Promise<void> | null>(null);
+  const pendingFlushRef = useRef(false);
   const bootSyncRef = useRef(false);
   const page = getCurrentPage(state);
   const journalPage = getJournalPage(state);
@@ -302,6 +358,46 @@ function App() {
     }
     return filteredTodos[0] ?? null;
   }, [activeTodoId, filteredTodos]);
+  const activeAIThread = useMemo(
+    () => (activeAIThreadId ? aiThreads.find((thread) => thread.id === activeAIThreadId) ?? null : null),
+    [activeAIThreadId, aiThreads],
+  );
+  const activePagePersistenceKey = page ? pagePersistenceKey(page) : null;
+  const activePageHash = useMemo(() => {
+    if (!page) {
+      return null;
+    }
+    const persistedPage = pagesForPersistence.find((entry) => entry.id === page.id) ?? page;
+    return pageHash(persistedPage);
+  }, [page, pagesForPersistence]);
+  const activePageIsDirty = useMemo(() => {
+    if (!page) {
+      return false;
+    }
+    const persistedPage = pagesForPersistence.find((entry) => entry.id === page.id) ?? page;
+    return lastSavedHashesRef.current.get(persistedPage.id) !== pageHash(persistedPage);
+  }, [page, pagesForPersistence]);
+  const activePageSaveIndicator = activePagePersistenceKey ? pageSaveIndicators[activePagePersistenceKey] ?? null : null;
+  const activePageHasNewerEdits = Boolean(
+    activePageHash
+    && activePageSaveIndicator?.hash
+    && activePageSaveIndicator.hash !== activePageHash,
+  );
+  const activePageSaveMessage = !page
+    ? ''
+    : activePageIsDirty
+      ? activePageSaveIndicator?.status === 'failed' && !activePageHasNewerEdits
+        ? `Save failed: ${activePageSaveIndicator.message}`
+        : activePageSaveIndicator?.status === 'saving'
+          ? 'Saving...'
+          : 'Unsaved changes'
+      : activePageSaveIndicator?.status === 'saving'
+        ? 'Saving...'
+        : activePageSaveIndicator?.status === 'failed'
+          ? `Save failed: ${activePageSaveIndicator.message}`
+          : activePageSaveIndicator?.status === 'saved'
+            ? activePageSaveIndicator.message
+            : '';
   const matches = useMemo(() => findMatchingNotes(state, searchQuery), [searchQuery, state]);
   const titleMatches = useMemo(
     () => matches.filter(({ page }) => pageMatchesTitle(page, searchQuery)),
@@ -544,6 +640,7 @@ function App() {
       hashes.set(nextPage.id, pageHash(nextPage));
     }
     lastSavedHashesRef.current = hashes;
+    setPageSaveIndicators({});
   }, [dispatch]);
 
   const loadTodoList = useCallback(async (tokenOverride?: string, userIdOverride?: number | null) => {
@@ -564,6 +661,122 @@ function App() {
       setIsLoadingTodos(false);
     }
   }, [authToken, backendUrl, userId]);
+
+  const loadAIThreads = useCallback(async (tokenOverride?: string, workspaceOverride?: number | null) => {
+    const nextToken = tokenOverride ?? authToken;
+    const nextWorkspaceId = workspaceOverride ?? workspaceId;
+    if (!backendUrl.trim() || !nextToken || !nextWorkspaceId) {
+      setAIThreads([]);
+      setAIThreadDetail(null);
+      setActiveAIThreadId(null);
+      return;
+    }
+
+    setIsLoadingAIThreads(true);
+    try {
+      const threads = await listAIThreads(backendUrl, nextToken, nextWorkspaceId);
+      setAIThreads(threads);
+      setActiveAIThreadId((current) => (current && threads.some((thread) => thread.id === current) ? current : (threads[0]?.id ?? null)));
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'AI thread refresh failed.');
+    } finally {
+      setIsLoadingAIThreads(false);
+    }
+  }, [authToken, backendUrl, workspaceId]);
+
+  const loadAIThreadDetail = useCallback(async (threadId: number, tokenOverride?: string) => {
+    const nextToken = tokenOverride ?? authToken;
+    if (!backendUrl.trim() || !nextToken || !threadId) {
+      setAIThreadDetail(null);
+      return;
+    }
+
+    setIsLoadingAIThread(true);
+    try {
+      const detail = await getAIThread(backendUrl, nextToken, threadId);
+      setAIThreadDetail(detail);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'AI thread load failed.');
+    } finally {
+      setIsLoadingAIThread(false);
+    }
+  }, [authToken, backendUrl]);
+
+  const ensureActiveAIThread = useCallback(async () => {
+    if (!authToken || !workspaceId) {
+      throw new Error('Log in and sync a workspace first.');
+    }
+    if (activeAIThreadId) {
+      return activeAIThreadId;
+    }
+
+    const threadTitle = page ? `${getPageTitle(page)} chat` : 'Workspace chat';
+    const documentId = page?.backendId ?? 0;
+    const thread = await createAIThread(backendUrl, authToken, workspaceId, documentId, threadTitle);
+    setAIThreads((current) => [thread, ...current.filter((entry) => entry.id !== thread.id)]);
+    setActiveAIThreadId(thread.id);
+    return thread.id;
+  }, [activeAIThreadId, authToken, backendUrl, page, workspaceId]);
+
+  const sendAIMessage = useCallback(async () => {
+    const content = aiDraftMessage.trim();
+    if (!content) {
+      return;
+    }
+
+    setIsSendingAIMessage(true);
+    try {
+      const threadId = await ensureActiveAIThread();
+      const message = await createAIMessage(backendUrl, authToken, threadId, 'user', content);
+      setAIDraftMessage('');
+      setAIThreadDetail((current) => {
+        if (!current || current.thread?.id !== threadId) {
+          return current;
+        }
+        return {
+          ...current,
+          messages: [...current.messages, message],
+        };
+      });
+      await loadAIThreads();
+      await loadAIThreadDetail(threadId);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'AI message send failed.');
+    } finally {
+      setIsSendingAIMessage(false);
+    }
+  }, [aiDraftMessage, authToken, backendUrl, ensureActiveAIThread, loadAIThreadDetail, loadAIThreads]);
+
+  const createAIThreadFromCurrentContext = useCallback(async () => {
+    if (!authToken || !workspaceId) {
+      setSyncMessage('Log in and sync a workspace first.');
+      return;
+    }
+    try {
+      const threadTitle = page ? `${getPageTitle(page)} chat` : 'Workspace chat';
+      const documentId = page?.backendId ?? 0;
+      const thread = await createAIThread(backendUrl, authToken, workspaceId, documentId, threadTitle);
+      setAIThreads((current) => [thread, ...current.filter((entry) => entry.id !== thread.id)]);
+      setActiveAIThreadId(thread.id);
+      await loadAIThreadDetail(thread.id);
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'AI thread create failed.');
+    }
+  }, [authToken, backendUrl, loadAIThreadDetail, page, workspaceId]);
+
+  const removeActiveAIThread = useCallback(async () => {
+    if (!authToken || !activeAIThreadId) {
+      return;
+    }
+    try {
+      await deleteAIThread(backendUrl, authToken, activeAIThreadId);
+      setAIThreads((current) => current.filter((thread) => thread.id !== activeAIThreadId));
+      setAIThreadDetail((current) => (current?.thread?.id === activeAIThreadId ? null : current));
+      setActiveAIThreadId((current) => (current === activeAIThreadId ? null : current));
+    } catch (error) {
+      setSyncMessage(error instanceof Error ? error.message : 'AI thread delete failed.');
+    }
+  }, [activeAIThreadId, authToken, backendUrl]);
 
   const syncTodoIntoPages = useCallback((todo: BackendTodo) => {
     if (!todo.sourceDocumentId || !todo.sourceBlockId) {
@@ -628,6 +841,7 @@ function App() {
       applyRemotePages(pages);
       setDirectories(nextDirectories);
       setWorkspaceId(nextWorkspaceId);
+      await loadAIThreads(nextToken, nextWorkspaceId);
       setSyncMessage(`Loaded ${documents.length} document${documents.length === 1 ? '' : 's'} and ${nextDirectories.length} director${nextDirectories.length === 1 ? 'y' : 'ies'}.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Sync failed.';
@@ -640,7 +854,7 @@ function App() {
       setIsSyncing(false);
       setInitialLoadResolved(true);
     }
-  }, [applyRemotePages, authToken, backendUrl, workspaceId]);
+  }, [applyRemotePages, authToken, backendUrl, loadAIThreads, workspaceId]);
 
   useEffect(() => {
     if (!bootstrapped || bootSyncRef.current || !authToken || !backendUrl.trim()) {
@@ -666,37 +880,112 @@ function App() {
     void loadTodoList();
   }, [loadTodoList, state.activeView]);
 
+  useEffect(() => {
+    if (state.activeView !== 'ai') {
+      return;
+    }
+    void loadAIThreads();
+  }, [loadAIThreads, state.activeView]);
+
+  useEffect(() => {
+    if (state.activeView !== 'ai' || !activeAIThreadId) {
+      if (state.activeView === 'ai' && !activeAIThreadId) {
+        setAIThreadDetail(null);
+      }
+      return;
+    }
+    void loadAIThreadDetail(activeAIThreadId);
+  }, [activeAIThreadId, loadAIThreadDetail, state.activeView]);
+
   const flushDirtyPages = useCallback(async (snapshotOverride?: OutlinePage[]) => {
     if (!syncEnabled) {
       return;
     }
 
     if (flushPromiseRef.current) {
+      pendingFlushRef.current = true;
       await flushPromiseRef.current;
-      if (!snapshotOverride) {
-        return;
-      }
     }
 
     const run = (async () => {
-      const snapshot = snapshotOverride ?? pagesRef.current;
-      let savedAnyPage = false;
-      for (const nextPage of snapshot) {
-        const nextHash = pageHash(nextPage);
-        if (lastSavedHashesRef.current.get(nextPage.id) === nextHash) {
-          continue;
+      let nextSnapshotOverride = snapshotOverride;
+
+      do {
+        pendingFlushRef.current = false;
+        const snapshot = nextSnapshotOverride ?? pagesRef.current;
+        nextSnapshotOverride = undefined;
+        let savedAnyPage = false;
+
+        for (const snapshotPage of snapshot) {
+          const currentPage = findPageForPersistence(pagesRef.current, snapshotPage) ?? snapshotPage;
+          const currentHash = pageHash(currentPage);
+          if (lastSavedHashesRef.current.get(currentPage.id) === currentHash) {
+            continue;
+          }
+
+          const pageKey = pagePersistenceKey(currentPage);
+          setPageSaveIndicators((current) => ({
+            ...current,
+            [pageKey]: { status: 'saving', message: 'Saving...', hash: currentHash },
+          }));
+
+          try {
+            const requestHash = currentHash;
+            const requestPageId = currentPage.id;
+            const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(currentPage, workspaceId!));
+            const savedPage = documentToOutlinePage(savedDocument);
+            const latestPage = findPageForPersistence(pagesRef.current, currentPage) ?? findPageForPersistence(pagesRef.current, savedPage);
+            const latestHash = latestPage ? pageHash(latestPage) : null;
+
+            if (latestHash === requestHash || !currentPage.backendId) {
+              dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: requestPageId });
+              lastSavedHashesRef.current.delete(requestPageId);
+              lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
+            } else {
+              pendingFlushRef.current = true;
+            }
+
+            const savedKey = pagePersistenceKey(savedPage);
+            setPageSaveIndicators((current) => ({
+              ...current,
+              [savedKey]: {
+                status: 'saved',
+                message: `Saved ${formatPanelTimestamp(savedPage.updatedAt || savedPage.createdAt || '')}`,
+                hash: pageHash(savedPage),
+              },
+            }));
+            if (savedKey !== pageKey) {
+              setPageSaveIndicators((current) => {
+                const next = { ...current };
+                delete next[pageKey];
+                return next;
+              });
+            }
+            savedAnyPage = true;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'Save failed.';
+            console.error('Document save failed', {
+              pageId: currentPage.id,
+              backendId: currentPage.backendId ?? null,
+              title: getPageTitle(currentPage),
+              error,
+            });
+            setPageSaveIndicators((current) => ({
+              ...current,
+              [pageKey]: { status: 'failed', message, hash: currentHash },
+            }));
+            setSyncMessage(`Save failed for ${getPageTitle(currentPage)}: ${message}`);
+          }
         }
 
-        const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(nextPage, workspaceId!));
-        const savedPage = documentToOutlinePage(savedDocument);
-        dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: nextPage.id });
-        lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
-        savedAnyPage = true;
-      }
-
-      if (savedAnyPage && userId) {
-        await loadTodoList();
-      }
+        if (savedAnyPage && userId) {
+          try {
+            await loadTodoList();
+          } catch {
+            // Ignore todo refresh failures here; document persistence already completed.
+          }
+        }
+      } while (pendingFlushRef.current);
     })();
 
     flushPromiseRef.current = run.finally(() => {
@@ -1268,6 +1557,22 @@ function App() {
     dispatchAfterFlush({ type: 'openSettings' });
   }, [dispatchAfterFlush]);
 
+  const openAIFromMenu = useCallback(() => {
+    setIsToolbarMenuOpen(false);
+    dispatchAfterFlush({ type: 'openAI' });
+  }, [dispatchAfterFlush]);
+
+  useEffect(() => {
+    const handleEscapeCapture = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleEscapeCapture, true);
+    return () => window.removeEventListener('keydown', handleEscapeCapture, true);
+  }, []);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       const target = event.target;
@@ -1298,7 +1603,7 @@ function App() {
         return;
       }
 
-      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos' || state.activeView === 'directory')) {
+      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos' || state.activeView === 'directory' || state.activeView === 'ai')) {
         event.preventDefault();
         setSearchQuery('');
         setDirectoryPrompt(null);
@@ -1490,6 +1795,29 @@ function App() {
         }
       }
 
+      if (state.activeView === 'ai' && !event.metaKey && !event.ctrlKey && !event.altKey && !isFormTarget) {
+        const currentIndex = activeAIThread ? aiThreads.findIndex((thread) => thread.id === activeAIThread.id) : -1;
+        if (event.key === 'j' || event.key === 'ArrowDown') {
+          if (aiThreads.length === 0) {
+            return;
+          }
+          event.preventDefault();
+          const nextIndex = Math.min(aiThreads.length - 1, currentIndex + 1);
+          setActiveAIThreadId(aiThreads[nextIndex]?.id ?? aiThreads[0]?.id ?? null);
+          return;
+        }
+
+        if (event.key === 'k' || event.key === 'ArrowUp') {
+          if (aiThreads.length === 0) {
+            return;
+          }
+          event.preventDefault();
+          const nextIndex = currentIndex <= 0 ? 0 : currentIndex - 1;
+          setActiveAIThreadId(aiThreads[nextIndex]?.id ?? aiThreads[0]?.id ?? null);
+          return;
+        }
+      }
+
       if (!event.metaKey && event.ctrlKey && !event.altKey && !isFormTarget) {
         const lowerKey = event.key.toLowerCase();
         if (lowerKey === 'o') {
@@ -1541,14 +1869,22 @@ function App() {
       if (event.key === ',') {
         event.preventDefault();
         dispatchAfterFlush({ type: 'openSettings' });
+        return;
+      }
+
+      if (event.key.toLowerCase() === 'a' && event.shiftKey) {
+        event.preventDefault();
+        dispatchAfterFlush({ type: 'openAI' });
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [
+    activeAIThread,
     activeDirectoryEntry,
     activeTodo,
+    aiThreads,
     clearPendingDirectoryMove,
     copySelectedDirectoryToClipboard,
     createDirectoryHere,
@@ -1615,6 +1951,9 @@ function App() {
           <button type="button" className="toolbar-menu-item" role="menuitem" disabled>
             Reindex for AI
           </button>
+          <button type="button" className="toolbar-menu-item" role="menuitem" onClick={openAIFromMenu}>
+            AI chat
+          </button>
           <button type="button" className="toolbar-menu-item toolbar-menu-item-settings" role="menuitem" onClick={openSettingsFromMenu}>
             Settings
           </button>
@@ -1631,6 +1970,123 @@ function App() {
     }
     navigateToPage(targetPage, { recordJump: true });
   }, [navigateToPage]);
+
+  const aiPanel = (
+    <section className="ai-shell">
+      <header className="page-header">
+        <p className="page-date">Workspace memory</p>
+        <div className="page-heading-row page-heading-row-directory">
+          <div>
+            <h2 className="page-title settings-title">AI Threads</h2>
+            <p className="directory-breadcrumb">
+              {page?.backendId ? `Current note context: ${getPageTitle(page)}` : 'Workspace-scoped chat persistence'}
+            </p>
+          </div>
+          <span className="page-kind">{aiThreads.length}</span>
+        </div>
+      </header>
+
+      <div className="ai-layout">
+        <aside className="ai-sidebar">
+          <div className="settings-actions ai-sidebar-actions">
+            <button type="button" className="sync-button" onClick={() => void createAIThreadFromCurrentContext()} disabled={!authToken || !workspaceId}>
+              New thread
+            </button>
+            <button type="button" className="sync-button" onClick={() => void removeActiveAIThread()} disabled={!activeAIThreadId}>
+              Delete
+            </button>
+          </div>
+
+          <div className="search-results ai-thread-results">
+            {!authToken || !workspaceId ? (
+              <div className="search-empty">Log in and sync to persist AI threads.</div>
+            ) : isLoadingAIThreads ? (
+              <div className="search-empty">Loading AI threads...</div>
+            ) : aiThreads.length === 0 ? (
+              <div className="search-empty">No threads yet. Start one for the current note or the whole workspace.</div>
+            ) : (
+              aiThreads.map((thread) => (
+                <button
+                  key={thread.id}
+                  type="button"
+                  className="search-result ai-thread-result"
+                  data-active={activeAIThread?.id === thread.id ? 'true' : 'false'}
+                  onClick={() => setActiveAIThreadId(thread.id)}
+                >
+                  <span className="search-result-title">{thread.title || `Thread ${thread.id}`}</span>
+                  <span className="search-result-date">
+                    {thread.documentId ? `Doc ${thread.documentId}` : 'Workspace'} - {formatPanelTimestamp(thread.updatedAt || thread.createdAt)}
+                  </span>
+                </button>
+              ))
+            )}
+          </div>
+        </aside>
+
+        <div className="ai-main">
+          <div className="settings-card ai-thread-card">
+            <div className="page-heading-row page-heading-row-directory">
+              <div>
+                <p className="page-date">Thread</p>
+                <h3 className="page-title ai-thread-title">{activeAIThread?.title || 'Start a thread'}</h3>
+              </div>
+              {activeAIThread ? <span className="page-kind">#{activeAIThread.id}</span> : null}
+            </div>
+
+            <div className="ai-thread-meta-row">
+              <span className="settings-message">Messages: {aiThreadDetail?.messages.length ?? 0}</span>
+              <span className="settings-message">Runs: {aiThreadDetail?.runs.length ?? 0}</span>
+              <span className="settings-message">Artifacts: {aiThreadDetail?.artifacts.length ?? 0}</span>
+              <span className="settings-message">Sources: {aiThreadDetail?.sourceRefs.length ?? 0}</span>
+            </div>
+
+            <div className="ai-message-list">
+              {isLoadingAIThread ? (
+                <div className="search-empty">Loading thread...</div>
+              ) : aiThreadDetail?.messages.length ? (
+                aiThreadDetail.messages.map((message) => (
+                  <article key={message.id} className="ai-message-card" data-role={message.role}>
+                    <div className="ai-message-header">
+                      <span className="page-kind">{message.role}</span>
+                      <span className="settings-message">{formatPanelTimestamp(message.createdAt)}</span>
+                    </div>
+                    <p className="ai-message-content">{message.content}</p>
+                  </article>
+                ))
+              ) : (
+                <div className="search-empty">No persisted messages yet.</div>
+              )}
+            </div>
+          </div>
+
+          <div className="settings-card ai-composer-card">
+            <label className="settings-label" htmlFor="ai-draft-message">
+              Message
+            </label>
+            <textarea
+              id="ai-draft-message"
+              className="settings-input ai-composer-input"
+              value={aiDraftMessage}
+              placeholder="Ask about this note, queue up a draft, or just start capturing chat history..."
+              onChange={(event) => setAIDraftMessage(event.target.value)}
+              onKeyDown={(event) => {
+                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                  event.preventDefault();
+                  void sendAIMessage();
+                }
+              }}
+            />
+            <div className="settings-actions">
+              <button type="button" className="sync-button" onClick={() => void sendAIMessage()} disabled={isSendingAIMessage || !authToken || !workspaceId}>
+                {isSendingAIMessage ? 'Saving...' : 'Save message'}
+              </button>
+            </div>
+            <p className="settings-message">This first pass only persists threads, messages, runs, artifacts, and citations. Model execution comes next.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 
   if (!page) {
     return (
@@ -1706,6 +2162,8 @@ function App() {
                   {syncMessage ? <p className="settings-message">{syncMessage}</p> : null}
                 </div>
               </section>
+            ) : state.activeView === 'ai' ? (
+              aiPanel
             ) : (
               <section className="search-shell">
                 <header className="page-header">
@@ -1797,12 +2255,12 @@ function App() {
 
   const submitSearch = () => {
     const nextTitle = searchQuery.trim();
-    if (!nextTitle) {
+    if (activeSearchMatch) {
+      openSearchResult(activeSearchMatch.id);
       return;
     }
 
-    if (activeSearchMatch) {
-      openSearchResult(activeSearchMatch.id);
+    if (!nextTitle) {
       return;
     }
 
@@ -1870,6 +2328,11 @@ function App() {
     setWorkspaceId(null);
     setDirectories([]);
     setTodos([]);
+    setAIThreads([]);
+    setActiveAIThreadId(null);
+    setAIThreadDetail(null);
+    setAIDraftMessage('');
+    setPageSaveIndicators({});
     setSyncMessage('Logged out.');
     bootSyncRef.current = false;
   };
@@ -1946,7 +2409,11 @@ function App() {
                     >
                       <div className="journal-card-heading">
                         <h3 className="page-title">{getPageDateLabel(journal)}</h3>
-                        <span className="page-kind">{journalPage?.id === journal.id ? 'Today' : 'Journal entry'}</span>
+                        {isActive && activePageSaveMessage ? (
+                          <span className="page-kind">{activePageSaveMessage}</span>
+                        ) : journalPage?.id === journal.id ? (
+                          <span className="page-kind">Today</span>
+                        ) : null}
                       </div>
                     </button>
 
@@ -1992,7 +2459,11 @@ function App() {
                               </span>
                             ) : null}
                             <div className="row-content journal-preview-content">
-                              <p className="row-text" data-status={node.todoStatus ?? 'none'}>
+                              <p
+                                className="row-text"
+                                data-status={node.todoStatus ?? 'none'}
+                                data-heading-level={getMarkdownHeadingLevel(node.text) || undefined}
+                              >
                                 <OutlineText
                                   text={node.text}
                                   pagesByBackendId={pagesByBackendId}
@@ -2024,7 +2495,10 @@ function App() {
                   onChange={(event) => dispatch({ type: 'updatePageTitle', title: event.target.value })}
                 />
                 {activeNoteDirectoryPath.length > 0 ? (
-                  <span className="page-kind">{activeNoteDirectoryPath.map((entry) => entry.name).join(' / ')}</span>
+                  <span className="page-kind">{activePageSaveMessage || activeNoteDirectoryPath.map((entry) => entry.name).join(' / ')}</span>
+                ) : null}
+                {activeNoteDirectoryPath.length === 0 && activePageSaveMessage ? (
+                  <span className="page-kind">{activePageSaveMessage}</span>
                 ) : null}
               </div>
             </header>
@@ -2222,7 +2696,7 @@ function App() {
               ) : searchQuery.trim() ? (
                 <div className="search-empty">No full text matches. Press Shift+Tab for title matches.</div>
               ) : (
-                <div className="search-empty">Start typing to jump to an existing note or create a new one.</div>
+                <div className="search-empty">No notes yet. Start typing to create a new one.</div>
               )}
             </div>
           </section>
@@ -2320,6 +2794,8 @@ function App() {
           </section>
         ) : null}
 
+        {state.activeView === 'ai' ? aiPanel : null}
+
         {state.activeView === 'settings' ? (
           <section className="settings-shell">
             <header className="page-header">
@@ -2390,7 +2866,7 @@ function App() {
 
               <div className="settings-hotkeys">
                 <span className="settings-label">Hotkeys</span>
-                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+T` todos. `Cmd+,` settings. `v` enters row selection. `[[` inserts a doc link. `gd` follows it. `Ctrl+O` / `Ctrl+I` move through jumps.</p>
+                <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+T` todos. `Cmd+Shift+A` AI threads. `Cmd+,` settings. `v` enters row selection. `[[` inserts a doc link. `gd` follows it. `Ctrl+O` / `Ctrl+I` move through jumps.</p>
               </div>
 
               <div className="settings-actions">

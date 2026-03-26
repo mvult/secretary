@@ -341,6 +341,23 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		existingByID[block.ID] = block
 	}
 
+	tempSortOrder := int32(-1)
+	for _, existingBlock := range existingBlocks {
+		updatedBlock, err := qtx.UpdateBlock(ctx, db.UpdateBlockParams{
+			ID:            existingBlock.ID,
+			DocumentID:    existingBlock.DocumentID,
+			ParentBlockID: existingBlock.ParentBlockID,
+			SortOrder:     tempSortOrder,
+			Text:          existingBlock.Text,
+			TodoID:        existingBlock.TodoID,
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to prepare block %d for save: %w", existingBlock.ID, err))
+		}
+		existingByID[existingBlock.ID] = updatedBlock
+		tempSortOrder--
+	}
+
 	serverIDByClientKey := map[string]int32{}
 	clientKeyByServerID := map[int32]string{}
 	keptIDs := make([]int32, 0, len(incoming.Blocks))
@@ -395,7 +412,7 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 			savedBlock, err = qtx.CreateBlock(ctx, params)
 		}
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to save block"))
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("failed to save block %d: %w", blockMsg.Id, err))
 		}
 
 		keptIDs = append(keptIDs, savedBlock.ID)

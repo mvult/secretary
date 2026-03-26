@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import { OutlineText } from './OutlineText';
+import { getMarkdownHeadingLevel, OutlineText } from './OutlineText';
 import { ESCAPE_SEQUENCE_MS } from './keymap';
 import { getCurrentPage, getNodeDepth } from './tree';
 import type { OutlineNode, OutlineState } from './types';
@@ -63,6 +63,7 @@ export function OutlineRow({
   const lastJPressRef = useRef<number | null>(null);
   const wasEditingRef = useRef(false);
   const normalCursor = Math.max(0, Math.min(state.normalCursor, node.text.length));
+  const headingLevel = getMarkdownHeadingLevel(node.text);
   const pagesByBackendId = useMemo(
     () => new Map(state.pages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
     [state.pages],
@@ -206,7 +207,7 @@ export function OutlineRow({
               onStartEditing();
             }}
           >
-            <p className="row-text" data-status={node.todoStatus ?? 'none'}>
+            <p className="row-text" data-status={node.todoStatus ?? 'none'} data-heading-level={headingLevel || undefined}>
               <OutlineText
                 text={node.text}
                 cursor={isFocused ? normalCursor : undefined}

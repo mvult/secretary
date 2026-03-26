@@ -16,7 +16,15 @@ export function getDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-export function createJournalPage(date = new Date()): OutlinePage {
+export function getCurrentJournalDate(now = new Date()) {
+  const journalDate = new Date(now);
+  if (journalDate.getHours() >= 20) {
+    journalDate.setDate(journalDate.getDate() + 1);
+  }
+  return journalDate;
+}
+
+export function createJournalPage(date = getCurrentJournalDate()): OutlinePage {
   const dateKey = getDateKey(date);
 
   return {

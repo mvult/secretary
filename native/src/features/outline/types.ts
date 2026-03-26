@@ -2,7 +2,7 @@ import type { BackendTodoStatus } from '../../lib/backend';
 
 export type PageKind = 'journal' | 'note';
 
-export type WorkspaceView = 'journals' | 'note' | 'search' | 'todos' | 'settings' | 'directory';
+export type WorkspaceView = 'journals' | 'note' | 'search' | 'todos' | 'settings' | 'directory' | 'ai';
 
 export interface OutlineNode {
   id: string;

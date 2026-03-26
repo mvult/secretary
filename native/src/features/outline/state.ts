@@ -20,6 +20,7 @@ import {
   openSearchView,
   openTodosView,
   openSettingsView,
+  openAIView,
   openDirectoryView,
   openAbove,
   openBelow,
@@ -65,6 +66,7 @@ export type OutlineAction =
   | { type: 'openSearch' }
   | { type: 'openTodos' }
   | { type: 'openSettings' }
+  | { type: 'openAI' }
   | { type: 'openDirectory' }
   | { type: 'createNote'; title?: string }
   | { type: 'createTodayJournal' }
@@ -160,6 +162,8 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return openTodosView(currentState);
     case 'openSettings':
       return openSettingsView(currentState);
+    case 'openAI':
+      return openAIView(currentState);
     case 'openDirectory':
       return openDirectoryView(currentState);
     case 'createNote':

@@ -697,6 +697,209 @@ func TestDirectoryLifecycle(t *testing.T) {
 	}
 }
 
+func TestAIThreadPersistenceLifecycle(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	userID, email, password := insertUser(t, ctx, pool)
+	defer cleanupUser(t, ctx, pool, userID)
+
+	srv := New(pool, []byte("test-secret"), 24*time.Hour)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	token := login(t, ts.URL, email, password)
+
+	workspaceResp, err := authPost(ts.URL+secretaryv1connect.WorkspacesServiceCreateWorkspaceProcedure, token, &secretaryv1.CreateWorkspaceRequest{Name: "AI Workspace"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if workspaceResp.StatusCode != http.StatusOK {
+		t.Fatalf("create workspace status: %d", workspaceResp.StatusCode)
+	}
+	var workspacePayload secretaryv1.CreateWorkspaceResponse
+	if err := decodeProtoBody(workspaceResp.Body, &workspacePayload); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	workspaceResp.Body.Close()
+	workspaceID := workspacePayload.Workspace.Id
+	defer cleanupWorkspace(t, ctx, pool, workspaceID)
+
+	var documentID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO document (workspace_id, kind, title)
+		VALUES ($1, 'note', $2)
+		RETURNING id
+	`, workspaceID, "AI context note").Scan(&documentID)
+	if err != nil {
+		t.Fatalf("insert ai document: %v", err)
+	}
+
+	createThreadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceCreateAIThreadProcedure, token, &secretaryv1.CreateAIThreadRequest{
+		WorkspaceId: workspaceID,
+		DocumentId:  documentID,
+		Title:       "Planning thread",
+	})
+	if err != nil {
+		t.Fatalf("create ai thread: %v", err)
+	}
+	if createThreadResp.StatusCode != http.StatusOK {
+		t.Fatalf("create ai thread status: %d", createThreadResp.StatusCode)
+	}
+	var createThreadPayload secretaryv1.CreateAIThreadResponse
+	if err := decodeProtoBody(createThreadResp.Body, &createThreadPayload); err != nil {
+		t.Fatalf("decode create ai thread: %v", err)
+	}
+	createThreadResp.Body.Close()
+	threadID := createThreadPayload.Thread.Id
+
+	createMessageResp, err := authPost(ts.URL+secretaryv1connect.AIServiceCreateAIMessageProcedure, token, &secretaryv1.CreateAIMessageRequest{
+		ThreadId: threadID,
+		Role:     "user",
+		Content:  "Capture the planning context for this note.",
+	})
+	if err != nil {
+		t.Fatalf("create ai message: %v", err)
+	}
+	if createMessageResp.StatusCode != http.StatusOK {
+		t.Fatalf("create ai message status: %d", createMessageResp.StatusCode)
+	}
+	var createMessagePayload secretaryv1.CreateAIMessageResponse
+	if err := decodeProtoBody(createMessageResp.Body, &createMessagePayload); err != nil {
+		t.Fatalf("decode create ai message: %v", err)
+	}
+	createMessageResp.Body.Close()
+	messageID := createMessagePayload.Message.Id
+
+	createRunResp, err := authPost(ts.URL+secretaryv1connect.AIServiceCreateAIRunProcedure, token, map[string]any{
+		"triggerMessageId": messageID,
+		"status":           "queued",
+		"mode":             "ask",
+		"provider":         "test-provider",
+		"model":            "test-model",
+		"requestJson": map[string]any{
+			"scope": "current_note",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create ai run: %v", err)
+	}
+	if createRunResp.StatusCode != http.StatusOK {
+		t.Fatalf("create ai run status: %d", createRunResp.StatusCode)
+	}
+	var createRunPayload secretaryv1.CreateAIRunResponse
+	if err := decodeProtoBody(createRunResp.Body, &createRunPayload); err != nil {
+		t.Fatalf("decode create ai run: %v", err)
+	}
+	createRunResp.Body.Close()
+	runID := createRunPayload.Run.Id
+
+	createArtifactResp, err := authPost(ts.URL+secretaryv1connect.AIServiceCreateAIArtifactProcedure, token, map[string]any{
+		"runId": runID,
+		"kind":  "summary",
+		"contentJson": map[string]any{
+			"summary": "Initial planning context captured.",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create ai artifact: %v", err)
+	}
+	if createArtifactResp.StatusCode != http.StatusOK {
+		t.Fatalf("create ai artifact status: %d", createArtifactResp.StatusCode)
+	}
+	var createArtifactPayload secretaryv1.CreateAIArtifactResponse
+	if err := decodeProtoBody(createArtifactResp.Body, &createArtifactPayload); err != nil {
+		t.Fatalf("decode create ai artifact: %v", err)
+	}
+	createArtifactResp.Body.Close()
+	artifactID := createArtifactPayload.Artifact.Id
+
+	createSourceRefResp, err := authPost(ts.URL+secretaryv1connect.AIServiceCreateAISourceRefProcedure, token, &secretaryv1.CreateAISourceRefRequest{
+		ArtifactId: artifactID,
+		SourceKind: "document",
+		SourceId:   documentID,
+		Label:      "AI context note",
+		Rank:       1,
+	})
+	if err != nil {
+		t.Fatalf("create ai source ref: %v", err)
+	}
+	if createSourceRefResp.StatusCode != http.StatusOK {
+		t.Fatalf("create ai source ref status: %d", createSourceRefResp.StatusCode)
+	}
+	createSourceRefResp.Body.Close()
+
+	getThreadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceGetAIThreadProcedure, token, &secretaryv1.GetAIThreadRequest{Id: threadID})
+	if err != nil {
+		t.Fatalf("get ai thread: %v", err)
+	}
+	if getThreadResp.StatusCode != http.StatusOK {
+		t.Fatalf("get ai thread status: %d", getThreadResp.StatusCode)
+	}
+	var getThreadPayload secretaryv1.GetAIThreadResponse
+	if err := decodeProtoBody(getThreadResp.Body, &getThreadPayload); err != nil {
+		t.Fatalf("decode get ai thread: %v", err)
+	}
+	getThreadResp.Body.Close()
+	if getThreadPayload.Thread.Id != threadID {
+		t.Fatalf("expected ai thread id %d, got %d", threadID, getThreadPayload.Thread.Id)
+	}
+	if len(getThreadPayload.Messages) != 1 {
+		t.Fatalf("expected 1 ai message, got %d", len(getThreadPayload.Messages))
+	}
+	if len(getThreadPayload.Runs) != 1 {
+		t.Fatalf("expected 1 ai run, got %d", len(getThreadPayload.Runs))
+	}
+	if len(getThreadPayload.Artifacts) != 1 {
+		t.Fatalf("expected 1 ai artifact, got %d", len(getThreadPayload.Artifacts))
+	}
+	if len(getThreadPayload.SourceRefs) != 1 {
+		t.Fatalf("expected 1 ai source ref, got %d", len(getThreadPayload.SourceRefs))
+	}
+
+	listThreadsResp, err := authPost(ts.URL+secretaryv1connect.AIServiceListAIThreadsProcedure, token, &secretaryv1.ListAIThreadsRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("list ai threads: %v", err)
+	}
+	if listThreadsResp.StatusCode != http.StatusOK {
+		t.Fatalf("list ai threads status: %d", listThreadsResp.StatusCode)
+	}
+	var listThreadsPayload secretaryv1.ListAIThreadsResponse
+	if err := decodeProtoBody(listThreadsResp.Body, &listThreadsPayload); err != nil {
+		t.Fatalf("decode list ai threads: %v", err)
+	}
+	listThreadsResp.Body.Close()
+	if len(listThreadsPayload.Threads) == 0 {
+		t.Fatal("expected ai threads in list response")
+	}
+
+	deleteThreadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceDeleteAIThreadProcedure, token, &secretaryv1.DeleteAIThreadRequest{Id: threadID})
+	if err != nil {
+		t.Fatalf("delete ai thread: %v", err)
+	}
+	if deleteThreadResp.StatusCode != http.StatusOK {
+		t.Fatalf("delete ai thread status: %d", deleteThreadResp.StatusCode)
+	}
+	deleteThreadResp.Body.Close()
+
+	var remainingThreads int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM ai_thread WHERE id = $1`, threadID).Scan(&remainingThreads)
+	if err != nil {
+		t.Fatalf("count ai threads: %v", err)
+	}
+	if remainingThreads != 0 {
+		t.Fatalf("expected ai thread to be deleted, found %d rows", remainingThreads)
+	}
+}
+
 func insertUser(t *testing.T, ctx context.Context, pool *pgxpool.Pool) (int64, string, string) {
 	t.Helper()
 	var id int64

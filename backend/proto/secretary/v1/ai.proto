@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+package secretary.v1;
+
+option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1";
+
+import "google/protobuf/struct.proto";
+
+message AIThread {
+  int64 id = 1;
+  int64 workspace_id = 2;
+  int64 document_id = 3;
+  string title = 4;
+  int64 created_by_user_id = 5;
+  string created_at = 6;
+  string updated_at = 7;
+}
+
+message AIMessage {
+  int64 id = 1;
+  int64 thread_id = 2;
+  string role = 3;
+  string content = 4;
+  int64 created_by_user_id = 5;
+  int64 run_id = 6;
+  string created_at = 7;
+}
+
+message AIRun {
+  int64 id = 1;
+  int64 trigger_message_id = 2;
+  string status = 3;
+  string mode = 4;
+  string provider = 5;
+  string model = 6;
+  google.protobuf.Struct request_json = 7;
+  google.protobuf.Struct response_json = 8;
+  int64 input_tokens = 9;
+  int64 output_tokens = 10;
+  int64 latency_ms = 11;
+  string error_message = 12;
+  string started_at = 13;
+  string completed_at = 14;
+  string created_at = 15;
+}
+
+message AIArtifact {
+  int64 id = 1;
+  int64 run_id = 2;
+  string kind = 3;
+  string title = 4;
+  google.protobuf.Struct content_json = 5;
+  string created_at = 6;
+  string applied_at = 7;
+  int64 applied_by_user_id = 8;
+  int64 superseded_by_artifact_id = 9;
+}
+
+message AISourceRef {
+  int64 id = 1;
+  int64 run_id = 2;
+  int64 artifact_id = 3;
+  string source_kind = 4;
+  int64 source_id = 5;
+  string label = 6;
+  string quote_text = 7;
+  int64 rank = 8;
+  string created_at = 9;
+}
+
+message ListAIThreadsRequest {
+  int64 workspace_id = 1;
+}
+
+message ListAIThreadsResponse {
+  repeated AIThread threads = 1;
+}
+
+message GetAIThreadRequest {
+  int64 id = 1;
+}
+
+message GetAIThreadResponse {
+  AIThread thread = 1;
+  repeated AIMessage messages = 2;
+  repeated AIRun runs = 3;
+  repeated AIArtifact artifacts = 4;
+  repeated AISourceRef source_refs = 5;
+}
+
+message CreateAIThreadRequest {
+  int64 workspace_id = 1;
+  int64 document_id = 2;
+  string title = 3;
+}
+
+message CreateAIThreadResponse {
+  AIThread thread = 1;
+}
+
+message DeleteAIThreadRequest {
+  int64 id = 1;
+}
+
+message DeleteAIThreadResponse {}
+
+message CreateAIMessageRequest {
+  int64 thread_id = 1;
+  string role = 2;
+  string content = 3;
+  int64 run_id = 4;
+}
+
+message CreateAIMessageResponse {
+  AIMessage message = 1;
+}
+
+message CreateAIRunRequest {
+  int64 trigger_message_id = 1;
+  string status = 2;
+  string mode = 3;
+  string provider = 4;
+  string model = 5;
+  google.protobuf.Struct request_json = 6;
+  google.protobuf.Struct response_json = 7;
+  int64 input_tokens = 8;
+  int64 output_tokens = 9;
+  int64 latency_ms = 10;
+  string error_message = 11;
+  string started_at = 12;
+  string completed_at = 13;
+}
+
+message CreateAIRunResponse {
+  AIRun run = 1;
+}
+
+message UpdateAIRunRequest {
+  int64 id = 1;
+  string status = 2;
+  string mode = 3;
+  string provider = 4;
+  string model = 5;
+  google.protobuf.Struct request_json = 6;
+  google.protobuf.Struct response_json = 7;
+  int64 input_tokens = 8;
+  int64 output_tokens = 9;
+  int64 latency_ms = 10;
+  string error_message = 11;
+  string started_at = 12;
+  string completed_at = 13;
+}
+
+message UpdateAIRunResponse {
+  AIRun run = 1;
+}
+
+message CreateAIArtifactRequest {
+  int64 run_id = 1;
+  string kind = 2;
+  string title = 3;
+  google.protobuf.Struct content_json = 4;
+  string applied_at = 5;
+  int64 applied_by_user_id = 6;
+  int64 superseded_by_artifact_id = 7;
+}
+
+message CreateAIArtifactResponse {
+  AIArtifact artifact = 1;
+}
+
+message CreateAISourceRefRequest {
+  int64 run_id = 1;
+  int64 artifact_id = 2;
+  string source_kind = 3;
+  int64 source_id = 4;
+  string label = 5;
+  string quote_text = 6;
+  int64 rank = 7;
+}
+
+message CreateAISourceRefResponse {
+  AISourceRef source_ref = 1;
+}
+
+service AIService {
+  rpc ListAIThreads(ListAIThreadsRequest) returns (ListAIThreadsResponse);
+  rpc GetAIThread(GetAIThreadRequest) returns (GetAIThreadResponse);
+  rpc CreateAIThread(CreateAIThreadRequest) returns (CreateAIThreadResponse);
+  rpc DeleteAIThread(DeleteAIThreadRequest) returns (DeleteAIThreadResponse);
+  rpc CreateAIMessage(CreateAIMessageRequest) returns (CreateAIMessageResponse);
+  rpc CreateAIRun(CreateAIRunRequest) returns (CreateAIRunResponse);
+  rpc UpdateAIRun(UpdateAIRunRequest) returns (UpdateAIRunResponse);
+  rpc CreateAIArtifact(CreateAIArtifactRequest) returns (CreateAIArtifactResponse);
+  rpc CreateAISourceRef(CreateAISourceRefRequest) returns (CreateAISourceRefResponse);
+}

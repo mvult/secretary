@@ -61,6 +61,76 @@ export interface BackendDirectory {
   updatedAt: string;
 }
 
+export interface BackendAIThread {
+  id: number;
+  workspaceId: number;
+  documentId: number;
+  title: string;
+  createdByUserId: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BackendAIMessage {
+  id: number;
+  threadId: number;
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  createdByUserId: number;
+  runId: number;
+  createdAt: string;
+}
+
+export interface BackendAIRun {
+  id: number;
+  triggerMessageId: number;
+  status: string;
+  mode: string;
+  provider: string;
+  model: string;
+  requestJson: Record<string, unknown> | null;
+  responseJson: Record<string, unknown> | null;
+  inputTokens: number;
+  outputTokens: number;
+  latencyMs: number;
+  errorMessage: string;
+  startedAt: string;
+  completedAt: string;
+  createdAt: string;
+}
+
+export interface BackendAIArtifact {
+  id: number;
+  runId: number;
+  kind: string;
+  title: string;
+  contentJson: Record<string, unknown> | null;
+  createdAt: string;
+  appliedAt: string;
+  appliedByUserId: number;
+  supersededByArtifactId: number;
+}
+
+export interface BackendAISourceRef {
+  id: number;
+  runId: number;
+  artifactId: number;
+  sourceKind: string;
+  sourceId: number;
+  label: string;
+  quoteText: string;
+  rank: number;
+  createdAt: string;
+}
+
+export interface BackendAIThreadDetail {
+  thread: BackendAIThread | null;
+  messages: BackendAIMessage[];
+  runs: BackendAIRun[];
+  artifacts: BackendAIArtifact[];
+  sourceRefs: BackendAISourceRef[];
+}
+
 export interface BackendBlock {
   id: number;
   clientKey: string;
@@ -124,6 +194,86 @@ function normalizeDirectory(value: any): BackendDirectory {
     position: toNumber(value?.position),
     createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
     updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
+  };
+}
+
+function normalizeJsonObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeAIThread(value: any): BackendAIThread {
+  return {
+    id: toNumber(value?.id),
+    workspaceId: toNumber(value?.workspaceId),
+    documentId: toNumber(value?.documentId),
+    title: typeof value?.title === 'string' ? value.title : '',
+    createdByUserId: toNumber(value?.createdByUserId),
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+    updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
+  };
+}
+
+function normalizeAIMessage(value: any): BackendAIMessage {
+  const role = value?.role === 'assistant' || value?.role === 'system' ? value.role : 'user';
+  return {
+    id: toNumber(value?.id),
+    threadId: toNumber(value?.threadId),
+    role,
+    content: typeof value?.content === 'string' ? value.content : '',
+    createdByUserId: toNumber(value?.createdByUserId),
+    runId: toNumber(value?.runId),
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+  };
+}
+
+function normalizeAIRun(value: any): BackendAIRun {
+  return {
+    id: toNumber(value?.id),
+    triggerMessageId: toNumber(value?.triggerMessageId),
+    status: typeof value?.status === 'string' ? value.status : '',
+    mode: typeof value?.mode === 'string' ? value.mode : '',
+    provider: typeof value?.provider === 'string' ? value.provider : '',
+    model: typeof value?.model === 'string' ? value.model : '',
+    requestJson: normalizeJsonObject(value?.requestJson),
+    responseJson: normalizeJsonObject(value?.responseJson),
+    inputTokens: toNumber(value?.inputTokens),
+    outputTokens: toNumber(value?.outputTokens),
+    latencyMs: toNumber(value?.latencyMs),
+    errorMessage: typeof value?.errorMessage === 'string' ? value.errorMessage : '',
+    startedAt: typeof value?.startedAt === 'string' ? value.startedAt : '',
+    completedAt: typeof value?.completedAt === 'string' ? value.completedAt : '',
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+  };
+}
+
+function normalizeAIArtifact(value: any): BackendAIArtifact {
+  return {
+    id: toNumber(value?.id),
+    runId: toNumber(value?.runId),
+    kind: typeof value?.kind === 'string' ? value.kind : '',
+    title: typeof value?.title === 'string' ? value.title : '',
+    contentJson: normalizeJsonObject(value?.contentJson),
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+    appliedAt: typeof value?.appliedAt === 'string' ? value.appliedAt : '',
+    appliedByUserId: toNumber(value?.appliedByUserId),
+    supersededByArtifactId: toNumber(value?.supersededByArtifactId),
+  };
+}
+
+function normalizeAISourceRef(value: any): BackendAISourceRef {
+  return {
+    id: toNumber(value?.id),
+    runId: toNumber(value?.runId),
+    artifactId: toNumber(value?.artifactId),
+    sourceKind: typeof value?.sourceKind === 'string' ? value.sourceKind : '',
+    sourceId: toNumber(value?.sourceId),
+    label: typeof value?.label === 'string' ? value.label : '',
+    quoteText: typeof value?.quoteText === 'string' ? value.quoteText : '',
+    rank: toNumber(value?.rank),
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
   };
 }
 
@@ -368,4 +518,71 @@ export async function deleteDirectory(baseUrl: string, token: string, id: number
     { id },
     token,
   );
+}
+
+export async function listAIThreads(baseUrl: string, token: string, workspaceId: number) {
+  const payload = await postJson<{ threads?: BackendAIThread[] }>(
+    baseUrl,
+    '/secretary.v1.AIService/ListAIThreads',
+    { workspaceId },
+    token,
+  );
+  return Array.isArray(payload.threads) ? payload.threads.map(normalizeAIThread) : [];
+}
+
+export async function getAIThread(baseUrl: string, token: string, id: number) {
+  const payload = await postJson<{
+    thread?: BackendAIThread;
+    messages?: BackendAIMessage[];
+    runs?: BackendAIRun[];
+    artifacts?: BackendAIArtifact[];
+    sourceRefs?: BackendAISourceRef[];
+  }>(
+    baseUrl,
+    '/secretary.v1.AIService/GetAIThread',
+    { id },
+    token,
+  );
+  return {
+    thread: payload.thread ? normalizeAIThread(payload.thread) : null,
+    messages: Array.isArray(payload.messages) ? payload.messages.map(normalizeAIMessage) : [],
+    runs: Array.isArray(payload.runs) ? payload.runs.map(normalizeAIRun) : [],
+    artifacts: Array.isArray(payload.artifacts) ? payload.artifacts.map(normalizeAIArtifact) : [],
+    sourceRefs: Array.isArray(payload.sourceRefs) ? payload.sourceRefs.map(normalizeAISourceRef) : [],
+  } satisfies BackendAIThreadDetail;
+}
+
+export async function createAIThread(baseUrl: string, token: string, workspaceId: number, documentId: number, title: string) {
+  const payload = await postJson<{ thread?: BackendAIThread }>(
+    baseUrl,
+    '/secretary.v1.AIService/CreateAIThread',
+    { workspaceId, documentId, title },
+    token,
+  );
+  if (!payload.thread) {
+    throw new Error('AI thread was not returned by the server.');
+  }
+  return normalizeAIThread(payload.thread);
+}
+
+export async function deleteAIThread(baseUrl: string, token: string, id: number) {
+  await postJson(
+    baseUrl,
+    '/secretary.v1.AIService/DeleteAIThread',
+    { id },
+    token,
+  );
+}
+
+export async function createAIMessage(baseUrl: string, token: string, threadId: number, role: BackendAIMessage['role'], content: string, runId = 0) {
+  const payload = await postJson<{ message?: BackendAIMessage }>(
+    baseUrl,
+    '/secretary.v1.AIService/CreateAIMessage',
+    { threadId, role, content, runId },
+    token,
+  );
+  if (!payload.message) {
+    throw new Error('AI message was not returned by the server.');
+  }
+  return normalizeAIMessage(payload.message);
 }

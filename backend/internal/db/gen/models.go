@@ -186,6 +186,68 @@ func (ns NullRelationKind) Value() (driver.Value, error) {
 	return string(ns.RelationKind), nil
 }
 
+type AiArtifact struct {
+	ID                     int64
+	RunID                  int64
+	Kind                   string
+	Title                  pgtype.Text
+	ContentJson            []byte
+	CreatedAt              pgtype.Timestamptz
+	AppliedAt              pgtype.Timestamptz
+	AppliedByUserID        pgtype.Int4
+	SupersededByArtifactID pgtype.Int8
+}
+
+type AiMessage struct {
+	ID              int64
+	ThreadID        int64
+	Role            string
+	Content         string
+	CreatedByUserID pgtype.Int4
+	RunID           pgtype.Int8
+	CreatedAt       pgtype.Timestamptz
+}
+
+type AiRun struct {
+	ID               int64
+	TriggerMessageID pgtype.Int8
+	Status           string
+	Mode             string
+	Provider         pgtype.Text
+	Model            pgtype.Text
+	RequestJson      []byte
+	ResponseJson     []byte
+	InputTokens      pgtype.Int4
+	OutputTokens     pgtype.Int4
+	LatencyMs        pgtype.Int4
+	ErrorMessage     pgtype.Text
+	StartedAt        pgtype.Timestamptz
+	CompletedAt      pgtype.Timestamptz
+	CreatedAt        pgtype.Timestamptz
+}
+
+type AiSourceRef struct {
+	ID         int64
+	RunID      pgtype.Int8
+	ArtifactID pgtype.Int8
+	SourceKind string
+	SourceID   int32
+	Label      pgtype.Text
+	QuoteText  pgtype.Text
+	Rank       pgtype.Int4
+	CreatedAt  pgtype.Timestamptz
+}
+
+type AiThread struct {
+	ID              int64
+	WorkspaceID     int32
+	DocumentID      pgtype.Int4
+	Title           pgtype.Text
+	CreatedByUserID pgtype.Int4
+	CreatedAt       pgtype.Timestamptz
+	UpdatedAt       pgtype.Timestamptz
+}
+
 type Argument struct {
 	ID         int32
 	TopicID    pgtype.Int4

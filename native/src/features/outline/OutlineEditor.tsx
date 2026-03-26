@@ -225,6 +225,16 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
             return;
           }
 
+          if (key === 's') {
+            event.preventDefault();
+            lastDPressRef.current = null;
+            lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
+            lastYPressRef.current = null;
+            dispatch({ type: 'cycleStatuses' });
+            return;
+          }
+
           if (key === 'o') {
             event.preventDefault();
             lastDPressRef.current = null;

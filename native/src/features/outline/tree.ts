@@ -1,5 +1,5 @@
 import { cycleStatus } from './keymap';
-import { createJournalPage, formatPageDate, getDateKey } from './sampleData';
+import { createJournalPage, formatPageDate, getCurrentJournalDate, getDateKey } from './sampleData';
 import type { CursorPlacement, OutlineNode, OutlinePage, OutlineSnapshot, OutlineState } from './types';
 
 function buildIndexMap(nodes: OutlineNode[]) {
@@ -128,7 +128,7 @@ function createBlankNotePage(): OutlinePage {
   return {
     id: createPageId(),
     kind: 'note',
-    date: getDateKey(new Date()),
+    date: getDateKey(getCurrentJournalDate()),
     title: '',
     nodes: [
       {
@@ -317,7 +317,7 @@ export function getSelectedInfo(state: OutlineState) {
 }
 
 export function getJournalPage(state: OutlineState) {
-  const todayKey = getDateKey(new Date());
+  const todayKey = getDateKey(getCurrentJournalDate());
   return state.pages.find((page) => page.kind === 'journal' && page.date === todayKey) ?? null;
 }
 
@@ -340,9 +340,24 @@ export function getNotePages(state: OutlineState) {
   return state.pages.filter((page) => page.kind === 'note');
 }
 
+function pageRecencyValue(page: OutlinePage) {
+  const value = page.updatedAt || page.createdAt || `${page.date}T00:00:00`;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return 0;
+  }
+  return parsed;
+}
+
 export function findMatchingNotes(state: OutlineState, query: string) {
   const normalized = query.trim().toLowerCase();
   const notes = getNotePages(state);
+
+  if (!normalized) {
+    return notes
+      .map((page) => ({ page, rank: 0 }))
+      .sort((left, right) => pageRecencyValue(right.page) - pageRecencyValue(left.page) || right.page.date.localeCompare(left.page.date));
+  }
 
   return notes
     .map((page) => {
@@ -357,7 +372,7 @@ export function findMatchingNotes(state: OutlineState, query: string) {
       };
     })
     .filter((entry) => !normalized || entry.rank < 111)
-    .sort((left, right) => left.rank - right.rank || right.page.date.localeCompare(left.page.date));
+    .sort((left, right) => left.rank - right.rank || pageRecencyValue(right.page) - pageRecencyValue(left.page) || right.page.date.localeCompare(left.page.date));
 }
 
 export function getPageTitle(page: OutlinePage) {
@@ -385,7 +400,7 @@ export function updatePageTitle(state: OutlineState, title: string): OutlineStat
 }
 
 export function ensureTodayJournalPage(state: OutlineState): OutlineState {
-  const todayKey = getDateKey(new Date());
+  const todayKey = getDateKey(getCurrentJournalDate());
   const existing = state.pages.find((page) => page.kind === 'journal' && page.date === todayKey);
   if (existing) {
     return state;
@@ -399,7 +414,7 @@ export function ensureTodayJournalPage(state: OutlineState): OutlineState {
 }
 
 export function createTodayJournalPage(state: OutlineState): OutlineState {
-  const todayKey = getDateKey(new Date());
+  const todayKey = getDateKey(getCurrentJournalDate());
   const existing = state.pages.find((page) => page.kind === 'journal' && page.date === todayKey);
   if (existing) {
     return selectJournalPage(state, existing.id);
@@ -447,7 +462,7 @@ export function restoreSnapshot(state: OutlineState, snapshot: OutlineSnapshot):
 
 export function hydratePages(state: OutlineState, pages: OutlinePage[]): OutlineState {
   const nextPages = clonePages(pages);
-  const todayJournal = nextPages.find((page) => page.kind === 'journal' && page.date === getDateKey(new Date()));
+  const todayJournal = nextPages.find((page) => page.kind === 'journal' && page.date === getDateKey(getCurrentJournalDate()));
   const activePage = todayJournal ?? nextPages[0] ?? null;
 
   return {
@@ -684,6 +699,14 @@ export function openSettingsView(state: OutlineState): OutlineState {
     activeView: 'settings',
     anchorId: null,
   };
+}
+
+export function openAIView(state: OutlineState): OutlineState {
+	return {
+		...commitEdit(state),
+		activeView: 'ai',
+		anchorId: null,
+	};
 }
 
 export function openDirectoryView(state: OutlineState): OutlineState {
