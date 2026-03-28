@@ -32,9 +32,15 @@ export type EditorMode = 'normal' | 'insert' | 'visual';
 
 export type CursorPlacement = 'start' | 'end' | number;
 
-export interface YankBuffer {
+export interface YankedOutlineNode {
+  depth: number;
   text: string;
   todoStatus?: BackendTodoStatus | null;
+}
+
+export interface YankBuffer {
+  plainText: string;
+  nodes: YankedOutlineNode[];
 }
 
 export interface OutlineState {

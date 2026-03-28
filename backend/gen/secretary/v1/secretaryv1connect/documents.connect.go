@@ -45,6 +45,12 @@ const (
 	// DocumentsServiceDeleteDocumentProcedure is the fully-qualified name of the DocumentsService's
 	// DeleteDocument RPC.
 	DocumentsServiceDeleteDocumentProcedure = "/secretary.v1.DocumentsService/DeleteDocument"
+	// DocumentsServiceListDocumentHistoryProcedure is the fully-qualified name of the
+	// DocumentsService's ListDocumentHistory RPC.
+	DocumentsServiceListDocumentHistoryProcedure = "/secretary.v1.DocumentsService/ListDocumentHistory"
+	// DocumentsServiceGetDocumentHistoryEntryProcedure is the fully-qualified name of the
+	// DocumentsService's GetDocumentHistoryEntry RPC.
+	DocumentsServiceGetDocumentHistoryEntryProcedure = "/secretary.v1.DocumentsService/GetDocumentHistoryEntry"
 	// DocumentsServiceCreateDirectoryProcedure is the fully-qualified name of the DocumentsService's
 	// CreateDirectory RPC.
 	DocumentsServiceCreateDirectoryProcedure = "/secretary.v1.DocumentsService/CreateDirectory"
@@ -62,6 +68,8 @@ type DocumentsServiceClient interface {
 	GetDocument(context.Context, *connect.Request[v1.GetDocumentRequest]) (*connect.Response[v1.GetDocumentResponse], error)
 	SaveDocument(context.Context, *connect.Request[v1.SaveDocumentRequest]) (*connect.Response[v1.SaveDocumentResponse], error)
 	DeleteDocument(context.Context, *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error)
+	ListDocumentHistory(context.Context, *connect.Request[v1.ListDocumentHistoryRequest]) (*connect.Response[v1.ListDocumentHistoryResponse], error)
+	GetDocumentHistoryEntry(context.Context, *connect.Request[v1.GetDocumentHistoryEntryRequest]) (*connect.Response[v1.GetDocumentHistoryEntryResponse], error)
 	CreateDirectory(context.Context, *connect.Request[v1.CreateDirectoryRequest]) (*connect.Response[v1.CreateDirectoryResponse], error)
 	UpdateDirectory(context.Context, *connect.Request[v1.UpdateDirectoryRequest]) (*connect.Response[v1.UpdateDirectoryResponse], error)
 	DeleteDirectory(context.Context, *connect.Request[v1.DeleteDirectoryRequest]) (*connect.Response[v1.DeleteDirectoryResponse], error)
@@ -102,6 +110,18 @@ func NewDocumentsServiceClient(httpClient connect.HTTPClient, baseURL string, op
 			connect.WithSchema(documentsServiceMethods.ByName("DeleteDocument")),
 			connect.WithClientOptions(opts...),
 		),
+		listDocumentHistory: connect.NewClient[v1.ListDocumentHistoryRequest, v1.ListDocumentHistoryResponse](
+			httpClient,
+			baseURL+DocumentsServiceListDocumentHistoryProcedure,
+			connect.WithSchema(documentsServiceMethods.ByName("ListDocumentHistory")),
+			connect.WithClientOptions(opts...),
+		),
+		getDocumentHistoryEntry: connect.NewClient[v1.GetDocumentHistoryEntryRequest, v1.GetDocumentHistoryEntryResponse](
+			httpClient,
+			baseURL+DocumentsServiceGetDocumentHistoryEntryProcedure,
+			connect.WithSchema(documentsServiceMethods.ByName("GetDocumentHistoryEntry")),
+			connect.WithClientOptions(opts...),
+		),
 		createDirectory: connect.NewClient[v1.CreateDirectoryRequest, v1.CreateDirectoryResponse](
 			httpClient,
 			baseURL+DocumentsServiceCreateDirectoryProcedure,
@@ -125,13 +145,15 @@ func NewDocumentsServiceClient(httpClient connect.HTTPClient, baseURL string, op
 
 // documentsServiceClient implements DocumentsServiceClient.
 type documentsServiceClient struct {
-	listDocuments   *connect.Client[v1.ListDocumentsRequest, v1.ListDocumentsResponse]
-	getDocument     *connect.Client[v1.GetDocumentRequest, v1.GetDocumentResponse]
-	saveDocument    *connect.Client[v1.SaveDocumentRequest, v1.SaveDocumentResponse]
-	deleteDocument  *connect.Client[v1.DeleteDocumentRequest, v1.DeleteDocumentResponse]
-	createDirectory *connect.Client[v1.CreateDirectoryRequest, v1.CreateDirectoryResponse]
-	updateDirectory *connect.Client[v1.UpdateDirectoryRequest, v1.UpdateDirectoryResponse]
-	deleteDirectory *connect.Client[v1.DeleteDirectoryRequest, v1.DeleteDirectoryResponse]
+	listDocuments           *connect.Client[v1.ListDocumentsRequest, v1.ListDocumentsResponse]
+	getDocument             *connect.Client[v1.GetDocumentRequest, v1.GetDocumentResponse]
+	saveDocument            *connect.Client[v1.SaveDocumentRequest, v1.SaveDocumentResponse]
+	deleteDocument          *connect.Client[v1.DeleteDocumentRequest, v1.DeleteDocumentResponse]
+	listDocumentHistory     *connect.Client[v1.ListDocumentHistoryRequest, v1.ListDocumentHistoryResponse]
+	getDocumentHistoryEntry *connect.Client[v1.GetDocumentHistoryEntryRequest, v1.GetDocumentHistoryEntryResponse]
+	createDirectory         *connect.Client[v1.CreateDirectoryRequest, v1.CreateDirectoryResponse]
+	updateDirectory         *connect.Client[v1.UpdateDirectoryRequest, v1.UpdateDirectoryResponse]
+	deleteDirectory         *connect.Client[v1.DeleteDirectoryRequest, v1.DeleteDirectoryResponse]
 }
 
 // ListDocuments calls secretary.v1.DocumentsService.ListDocuments.
@@ -152,6 +174,16 @@ func (c *documentsServiceClient) SaveDocument(ctx context.Context, req *connect.
 // DeleteDocument calls secretary.v1.DocumentsService.DeleteDocument.
 func (c *documentsServiceClient) DeleteDocument(ctx context.Context, req *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error) {
 	return c.deleteDocument.CallUnary(ctx, req)
+}
+
+// ListDocumentHistory calls secretary.v1.DocumentsService.ListDocumentHistory.
+func (c *documentsServiceClient) ListDocumentHistory(ctx context.Context, req *connect.Request[v1.ListDocumentHistoryRequest]) (*connect.Response[v1.ListDocumentHistoryResponse], error) {
+	return c.listDocumentHistory.CallUnary(ctx, req)
+}
+
+// GetDocumentHistoryEntry calls secretary.v1.DocumentsService.GetDocumentHistoryEntry.
+func (c *documentsServiceClient) GetDocumentHistoryEntry(ctx context.Context, req *connect.Request[v1.GetDocumentHistoryEntryRequest]) (*connect.Response[v1.GetDocumentHistoryEntryResponse], error) {
+	return c.getDocumentHistoryEntry.CallUnary(ctx, req)
 }
 
 // CreateDirectory calls secretary.v1.DocumentsService.CreateDirectory.
@@ -175,6 +207,8 @@ type DocumentsServiceHandler interface {
 	GetDocument(context.Context, *connect.Request[v1.GetDocumentRequest]) (*connect.Response[v1.GetDocumentResponse], error)
 	SaveDocument(context.Context, *connect.Request[v1.SaveDocumentRequest]) (*connect.Response[v1.SaveDocumentResponse], error)
 	DeleteDocument(context.Context, *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error)
+	ListDocumentHistory(context.Context, *connect.Request[v1.ListDocumentHistoryRequest]) (*connect.Response[v1.ListDocumentHistoryResponse], error)
+	GetDocumentHistoryEntry(context.Context, *connect.Request[v1.GetDocumentHistoryEntryRequest]) (*connect.Response[v1.GetDocumentHistoryEntryResponse], error)
 	CreateDirectory(context.Context, *connect.Request[v1.CreateDirectoryRequest]) (*connect.Response[v1.CreateDirectoryResponse], error)
 	UpdateDirectory(context.Context, *connect.Request[v1.UpdateDirectoryRequest]) (*connect.Response[v1.UpdateDirectoryResponse], error)
 	DeleteDirectory(context.Context, *connect.Request[v1.DeleteDirectoryRequest]) (*connect.Response[v1.DeleteDirectoryResponse], error)
@@ -211,6 +245,18 @@ func NewDocumentsServiceHandler(svc DocumentsServiceHandler, opts ...connect.Han
 		connect.WithSchema(documentsServiceMethods.ByName("DeleteDocument")),
 		connect.WithHandlerOptions(opts...),
 	)
+	documentsServiceListDocumentHistoryHandler := connect.NewUnaryHandler(
+		DocumentsServiceListDocumentHistoryProcedure,
+		svc.ListDocumentHistory,
+		connect.WithSchema(documentsServiceMethods.ByName("ListDocumentHistory")),
+		connect.WithHandlerOptions(opts...),
+	)
+	documentsServiceGetDocumentHistoryEntryHandler := connect.NewUnaryHandler(
+		DocumentsServiceGetDocumentHistoryEntryProcedure,
+		svc.GetDocumentHistoryEntry,
+		connect.WithSchema(documentsServiceMethods.ByName("GetDocumentHistoryEntry")),
+		connect.WithHandlerOptions(opts...),
+	)
 	documentsServiceCreateDirectoryHandler := connect.NewUnaryHandler(
 		DocumentsServiceCreateDirectoryProcedure,
 		svc.CreateDirectory,
@@ -239,6 +285,10 @@ func NewDocumentsServiceHandler(svc DocumentsServiceHandler, opts ...connect.Han
 			documentsServiceSaveDocumentHandler.ServeHTTP(w, r)
 		case DocumentsServiceDeleteDocumentProcedure:
 			documentsServiceDeleteDocumentHandler.ServeHTTP(w, r)
+		case DocumentsServiceListDocumentHistoryProcedure:
+			documentsServiceListDocumentHistoryHandler.ServeHTTP(w, r)
+		case DocumentsServiceGetDocumentHistoryEntryProcedure:
+			documentsServiceGetDocumentHistoryEntryHandler.ServeHTTP(w, r)
 		case DocumentsServiceCreateDirectoryProcedure:
 			documentsServiceCreateDirectoryHandler.ServeHTTP(w, r)
 		case DocumentsServiceUpdateDirectoryProcedure:
@@ -268,6 +318,14 @@ func (UnimplementedDocumentsServiceHandler) SaveDocument(context.Context, *conne
 
 func (UnimplementedDocumentsServiceHandler) DeleteDocument(context.Context, *connect.Request[v1.DeleteDocumentRequest]) (*connect.Response[v1.DeleteDocumentResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.DocumentsService.DeleteDocument is not implemented"))
+}
+
+func (UnimplementedDocumentsServiceHandler) ListDocumentHistory(context.Context, *connect.Request[v1.ListDocumentHistoryRequest]) (*connect.Response[v1.ListDocumentHistoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.DocumentsService.ListDocumentHistory is not implemented"))
+}
+
+func (UnimplementedDocumentsServiceHandler) GetDocumentHistoryEntry(context.Context, *connect.Request[v1.GetDocumentHistoryEntryRequest]) (*connect.Response[v1.GetDocumentHistoryEntryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.DocumentsService.GetDocumentHistoryEntry is not implemented"))
 }
 
 func (UnimplementedDocumentsServiceHandler) CreateDirectory(context.Context, *connect.Request[v1.CreateDirectoryRequest]) (*connect.Response[v1.CreateDirectoryResponse], error) {

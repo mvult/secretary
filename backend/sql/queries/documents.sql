@@ -54,6 +54,72 @@ RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at,
 DELETE FROM document
 WHERE id = $1;
 
+-- name: ListDocumentHistoryByDocument :many
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE document_id = $1
+ORDER BY captured_at DESC, id DESC;
+
+-- name: GetDocumentHistoryEntry :one
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE id = $1;
+
+-- name: GetLatestDocumentHistoryEntryByDocument :one
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE document_id = $1
+ORDER BY captured_at DESC, id DESC
+LIMIT 1;
+
+-- name: GetLatestDocumentHistoryEntryForDay :one
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE document_id = $1
+  AND captured_at >= $2
+  AND captured_at < $3
+ORDER BY captured_at ASC, id ASC
+LIMIT 1;
+
+-- name: CreateDocumentHistoryEntry :one
+INSERT INTO document_history (
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, document_id, capture_reason, content_hash, snapshot_json, captured_at;
+
+-- name: DeleteOldDocumentHistoryByDocument :exec
+DELETE FROM document_history
+WHERE document_id = $1
+  AND captured_at < $2;
+
 -- name: ListDirectoriesByWorkspace :many
 SELECT
   id,

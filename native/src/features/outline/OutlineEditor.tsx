@@ -2,7 +2,7 @@ import { useMemo, useRef } from 'react';
 import type { Dispatch } from 'react';
 import { OutlineRow } from './OutlineRow';
 import type { OutlineAction } from './state';
-import { getSelectedInfo } from './tree';
+import { getSelectedInfo, getSelectionClipboardText } from './tree';
 import type { OutlinePage, OutlineState } from './types';
 
 async function writeSystemClipboard(text: string) {
@@ -35,7 +35,7 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
   const lastGPressRef = useRef<number | null>(null);
   const lastBracketPressRef = useRef<number | null>(null);
   const lastYPressRef = useRef<number | null>(null);
-  const { focusedNode, selectedIds } = useMemo(() => getSelectedInfo(state), [state]);
+  const { selectedIds } = useMemo(() => getSelectedInfo(state), [state]);
 
   return (
     <div
@@ -113,10 +113,19 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
             lastGPressRef.current = null;
             lastBracketPressRef.current = null;
             lastYPressRef.current = null;
-            if (focusedNode) {
-              void writeSystemClipboard(focusedNode.text);
-            }
+            void writeSystemClipboard(getSelectionClipboardText(state));
             dispatch({ type: 'yankLine' });
+            return;
+          }
+
+          if (rawKey === 'D') {
+            event.preventDefault();
+            lastDPressRef.current = null;
+            lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
+            lastYPressRef.current = null;
+            void writeSystemClipboard(getSelectionClipboardText(state));
+            dispatch({ type: 'deleteSelection' });
             return;
           }
 
@@ -183,9 +192,7 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
             lastBracketPressRef.current = null;
 
             if (lastYPressRef.current && Date.now() - lastYPressRef.current <= 320) {
-              if (focusedNode) {
-                void writeSystemClipboard(focusedNode.text);
-              }
+              void writeSystemClipboard(getSelectionClipboardText(state));
               dispatch({ type: 'yankLine' });
               lastYPressRef.current = null;
               return;
@@ -286,9 +293,7 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
             }
 
             if (lastDPressRef.current && Date.now() - lastDPressRef.current <= 320) {
-              if (focusedNode) {
-                void writeSystemClipboard(focusedNode.text);
-              }
+              void writeSystemClipboard(getSelectionClipboardText(state));
               dispatch({ type: 'deleteSelection' });
               lastDPressRef.current = null;
               lastGPressRef.current = null;

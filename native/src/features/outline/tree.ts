@@ -1,6 +1,6 @@
 import { cycleStatus } from './keymap';
 import { createJournalPage, formatPageDate, getCurrentJournalDate, getDateKey } from './sampleData';
-import type { CursorPlacement, OutlineNode, OutlinePage, OutlineSnapshot, OutlineState } from './types';
+import type { CursorPlacement, OutlineNode, OutlinePage, OutlineSnapshot, OutlineState, YankBuffer, YankedOutlineNode } from './types';
 
 function buildIndexMap(nodes: OutlineNode[]) {
   return new Map(nodes.map((node, index) => [node.id, index]));
@@ -35,11 +35,6 @@ function createSiblingNode(parentId: string | null): OutlineNode {
   };
 }
 
-interface ParsedPasteNode {
-  depth: number;
-  text: string;
-}
-
 function countIndentDepth(value: string) {
   let depth = 0;
   let spaces = 0;
@@ -66,9 +61,9 @@ function countIndentDepth(value: string) {
   return depth;
 }
 
-function parseStructuredPaste(text: string): ParsedPasteNode[] {
+function parseStructuredPaste(text: string): YankedOutlineNode[] {
   const lines = text.replace(/\r\n?/g, '\n').split('\n');
-  const result: ParsedPasteNode[] = [];
+  const result: YankedOutlineNode[] = [];
   let minDepth = Number.POSITIVE_INFINITY;
 
   for (const rawLine of lines) {
@@ -107,21 +102,81 @@ function parseStructuredPaste(text: string): ParsedPasteNode[] {
   }));
 }
 
-function buildStructuredPasteNodes(parsed: ParsedPasteNode[], parentId: string | null) {
+function buildStructuredPasteNodes(parsed: YankedOutlineNode[], parentId: string | null) {
   const depthMap = new Map<number, string | null>();
   depthMap.set(0, parentId);
 
   return parsed.map((entry) => {
     const normalizedDepth = Math.max(0, Math.min(entry.depth, depthMap.size - 1));
-    const node: OutlineNode = {
-      id: createNodeId(),
-      parentId: depthMap.get(normalizedDepth) ?? parentId,
-      text: entry.text,
-      todoStatus: null,
-    };
-    depthMap.set(normalizedDepth + 1, node.id);
-    return node;
+      const node: OutlineNode = {
+        id: createNodeId(),
+        parentId: depthMap.get(normalizedDepth) ?? parentId,
+        text: entry.text,
+        todoStatus: entry.todoStatus ?? null,
+      };
+      depthMap.set(normalizedDepth + 1, node.id);
+      return node;
   });
+}
+
+function cloneYankedNodes(nodes: YankedOutlineNode[]) {
+  return nodes.map((node) => ({ ...node }));
+}
+
+function normalizeTodoStatus(value: unknown): YankedOutlineNode['todoStatus'] {
+  return value === 'todo' || value === 'doing' || value === 'done' || value === 'blocked' || value === 'skipped'
+    ? value
+    : null;
+}
+
+function cloneYankBuffer(yankBuffer: YankBuffer | null) {
+  if (!yankBuffer) {
+    return null;
+  }
+
+  const legacyBuffer = yankBuffer as unknown as {
+    text?: unknown;
+    plainText?: unknown;
+    nodes?: unknown;
+    todoStatus?: unknown;
+  };
+
+  if (!Array.isArray(legacyBuffer.nodes)) {
+    const legacyText = typeof legacyBuffer.text === 'string'
+      ? legacyBuffer.text
+      : typeof legacyBuffer.plainText === 'string'
+        ? legacyBuffer.plainText
+        : '';
+    const legacyTodoStatus = normalizeTodoStatus(legacyBuffer.todoStatus);
+
+    return legacyText
+      ? {
+          plainText: legacyText,
+          nodes: [{ depth: 0, text: legacyText, todoStatus: legacyTodoStatus }],
+        }
+      : null;
+  }
+
+  return {
+    plainText: typeof legacyBuffer.plainText === 'string' ? legacyBuffer.plainText : '',
+    nodes: cloneYankedNodes(legacyBuffer.nodes as YankedOutlineNode[]),
+  };
+}
+
+function serializeStructuredNodesToText(nodes: YankedOutlineNode[]) {
+  return nodes
+    .map((node) => {
+      const [firstLine = '', ...restLines] = node.text.replace(/\r\n?/g, '\n').split('\n');
+      const indent = '  '.repeat(node.depth);
+      const lines = [`${indent}- ${firstLine}`];
+
+      for (const line of restLines) {
+        lines.push(`${indent}  ${line}`);
+      }
+
+      return lines.join('\n');
+    })
+    .join('\n');
 }
 
 function createBlankNotePage(): OutlinePage {
@@ -448,7 +503,7 @@ export function makeSnapshot(state: OutlineState): OutlineSnapshot {
     draftText: state.draftText,
     editCursor: state.editCursor,
     mode: state.mode,
-    yankBuffer: state.yankBuffer,
+    yankBuffer: cloneYankBuffer(state.yankBuffer),
   };
 }
 
@@ -457,6 +512,7 @@ export function restoreSnapshot(state: OutlineState, snapshot: OutlineSnapshot):
     ...state,
     ...snapshot,
     pages: clonePages(snapshot.pages),
+    yankBuffer: cloneYankBuffer(snapshot.yankBuffer),
   };
 }
 
@@ -718,23 +774,22 @@ export function openDirectoryView(state: OutlineState): OutlineState {
 }
 
 export function yankLine(state: OutlineState): OutlineState {
-  const focusedNode = getFocusedNode(state);
-  if (!focusedNode) {
+  const yankBuffer = buildSelectionYankBuffer(state);
+  if (!yankBuffer) {
     return state;
   }
 
   return {
     ...state,
-    yankBuffer: {
-      text: focusedNode.text,
-      todoStatus: focusedNode.todoStatus ?? null,
-    },
+    yankBuffer,
   };
 }
 
 export function pasteBelow(state: OutlineState, text?: string, preferStructured = false): OutlineState {
-  const pastedText = text ?? state.yankBuffer?.text;
-  if (!pastedText) {
+  const clipboardMatchesYank = !text || text === state.yankBuffer?.plainText;
+  const yankNodes = clipboardMatchesYank ? state.yankBuffer?.nodes ?? [] : [];
+  const pastedText = clipboardMatchesYank ? (text ?? state.yankBuffer?.plainText) : text;
+  if (!pastedText && yankNodes.length === 0) {
     return state;
   }
 
@@ -747,7 +802,7 @@ export function pasteBelow(state: OutlineState, text?: string, preferStructured 
 
   const focusedNode = nodes[focusedIndex];
   const insertAt = getSubtreeEnd(nodes, focusedIndex);
-  const parsedNodes = preferStructured ? parseStructuredPaste(pastedText) : [];
+  const parsedNodes = yankNodes.length > 0 ? cloneYankedNodes(yankNodes) : (preferStructured && pastedText ? parseStructuredPaste(pastedText) : []);
   if (parsedNodes.length > 0) {
     const newNodes = buildStructuredPasteNodes(parsedNodes, focusedNode.parentId);
     const nextState = replaceActivePage(commitEdit(state), (page) => ({
@@ -770,8 +825,8 @@ export function pasteBelow(state: OutlineState, text?: string, preferStructured 
   const newNode: OutlineNode = {
     id: createNodeId(),
     parentId: focusedNode.parentId,
-    text: pastedText,
-    todoStatus: text && text !== state.yankBuffer?.text ? null : (state.yankBuffer?.todoStatus ?? null),
+    text: pastedText ?? '',
+    todoStatus: null,
   };
   const nextState = replaceActivePage(state, (page) => ({
     ...page,
@@ -1051,6 +1106,55 @@ function getSelectedRoots(nodes: OutlineNode[], selectedIds: string[]) {
   return nodes.filter((node) => selectedSet.has(node.id) && (!node.parentId || !selectedSet.has(node.parentId)));
 }
 
+function buildYankBufferFromRoots(nodes: OutlineNode[], roots: OutlineNode[]): YankBuffer | null {
+  if (roots.length === 0) {
+    return null;
+  }
+
+  const serializedNodes: YankedOutlineNode[] = [];
+
+  for (const root of roots) {
+    const startIndex = nodes.findIndex((node) => node.id === root.id);
+    if (startIndex === -1) {
+      continue;
+    }
+
+    const endIndex = getSubtreeEnd(nodes, startIndex);
+    const rootDepth = getNodeDepth(nodes, root.id);
+    for (const node of nodes.slice(startIndex, endIndex)) {
+      serializedNodes.push({
+        depth: Math.max(0, getNodeDepth(nodes, node.id) - rootDepth),
+        text: node.text,
+        todoStatus: node.todoStatus ?? null,
+      });
+    }
+  }
+
+  if (serializedNodes.length === 0) {
+    return null;
+  }
+
+  return {
+    plainText: serializeStructuredNodesToText(serializedNodes),
+    nodes: serializedNodes,
+  };
+}
+
+function getYankRootsForState(state: OutlineState) {
+  const nodes = getActiveNodes(state);
+  const selectedRoots = getSelectedRoots(nodes, getSelectionIds(state));
+  return { nodes, selectedRoots };
+}
+
+function buildSelectionYankBuffer(state: OutlineState) {
+  const { nodes, selectedRoots } = getYankRootsForState(state);
+  return buildYankBufferFromRoots(nodes, selectedRoots);
+}
+
+export function getSelectionClipboardText(state: OutlineState) {
+  return buildSelectionYankBuffer(state)?.plainText ?? '';
+}
+
 export function openBelow(state: OutlineState): OutlineState {
   const nodes = getActiveNodes(state);
   const focusedIndex = nodes.findIndex((node) => node.id === state.focusedId);
@@ -1161,6 +1265,8 @@ export function deleteSelection(state: OutlineState): OutlineState {
     return state;
   }
 
+  const yankBuffer = buildYankBufferFromRoots(nodes, selectedRoots);
+
   const removalIds = new Set<string>();
   for (const root of selectedRoots) {
     const startIndex = nodes.findIndex((node) => node.id === root.id);
@@ -1174,36 +1280,30 @@ export function deleteSelection(state: OutlineState): OutlineState {
     }
   }
 
-  if (removalIds.size === 0 || removalIds.size === nodes.length) {
+  if (removalIds.size === 0) {
     return state;
   }
 
-  const focusedNode = nodes.find((node) => node.id === state.focusedId) ?? selectedRoots[0] ?? null;
-
   const nextNodes = nodes.filter((node) => !removalIds.has(node.id));
+  const ensuredNodes = nextNodes.length > 0 ? nextNodes : [createSiblingNode(null)];
   const focusedIndex = nodes.findIndex((node) => node.id === state.focusedId);
-  const fallbackIndex = Math.min(focusedIndex, nextNodes.length - 1);
-  const nextFocusedId = nextNodes[Math.max(0, fallbackIndex)].id;
+  const fallbackIndex = Math.min(Math.max(0, focusedIndex), ensuredNodes.length - 1);
+  const nextFocusedNode = ensuredNodes[Math.max(0, fallbackIndex)];
   const nextState = replaceActivePage(state, (page) => ({
     ...page,
-    nodes: nextNodes,
+    nodes: ensuredNodes,
   }));
 
   return {
     ...nextState,
-    focusedId: nextFocusedId,
-    normalCursor: clampCursor(state.normalCursor, nextNodes[Math.max(0, fallbackIndex)].text),
+    focusedId: nextFocusedNode.id,
+    normalCursor: clampCursor(state.normalCursor, nextFocusedNode.text),
     anchorId: null,
     editingId: null,
     draftText: '',
     editCursor: 'end',
     mode: 'normal',
-    yankBuffer: focusedNode
-      ? {
-          text: focusedNode.text,
-          todoStatus: focusedNode.todoStatus ?? null,
-        }
-      : state.yankBuffer,
+    yankBuffer: yankBuffer ?? state.yankBuffer,
   };
 }
 

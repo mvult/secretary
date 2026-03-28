@@ -239,6 +239,45 @@ func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) 
 	return i, err
 }
 
+const createDocumentHistoryEntry = `-- name: CreateDocumentHistoryEntry :one
+INSERT INTO document_history (
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, document_id, capture_reason, content_hash, snapshot_json, captured_at
+`
+
+type CreateDocumentHistoryEntryParams struct {
+	DocumentID    int32
+	CaptureReason string
+	ContentHash   string
+	SnapshotJson  []byte
+	CapturedAt    pgtype.Timestamptz
+}
+
+func (q *Queries) CreateDocumentHistoryEntry(ctx context.Context, arg CreateDocumentHistoryEntryParams) (DocumentHistory, error) {
+	row := q.db.QueryRow(ctx, createDocumentHistoryEntry,
+		arg.DocumentID,
+		arg.CaptureReason,
+		arg.ContentHash,
+		arg.SnapshotJson,
+		arg.CapturedAt,
+	)
+	var i DocumentHistory
+	err := row.Scan(
+		&i.ID,
+		&i.DocumentID,
+		&i.CaptureReason,
+		&i.ContentHash,
+		&i.SnapshotJson,
+		&i.CapturedAt,
+	)
+	return i, err
+}
+
 const deleteBlockDocumentLinksByBlock = `-- name: DeleteBlockDocumentLinksByBlock :exec
 DELETE FROM block_document_link
 WHERE block_id = $1
@@ -266,6 +305,22 @@ WHERE id = $1
 
 func (q *Queries) DeleteDocument(ctx context.Context, id int32) error {
 	_, err := q.db.Exec(ctx, deleteDocument, id)
+	return err
+}
+
+const deleteOldDocumentHistoryByDocument = `-- name: DeleteOldDocumentHistoryByDocument :exec
+DELETE FROM document_history
+WHERE document_id = $1
+  AND captured_at < $2
+`
+
+type DeleteOldDocumentHistoryByDocumentParams struct {
+	DocumentID int32
+	CapturedAt pgtype.Timestamptz
+}
+
+func (q *Queries) DeleteOldDocumentHistoryByDocument(ctx context.Context, arg DeleteOldDocumentHistoryByDocumentParams) error {
+	_, err := q.db.Exec(ctx, deleteOldDocumentHistoryByDocument, arg.DocumentID, arg.CapturedAt)
 	return err
 }
 
@@ -323,6 +378,96 @@ func (q *Queries) GetDocument(ctx context.Context, id int32) (Document, error) {
 		&i.JournalDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getDocumentHistoryEntry = `-- name: GetDocumentHistoryEntry :one
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE id = $1
+`
+
+func (q *Queries) GetDocumentHistoryEntry(ctx context.Context, id int64) (DocumentHistory, error) {
+	row := q.db.QueryRow(ctx, getDocumentHistoryEntry, id)
+	var i DocumentHistory
+	err := row.Scan(
+		&i.ID,
+		&i.DocumentID,
+		&i.CaptureReason,
+		&i.ContentHash,
+		&i.SnapshotJson,
+		&i.CapturedAt,
+	)
+	return i, err
+}
+
+const getLatestDocumentHistoryEntryByDocument = `-- name: GetLatestDocumentHistoryEntryByDocument :one
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE document_id = $1
+ORDER BY captured_at DESC, id DESC
+LIMIT 1
+`
+
+func (q *Queries) GetLatestDocumentHistoryEntryByDocument(ctx context.Context, documentID int32) (DocumentHistory, error) {
+	row := q.db.QueryRow(ctx, getLatestDocumentHistoryEntryByDocument, documentID)
+	var i DocumentHistory
+	err := row.Scan(
+		&i.ID,
+		&i.DocumentID,
+		&i.CaptureReason,
+		&i.ContentHash,
+		&i.SnapshotJson,
+		&i.CapturedAt,
+	)
+	return i, err
+}
+
+const getLatestDocumentHistoryEntryForDay = `-- name: GetLatestDocumentHistoryEntryForDay :one
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE document_id = $1
+  AND captured_at >= $2
+  AND captured_at < $3
+ORDER BY captured_at ASC, id ASC
+LIMIT 1
+`
+
+type GetLatestDocumentHistoryEntryForDayParams struct {
+	DocumentID   int32
+	CapturedAt   pgtype.Timestamptz
+	CapturedAt_2 pgtype.Timestamptz
+}
+
+func (q *Queries) GetLatestDocumentHistoryEntryForDay(ctx context.Context, arg GetLatestDocumentHistoryEntryForDayParams) (DocumentHistory, error) {
+	row := q.db.QueryRow(ctx, getLatestDocumentHistoryEntryForDay, arg.DocumentID, arg.CapturedAt, arg.CapturedAt_2)
+	var i DocumentHistory
+	err := row.Scan(
+		&i.ID,
+		&i.DocumentID,
+		&i.CaptureReason,
+		&i.ContentHash,
+		&i.SnapshotJson,
+		&i.CapturedAt,
 	)
 	return i, err
 }
@@ -402,6 +547,46 @@ func (q *Queries) ListDirectoriesByWorkspace(ctx context.Context, workspaceID in
 			&i.Position,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDocumentHistoryByDocument = `-- name: ListDocumentHistoryByDocument :many
+SELECT
+  id,
+  document_id,
+  capture_reason,
+  content_hash,
+  snapshot_json,
+  captured_at
+FROM document_history
+WHERE document_id = $1
+ORDER BY captured_at DESC, id DESC
+`
+
+func (q *Queries) ListDocumentHistoryByDocument(ctx context.Context, documentID int32) ([]DocumentHistory, error) {
+	rows, err := q.db.Query(ctx, listDocumentHistoryByDocument, documentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []DocumentHistory
+	for rows.Next() {
+		var i DocumentHistory
+		if err := rows.Scan(
+			&i.ID,
+			&i.DocumentID,
+			&i.CaptureReason,
+			&i.ContentHash,
+			&i.SnapshotJson,
+			&i.CapturedAt,
 		); err != nil {
 			return nil, err
 		}

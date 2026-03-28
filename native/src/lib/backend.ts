@@ -163,6 +163,15 @@ export interface BackendDocumentIndex {
   directories: BackendDirectory[];
 }
 
+export interface BackendDocumentHistoryEntry {
+  id: number;
+  documentId: number;
+  captureReason: 'day_start' | 'periodic' | string;
+  contentHash: string;
+  snapshotJson: string;
+  capturedAt: string;
+}
+
 function normalizeBaseUrl(baseUrl: string) {
   return baseUrl.trim().replace(/\/$/, '');
 }
@@ -274,6 +283,17 @@ function normalizeAISourceRef(value: any): BackendAISourceRef {
     quoteText: typeof value?.quoteText === 'string' ? value.quoteText : '',
     rank: toNumber(value?.rank),
     createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+  };
+}
+
+function normalizeDocumentHistoryEntry(value: any): BackendDocumentHistoryEntry {
+  return {
+    id: toNumber(value?.id),
+    documentId: toNumber(value?.documentId),
+    captureReason: typeof value?.captureReason === 'string' ? value.captureReason : '',
+    contentHash: typeof value?.contentHash === 'string' ? value.contentHash : '',
+    snapshotJson: typeof value?.snapshotJson === 'string' ? value.snapshotJson : '',
+    capturedAt: typeof value?.capturedAt === 'string' ? value.capturedAt : '',
   };
 }
 
@@ -483,6 +503,29 @@ export async function deleteDocument(baseUrl: string, token: string, id: number)
     { id },
     token,
   );
+}
+
+export async function listDocumentHistory(baseUrl: string, token: string, documentId: number) {
+  const payload = await postJson<{ history?: BackendDocumentHistoryEntry[] }>(
+    baseUrl,
+    '/secretary.v1.DocumentsService/ListDocumentHistory',
+    { documentId },
+    token,
+  );
+  return Array.isArray(payload.history) ? payload.history.map(normalizeDocumentHistoryEntry) : [];
+}
+
+export async function getDocumentHistoryEntry(baseUrl: string, token: string, id: number) {
+  const payload = await postJson<{ history?: BackendDocumentHistoryEntry }>(
+    baseUrl,
+    '/secretary.v1.DocumentsService/GetDocumentHistoryEntry',
+    { id },
+    token,
+  );
+  if (!payload.history) {
+    throw new Error('Document history entry was not returned by the server.');
+  }
+  return normalizeDocumentHistoryEntry(payload.history);
 }
 
 export async function createDirectory(baseUrl: string, token: string, workspaceId: number, parentId: number, name: string) {

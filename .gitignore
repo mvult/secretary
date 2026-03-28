@@ -21,3 +21,5 @@ coverage/
 *.log
 .DS_Store
 .vscode/
+
+blades/

@@ -430,6 +430,14 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 		t.Fatalf("expected doing block to map to doing, got %q", topTodoStatus)
 	}
 	topTodoID := updatedPayload.Document.Blocks[0].TodoId
+	_, err = pool.Exec(ctx, `
+		UPDATE document_history
+		SET captured_at = now() - interval '16 minutes'
+		WHERE document_id = $1
+	`, createPayload.Document.Id)
+	if err != nil {
+		t.Fatalf("age document history: %v", err)
+	}
 
 	revertResp, err := authPost(saveURL, token, &secretaryv1.SaveDocumentRequest{
 		Document: &secretaryv1.Document{
@@ -508,6 +516,56 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	}
 	if listPayload.Documents[0].Blocks[0].TodoId != 0 {
 		t.Fatalf("expected list response to reflect removed todo link")
+	}
+
+	historyURL := ts.URL + secretaryv1connect.DocumentsServiceListDocumentHistoryProcedure
+	historyResp, err := authPost(historyURL, token, secretaryv1.ListDocumentHistoryRequest{DocumentId: createPayload.Document.Id})
+	if err != nil {
+		t.Fatalf("list document history: %v", err)
+	}
+	if historyResp.StatusCode != http.StatusOK {
+		t.Fatalf("list document history status: %d", historyResp.StatusCode)
+	}
+	var historyPayload secretaryv1.ListDocumentHistoryResponse
+	if err := decodeProtoBody(historyResp.Body, &historyPayload); err != nil {
+		t.Fatalf("decode document history: %v", err)
+	}
+	historyResp.Body.Close()
+	if len(historyPayload.History) != 2 {
+		t.Fatalf("expected 2 document history entries, got %d", len(historyPayload.History))
+	}
+	if historyPayload.History[1].CaptureReason != "day_start" {
+		t.Fatalf("expected oldest history capture reason day_start, got %q", historyPayload.History[1].CaptureReason)
+	}
+
+	getHistoryURL := ts.URL + secretaryv1connect.DocumentsServiceGetDocumentHistoryEntryProcedure
+	getHistoryResp, err := authPost(getHistoryURL, token, secretaryv1.GetDocumentHistoryEntryRequest{Id: historyPayload.History[0].Id})
+	if err != nil {
+		t.Fatalf("get document history: %v", err)
+	}
+	if getHistoryResp.StatusCode != http.StatusOK {
+		t.Fatalf("get document history status: %d", getHistoryResp.StatusCode)
+	}
+	var getHistoryPayload secretaryv1.GetDocumentHistoryEntryResponse
+	if err := decodeProtoBody(getHistoryResp.Body, &getHistoryPayload); err != nil {
+		t.Fatalf("decode document history entry: %v", err)
+	}
+	getHistoryResp.Body.Close()
+	var snapshot struct {
+		Title string `json:"title"`
+		Nodes []struct {
+			Text       string `json:"text"`
+			TodoStatus string `json:"todo_status"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(getHistoryPayload.History.SnapshotJson), &snapshot); err != nil {
+		t.Fatalf("decode history snapshot json: %v", err)
+	}
+	if snapshot.Title != "Persistence flow reverted" {
+		t.Fatalf("expected history snapshot title Persistence flow reverted, got %q", snapshot.Title)
+	}
+	if len(snapshot.Nodes) != 2 || snapshot.Nodes[1].TodoStatus != "done" {
+		t.Fatalf("expected history snapshot todo status to persist, got %+v", snapshot.Nodes)
 	}
 
 	deleteURL := ts.URL + secretaryv1connect.DocumentsServiceDeleteDocumentProcedure

@@ -72,6 +72,31 @@ message DeleteDocumentRequest {
 
 message DeleteDocumentResponse {}
 
+message DocumentHistoryEntry {
+  int64 id = 1;
+  int64 document_id = 2;
+  string capture_reason = 3;
+  string content_hash = 4;
+  string snapshot_json = 5;
+  string captured_at = 6;
+}
+
+message ListDocumentHistoryRequest {
+  int64 document_id = 1;
+}
+
+message ListDocumentHistoryResponse {
+  repeated DocumentHistoryEntry history = 1;
+}
+
+message GetDocumentHistoryEntryRequest {
+  int64 id = 1;
+}
+
+message GetDocumentHistoryEntryResponse {
+  DocumentHistoryEntry history = 1;
+}
+
 message CreateDirectoryRequest {
   int64 workspace_id = 1;
   int64 parent_id = 2;
@@ -103,6 +128,8 @@ service DocumentsService {
   rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
   rpc SaveDocument(SaveDocumentRequest) returns (SaveDocumentResponse);
   rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  rpc ListDocumentHistory(ListDocumentHistoryRequest) returns (ListDocumentHistoryResponse);
+  rpc GetDocumentHistoryEntry(GetDocumentHistoryEntryRequest) returns (GetDocumentHistoryEntryResponse);
   rpc CreateDirectory(CreateDirectoryRequest) returns (CreateDirectoryResponse);
   rpc UpdateDirectory(UpdateDirectoryRequest) returns (UpdateDirectoryResponse);
   rpc DeleteDirectory(DeleteDirectoryRequest) returns (DeleteDirectoryResponse);

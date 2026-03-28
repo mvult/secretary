@@ -294,6 +294,15 @@ type Document struct {
 	UpdatedAt   pgtype.Timestamptz
 }
 
+type DocumentHistory struct {
+	ID            int64
+	DocumentID    int32
+	CaptureReason string
+	ContentHash   string
+	SnapshotJson  []byte
+	CapturedAt    pgtype.Timestamptz
+}
+
 type Issue struct {
 	ID        int32
 	TopicID   int32

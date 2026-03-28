@@ -2,6 +2,9 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -17,6 +20,25 @@ import (
 )
 
 var documentLinkPattern = regexp.MustCompile(`\[\[doc:(\d+)\|([^\]]+)\]\]`)
+
+const (
+	documentHistoryMinInterval = 15 * time.Minute
+	documentHistoryRetention   = 90 * 24 * time.Hour
+)
+
+type documentHistorySnapshot struct {
+	Title string                        `json:"title,omitempty"`
+	Kind  string                        `json:"kind"`
+	Date  string                        `json:"date,omitempty"`
+	Nodes []documentHistorySnapshotNode `json:"nodes"`
+}
+
+type documentHistorySnapshotNode struct {
+	ParentIndex int32  `json:"parent_index"`
+	Text        string `json:"text"`
+	TodoStatus  string `json:"todo_status,omitempty"`
+	TodoID      int64  `json:"todo_id,omitempty"`
+}
 
 func (s *Server) ListWorkspaces(ctx context.Context, _ *connect.Request[secretaryv1.ListWorkspacesRequest]) (*connect.Response[secretaryv1.ListWorkspacesResponse], error) {
 	userID, err := requireUserID(ctx)
@@ -138,6 +160,70 @@ func (s *Server) GetDocument(ctx context.Context, req *connect.Request[secretary
 	}
 
 	return connect.NewResponse(&secretaryv1.GetDocumentResponse{Document: documentToProto(doc, blocks, blockTodoStatuses, nil)}), nil
+}
+
+func (s *Server) ListDocumentHistory(ctx context.Context, req *connect.Request[secretaryv1.ListDocumentHistoryRequest]) (*connect.Response[secretaryv1.ListDocumentHistoryResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.DocumentId <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("document_id is required"))
+	}
+
+	doc, err := s.queries.GetDocument(ctx, int32(req.Msg.DocumentId))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("document not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch document"))
+	}
+	if err := s.ensureWorkspaceAccess(ctx, doc.WorkspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+
+	history, err := s.queries.ListDocumentHistoryByDocument(ctx, doc.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list document history"))
+	}
+
+	result := make([]*secretaryv1.DocumentHistoryEntry, 0, len(history))
+	for _, entry := range history {
+		result = append(result, documentHistoryEntryToProto(entry))
+	}
+
+	return connect.NewResponse(&secretaryv1.ListDocumentHistoryResponse{History: result}), nil
+}
+
+func (s *Server) GetDocumentHistoryEntry(ctx context.Context, req *connect.Request[secretaryv1.GetDocumentHistoryEntryRequest]) (*connect.Response[secretaryv1.GetDocumentHistoryEntryResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.Id <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
+	}
+
+	entry, err := s.queries.GetDocumentHistoryEntry(ctx, req.Msg.Id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("document history entry not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch document history entry"))
+	}
+
+	doc, err := s.queries.GetDocument(ctx, entry.DocumentID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("document not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch document"))
+	}
+	if err := s.ensureWorkspaceAccess(ctx, doc.WorkspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+
+	return connect.NewResponse(&secretaryv1.GetDocumentHistoryEntryResponse{History: documentHistoryEntryToProto(entry)}), nil
 }
 
 func (s *Server) CreateDirectory(ctx context.Context, req *connect.Request[secretaryv1.CreateDirectoryRequest]) (*connect.Response[secretaryv1.CreateDirectoryResponse], error) {
@@ -466,6 +552,9 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	if err != nil {
 		return nil, err
 	}
+	if err := maybeCreateDocumentHistorySnapshot(ctx, qtx, finalDoc, finalBlocks, blockTodoStatuses); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit document transaction"))
@@ -591,6 +680,17 @@ func documentToProto(doc db.Document, blocks []db.Block, blockTodoStatuses map[i
 		result.Blocks = append(result.Blocks, blockToProto(block, blockTodoStatuses[block.ID], clientKeyByServerID[block.ID]))
 	}
 	return result
+}
+
+func documentHistoryEntryToProto(entry db.DocumentHistory) *secretaryv1.DocumentHistoryEntry {
+	return &secretaryv1.DocumentHistoryEntry{
+		Id:            entry.ID,
+		DocumentId:    int64(entry.DocumentID),
+		CaptureReason: entry.CaptureReason,
+		ContentHash:   entry.ContentHash,
+		SnapshotJson:  string(entry.SnapshotJson),
+		CapturedAt:    formatTime(entry.CapturedAt),
+	}
 }
 
 func blockToProto(block db.Block, todoStatus string, clientKey string) *secretaryv1.Block {
@@ -837,6 +937,105 @@ func reconcileBlockDocumentLinks(ctx context.Context, queries *db.Queries, sourc
 	}
 
 	return nil
+}
+
+func maybeCreateDocumentHistorySnapshot(ctx context.Context, qtx *db.Queries, doc db.Document, blocks []db.Block, blockTodoStatuses map[int32]string) error {
+	snapshotBytes, contentHash, err := buildDocumentHistorySnapshot(doc, blocks, blockTodoStatuses)
+	if err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to build document history snapshot"))
+	}
+
+	latestEntry, err := qtx.GetLatestDocumentHistoryEntryByDocument(ctx, doc.ID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to load latest document history"))
+	}
+	if err == nil && latestEntry.ContentHash == contentHash {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+	_, todayErr := qtx.GetLatestDocumentHistoryEntryForDay(ctx, db.GetLatestDocumentHistoryEntryForDayParams{
+		DocumentID:   doc.ID,
+		CapturedAt:   pgtype.Timestamptz{Time: dayStart, Valid: true},
+		CapturedAt_2: pgtype.Timestamptz{Time: dayEnd, Valid: true},
+	})
+	if todayErr != nil && !errors.Is(todayErr, pgx.ErrNoRows) {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to load document history for day"))
+	}
+
+	reason := "periodic"
+	shouldCapture := false
+	if errors.Is(todayErr, pgx.ErrNoRows) {
+		reason = "day_start"
+		shouldCapture = true
+	} else if errors.Is(err, pgx.ErrNoRows) {
+		shouldCapture = true
+	} else if latestEntry.CapturedAt.Valid && now.Sub(latestEntry.CapturedAt.Time.UTC()) >= documentHistoryMinInterval {
+		shouldCapture = true
+	}
+
+	if !shouldCapture {
+		return nil
+	}
+
+	if _, err := qtx.CreateDocumentHistoryEntry(ctx, db.CreateDocumentHistoryEntryParams{
+		DocumentID:    doc.ID,
+		CaptureReason: reason,
+		ContentHash:   contentHash,
+		SnapshotJson:  snapshotBytes,
+		CapturedAt:    pgtype.Timestamptz{Time: now, Valid: true},
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to create document history snapshot"))
+	}
+
+	if err := qtx.DeleteOldDocumentHistoryByDocument(ctx, db.DeleteOldDocumentHistoryByDocumentParams{
+		DocumentID: doc.ID,
+		CapturedAt: pgtype.Timestamptz{Time: now.Add(-documentHistoryRetention), Valid: true},
+	}); err != nil {
+		return connect.NewError(connect.CodeInternal, errors.New("failed to prune document history"))
+	}
+
+	return nil
+}
+
+func buildDocumentHistorySnapshot(doc db.Document, blocks []db.Block, blockTodoStatuses map[int32]string) ([]byte, string, error) {
+	indexByID := make(map[int32]int32, len(blocks))
+	for index, block := range blocks {
+		indexByID[block.ID] = int32(index)
+	}
+
+	snapshot := documentHistorySnapshot{
+		Title: doc.Title,
+		Kind:  doc.Kind,
+		Date:  formatDate(doc.JournalDate),
+		Nodes: make([]documentHistorySnapshotNode, 0, len(blocks)),
+	}
+	for _, block := range blocks {
+		parentIndex := int32(-1)
+		if block.ParentBlockID.Valid {
+			if resolved, ok := indexByID[block.ParentBlockID.Int32]; ok {
+				parentIndex = resolved
+			}
+		}
+		node := documentHistorySnapshotNode{
+			ParentIndex: parentIndex,
+			Text:        block.Text,
+			TodoStatus:  blockTodoStatuses[block.ID],
+		}
+		if block.TodoID.Valid {
+			node.TodoID = int64(block.TodoID.Int32)
+		}
+		snapshot.Nodes = append(snapshot.Nodes, node)
+	}
+
+	snapshotBytes, err := json.Marshal(snapshot)
+	if err != nil {
+		return nil, "", err
+	}
+	hash := sha256.Sum256(snapshotBytes)
+	return snapshotBytes, hex.EncodeToString(hash[:]), nil
 }
 
 func removedBlocksByID(existingBlocks []db.Block, keptIDs []int32) []db.Block {
