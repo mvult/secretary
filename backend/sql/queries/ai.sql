@@ -32,6 +32,14 @@ INSERT INTO ai_thread (
 ) VALUES ($1, $2, $3, $4)
 RETURNING id, workspace_id, document_id, title, created_by_user_id, created_at, updated_at;
 
+-- name: UpdateAIThread :one
+UPDATE ai_thread
+SET
+  title = $2,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, document_id, title, created_by_user_id, created_at, updated_at;
+
 -- name: TouchAIThread :exec
 UPDATE ai_thread
 SET updated_at = now()

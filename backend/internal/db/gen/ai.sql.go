@@ -722,3 +722,32 @@ func (q *Queries) UpdateAIRun(ctx context.Context, arg UpdateAIRunParams) (AiRun
 	)
 	return i, err
 }
+
+const updateAIThread = `-- name: UpdateAIThread :one
+UPDATE ai_thread
+SET
+  title = $2,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, workspace_id, document_id, title, created_by_user_id, created_at, updated_at
+`
+
+type UpdateAIThreadParams struct {
+	ID    int64
+	Title pgtype.Text
+}
+
+func (q *Queries) UpdateAIThread(ctx context.Context, arg UpdateAIThreadParams) (AiThread, error) {
+	row := q.db.QueryRow(ctx, updateAIThread, arg.ID, arg.Title)
+	var i AiThread
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.DocumentID,
+		&i.Title,
+		&i.CreatedByUserID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}

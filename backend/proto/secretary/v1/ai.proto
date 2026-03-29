@@ -98,6 +98,15 @@ message CreateAIThreadResponse {
   AIThread thread = 1;
 }
 
+message UpdateAIThreadRequest {
+  int64 id = 1;
+  string title = 2;
+}
+
+message UpdateAIThreadResponse {
+  AIThread thread = 1;
+}
+
 message DeleteAIThreadRequest {
   int64 id = 1;
 }
@@ -183,14 +192,28 @@ message CreateAISourceRefResponse {
   AISourceRef source_ref = 1;
 }
 
+message RunAIThreadTurnRequest {
+  int64 thread_id = 1;
+  string content = 2;
+  string mode = 3;
+}
+
+message RunAIThreadTurnResponse {
+  AIMessage user_message = 1;
+  AIMessage assistant_message = 2;
+  AIRun run = 3;
+}
+
 service AIService {
   rpc ListAIThreads(ListAIThreadsRequest) returns (ListAIThreadsResponse);
   rpc GetAIThread(GetAIThreadRequest) returns (GetAIThreadResponse);
   rpc CreateAIThread(CreateAIThreadRequest) returns (CreateAIThreadResponse);
+  rpc UpdateAIThread(UpdateAIThreadRequest) returns (UpdateAIThreadResponse);
   rpc DeleteAIThread(DeleteAIThreadRequest) returns (DeleteAIThreadResponse);
   rpc CreateAIMessage(CreateAIMessageRequest) returns (CreateAIMessageResponse);
   rpc CreateAIRun(CreateAIRunRequest) returns (CreateAIRunResponse);
   rpc UpdateAIRun(UpdateAIRunRequest) returns (UpdateAIRunResponse);
   rpc CreateAIArtifact(CreateAIArtifactRequest) returns (CreateAIArtifactResponse);
   rpc CreateAISourceRef(CreateAISourceRefRequest) returns (CreateAISourceRefResponse);
+  rpc RunAIThreadTurn(RunAIThreadTurnRequest) returns (RunAIThreadTurnResponse);
 }

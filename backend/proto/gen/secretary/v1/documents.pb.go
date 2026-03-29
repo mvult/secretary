@@ -705,6 +705,266 @@ func (*DeleteDocumentResponse) Descriptor() ([]byte, []int) {
 	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{10}
 }
 
+type DocumentHistoryEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	DocumentId    int64                  `protobuf:"varint,2,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	CaptureReason string                 `protobuf:"bytes,3,opt,name=capture_reason,json=captureReason,proto3" json:"capture_reason,omitempty"`
+	ContentHash   string                 `protobuf:"bytes,4,opt,name=content_hash,json=contentHash,proto3" json:"content_hash,omitempty"`
+	SnapshotJson  string                 `protobuf:"bytes,5,opt,name=snapshot_json,json=snapshotJson,proto3" json:"snapshot_json,omitempty"`
+	CapturedAt    string                 `protobuf:"bytes,6,opt,name=captured_at,json=capturedAt,proto3" json:"captured_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DocumentHistoryEntry) Reset() {
+	*x = DocumentHistoryEntry{}
+	mi := &file_secretary_v1_documents_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DocumentHistoryEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DocumentHistoryEntry) ProtoMessage() {}
+
+func (x *DocumentHistoryEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_documents_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DocumentHistoryEntry.ProtoReflect.Descriptor instead.
+func (*DocumentHistoryEntry) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *DocumentHistoryEntry) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+func (x *DocumentHistoryEntry) GetDocumentId() int64 {
+	if x != nil {
+		return x.DocumentId
+	}
+	return 0
+}
+
+func (x *DocumentHistoryEntry) GetCaptureReason() string {
+	if x != nil {
+		return x.CaptureReason
+	}
+	return ""
+}
+
+func (x *DocumentHistoryEntry) GetContentHash() string {
+	if x != nil {
+		return x.ContentHash
+	}
+	return ""
+}
+
+func (x *DocumentHistoryEntry) GetSnapshotJson() string {
+	if x != nil {
+		return x.SnapshotJson
+	}
+	return ""
+}
+
+func (x *DocumentHistoryEntry) GetCapturedAt() string {
+	if x != nil {
+		return x.CapturedAt
+	}
+	return ""
+}
+
+type ListDocumentHistoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	DocumentId    int64                  `protobuf:"varint,1,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDocumentHistoryRequest) Reset() {
+	*x = ListDocumentHistoryRequest{}
+	mi := &file_secretary_v1_documents_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDocumentHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDocumentHistoryRequest) ProtoMessage() {}
+
+func (x *ListDocumentHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_documents_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDocumentHistoryRequest.ProtoReflect.Descriptor instead.
+func (*ListDocumentHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ListDocumentHistoryRequest) GetDocumentId() int64 {
+	if x != nil {
+		return x.DocumentId
+	}
+	return 0
+}
+
+type ListDocumentHistoryResponse struct {
+	state         protoimpl.MessageState  `protogen:"open.v1"`
+	History       []*DocumentHistoryEntry `protobuf:"bytes,1,rep,name=history,proto3" json:"history,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListDocumentHistoryResponse) Reset() {
+	*x = ListDocumentHistoryResponse{}
+	mi := &file_secretary_v1_documents_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListDocumentHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListDocumentHistoryResponse) ProtoMessage() {}
+
+func (x *ListDocumentHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_documents_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListDocumentHistoryResponse.ProtoReflect.Descriptor instead.
+func (*ListDocumentHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *ListDocumentHistoryResponse) GetHistory() []*DocumentHistoryEntry {
+	if x != nil {
+		return x.History
+	}
+	return nil
+}
+
+type GetDocumentHistoryEntryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDocumentHistoryEntryRequest) Reset() {
+	*x = GetDocumentHistoryEntryRequest{}
+	mi := &file_secretary_v1_documents_proto_msgTypes[14]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDocumentHistoryEntryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDocumentHistoryEntryRequest) ProtoMessage() {}
+
+func (x *GetDocumentHistoryEntryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_documents_proto_msgTypes[14]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDocumentHistoryEntryRequest.ProtoReflect.Descriptor instead.
+func (*GetDocumentHistoryEntryRequest) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{14}
+}
+
+func (x *GetDocumentHistoryEntryRequest) GetId() int64 {
+	if x != nil {
+		return x.Id
+	}
+	return 0
+}
+
+type GetDocumentHistoryEntryResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	History       *DocumentHistoryEntry  `protobuf:"bytes,1,opt,name=history,proto3" json:"history,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetDocumentHistoryEntryResponse) Reset() {
+	*x = GetDocumentHistoryEntryResponse{}
+	mi := &file_secretary_v1_documents_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetDocumentHistoryEntryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetDocumentHistoryEntryResponse) ProtoMessage() {}
+
+func (x *GetDocumentHistoryEntryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_secretary_v1_documents_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetDocumentHistoryEntryResponse.ProtoReflect.Descriptor instead.
+func (*GetDocumentHistoryEntryResponse) Descriptor() ([]byte, []int) {
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *GetDocumentHistoryEntryResponse) GetHistory() *DocumentHistoryEntry {
+	if x != nil {
+		return x.History
+	}
+	return nil
+}
+
 type CreateDirectoryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	WorkspaceId   int64                  `protobuf:"varint,1,opt,name=workspace_id,json=workspaceId,proto3" json:"workspace_id,omitempty"`
@@ -716,7 +976,7 @@ type CreateDirectoryRequest struct {
 
 func (x *CreateDirectoryRequest) Reset() {
 	*x = CreateDirectoryRequest{}
-	mi := &file_secretary_v1_documents_proto_msgTypes[11]
+	mi := &file_secretary_v1_documents_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -728,7 +988,7 @@ func (x *CreateDirectoryRequest) String() string {
 func (*CreateDirectoryRequest) ProtoMessage() {}
 
 func (x *CreateDirectoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_secretary_v1_documents_proto_msgTypes[11]
+	mi := &file_secretary_v1_documents_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -741,7 +1001,7 @@ func (x *CreateDirectoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateDirectoryRequest.ProtoReflect.Descriptor instead.
 func (*CreateDirectoryRequest) Descriptor() ([]byte, []int) {
-	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{11}
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CreateDirectoryRequest) GetWorkspaceId() int64 {
@@ -774,7 +1034,7 @@ type CreateDirectoryResponse struct {
 
 func (x *CreateDirectoryResponse) Reset() {
 	*x = CreateDirectoryResponse{}
-	mi := &file_secretary_v1_documents_proto_msgTypes[12]
+	mi := &file_secretary_v1_documents_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -786,7 +1046,7 @@ func (x *CreateDirectoryResponse) String() string {
 func (*CreateDirectoryResponse) ProtoMessage() {}
 
 func (x *CreateDirectoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_secretary_v1_documents_proto_msgTypes[12]
+	mi := &file_secretary_v1_documents_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -799,7 +1059,7 @@ func (x *CreateDirectoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateDirectoryResponse.ProtoReflect.Descriptor instead.
 func (*CreateDirectoryResponse) Descriptor() ([]byte, []int) {
-	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{12}
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *CreateDirectoryResponse) GetDirectory() *Directory {
@@ -813,13 +1073,14 @@ type UpdateDirectoryRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            int64                  `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
 	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	ParentId      int64                  `protobuf:"varint,3,opt,name=parent_id,json=parentId,proto3" json:"parent_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *UpdateDirectoryRequest) Reset() {
 	*x = UpdateDirectoryRequest{}
-	mi := &file_secretary_v1_documents_proto_msgTypes[13]
+	mi := &file_secretary_v1_documents_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -831,7 +1092,7 @@ func (x *UpdateDirectoryRequest) String() string {
 func (*UpdateDirectoryRequest) ProtoMessage() {}
 
 func (x *UpdateDirectoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_secretary_v1_documents_proto_msgTypes[13]
+	mi := &file_secretary_v1_documents_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -844,7 +1105,7 @@ func (x *UpdateDirectoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateDirectoryRequest.ProtoReflect.Descriptor instead.
 func (*UpdateDirectoryRequest) Descriptor() ([]byte, []int) {
-	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{13}
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *UpdateDirectoryRequest) GetId() int64 {
@@ -861,6 +1122,13 @@ func (x *UpdateDirectoryRequest) GetName() string {
 	return ""
 }
 
+func (x *UpdateDirectoryRequest) GetParentId() int64 {
+	if x != nil {
+		return x.ParentId
+	}
+	return 0
+}
+
 type UpdateDirectoryResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Directory     *Directory             `protobuf:"bytes,1,opt,name=directory,proto3" json:"directory,omitempty"`
@@ -870,7 +1138,7 @@ type UpdateDirectoryResponse struct {
 
 func (x *UpdateDirectoryResponse) Reset() {
 	*x = UpdateDirectoryResponse{}
-	mi := &file_secretary_v1_documents_proto_msgTypes[14]
+	mi := &file_secretary_v1_documents_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +1150,7 @@ func (x *UpdateDirectoryResponse) String() string {
 func (*UpdateDirectoryResponse) ProtoMessage() {}
 
 func (x *UpdateDirectoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_secretary_v1_documents_proto_msgTypes[14]
+	mi := &file_secretary_v1_documents_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,7 +1163,7 @@ func (x *UpdateDirectoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateDirectoryResponse.ProtoReflect.Descriptor instead.
 func (*UpdateDirectoryResponse) Descriptor() ([]byte, []int) {
-	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{14}
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *UpdateDirectoryResponse) GetDirectory() *Directory {
@@ -914,7 +1182,7 @@ type DeleteDirectoryRequest struct {
 
 func (x *DeleteDirectoryRequest) Reset() {
 	*x = DeleteDirectoryRequest{}
-	mi := &file_secretary_v1_documents_proto_msgTypes[15]
+	mi := &file_secretary_v1_documents_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -926,7 +1194,7 @@ func (x *DeleteDirectoryRequest) String() string {
 func (*DeleteDirectoryRequest) ProtoMessage() {}
 
 func (x *DeleteDirectoryRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_secretary_v1_documents_proto_msgTypes[15]
+	mi := &file_secretary_v1_documents_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -939,7 +1207,7 @@ func (x *DeleteDirectoryRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDirectoryRequest.ProtoReflect.Descriptor instead.
 func (*DeleteDirectoryRequest) Descriptor() ([]byte, []int) {
-	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{15}
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *DeleteDirectoryRequest) GetId() int64 {
@@ -957,7 +1225,7 @@ type DeleteDirectoryResponse struct {
 
 func (x *DeleteDirectoryResponse) Reset() {
 	*x = DeleteDirectoryResponse{}
-	mi := &file_secretary_v1_documents_proto_msgTypes[16]
+	mi := &file_secretary_v1_documents_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -969,7 +1237,7 @@ func (x *DeleteDirectoryResponse) String() string {
 func (*DeleteDirectoryResponse) ProtoMessage() {}
 
 func (x *DeleteDirectoryResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_secretary_v1_documents_proto_msgTypes[16]
+	mi := &file_secretary_v1_documents_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -982,7 +1250,7 @@ func (x *DeleteDirectoryResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteDirectoryResponse.ProtoReflect.Descriptor instead.
 func (*DeleteDirectoryResponse) Descriptor() ([]byte, []int) {
-	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{16}
+	return file_secretary_v1_documents_proto_rawDescGZIP(), []int{21}
 }
 
 var File_secretary_v1_documents_proto protoreflect.FileDescriptor
@@ -1049,26 +1317,47 @@ const file_secretary_v1_documents_proto_rawDesc = "" +
 	"\bdocument\x18\x01 \x01(\v2\x16.secretary.v1.DocumentR\bdocument\"'\n" +
 	"\x15DeleteDocumentRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\"\x18\n" +
-	"\x16DeleteDocumentResponse\"l\n" +
+	"\x16DeleteDocumentResponse\"\xd7\x01\n" +
+	"\x14DocumentHistoryEntry\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x1f\n" +
+	"\vdocument_id\x18\x02 \x01(\x03R\n" +
+	"documentId\x12%\n" +
+	"\x0ecapture_reason\x18\x03 \x01(\tR\rcaptureReason\x12!\n" +
+	"\fcontent_hash\x18\x04 \x01(\tR\vcontentHash\x12#\n" +
+	"\rsnapshot_json\x18\x05 \x01(\tR\fsnapshotJson\x12\x1f\n" +
+	"\vcaptured_at\x18\x06 \x01(\tR\n" +
+	"capturedAt\"=\n" +
+	"\x1aListDocumentHistoryRequest\x12\x1f\n" +
+	"\vdocument_id\x18\x01 \x01(\x03R\n" +
+	"documentId\"[\n" +
+	"\x1bListDocumentHistoryResponse\x12<\n" +
+	"\ahistory\x18\x01 \x03(\v2\".secretary.v1.DocumentHistoryEntryR\ahistory\"0\n" +
+	"\x1eGetDocumentHistoryEntryRequest\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\x03R\x02id\"_\n" +
+	"\x1fGetDocumentHistoryEntryResponse\x12<\n" +
+	"\ahistory\x18\x01 \x01(\v2\".secretary.v1.DocumentHistoryEntryR\ahistory\"l\n" +
 	"\x16CreateDirectoryRequest\x12!\n" +
 	"\fworkspace_id\x18\x01 \x01(\x03R\vworkspaceId\x12\x1b\n" +
 	"\tparent_id\x18\x02 \x01(\x03R\bparentId\x12\x12\n" +
 	"\x04name\x18\x03 \x01(\tR\x04name\"P\n" +
 	"\x17CreateDirectoryResponse\x125\n" +
-	"\tdirectory\x18\x01 \x01(\v2\x17.secretary.v1.DirectoryR\tdirectory\"<\n" +
+	"\tdirectory\x18\x01 \x01(\v2\x17.secretary.v1.DirectoryR\tdirectory\"Y\n" +
 	"\x16UpdateDirectoryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12\x12\n" +
-	"\x04name\x18\x02 \x01(\tR\x04name\"P\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1b\n" +
+	"\tparent_id\x18\x03 \x01(\x03R\bparentId\"P\n" +
 	"\x17UpdateDirectoryResponse\x125\n" +
 	"\tdirectory\x18\x01 \x01(\v2\x17.secretary.v1.DirectoryR\tdirectory\"(\n" +
 	"\x16DeleteDirectoryRequest\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\"\x19\n" +
-	"\x17DeleteDirectoryResponse2\x94\x05\n" +
+	"\x17DeleteDirectoryResponse2\xf8\x06\n" +
 	"\x10DocumentsService\x12X\n" +
 	"\rListDocuments\x12\".secretary.v1.ListDocumentsRequest\x1a#.secretary.v1.ListDocumentsResponse\x12R\n" +
 	"\vGetDocument\x12 .secretary.v1.GetDocumentRequest\x1a!.secretary.v1.GetDocumentResponse\x12U\n" +
 	"\fSaveDocument\x12!.secretary.v1.SaveDocumentRequest\x1a\".secretary.v1.SaveDocumentResponse\x12[\n" +
-	"\x0eDeleteDocument\x12#.secretary.v1.DeleteDocumentRequest\x1a$.secretary.v1.DeleteDocumentResponse\x12^\n" +
+	"\x0eDeleteDocument\x12#.secretary.v1.DeleteDocumentRequest\x1a$.secretary.v1.DeleteDocumentResponse\x12j\n" +
+	"\x13ListDocumentHistory\x12(.secretary.v1.ListDocumentHistoryRequest\x1a).secretary.v1.ListDocumentHistoryResponse\x12v\n" +
+	"\x17GetDocumentHistoryEntry\x12,.secretary.v1.GetDocumentHistoryEntryRequest\x1a-.secretary.v1.GetDocumentHistoryEntryResponse\x12^\n" +
 	"\x0fCreateDirectory\x12$.secretary.v1.CreateDirectoryRequest\x1a%.secretary.v1.CreateDirectoryResponse\x12^\n" +
 	"\x0fUpdateDirectory\x12$.secretary.v1.UpdateDirectoryRequest\x1a%.secretary.v1.UpdateDirectoryResponse\x12^\n" +
 	"\x0fDeleteDirectory\x12$.secretary.v1.DeleteDirectoryRequest\x1a%.secretary.v1.DeleteDirectoryResponseBAZ?github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1b\x06proto3"
@@ -1085,25 +1374,30 @@ func file_secretary_v1_documents_proto_rawDescGZIP() []byte {
 	return file_secretary_v1_documents_proto_rawDescData
 }
 
-var file_secretary_v1_documents_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_secretary_v1_documents_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_secretary_v1_documents_proto_goTypes = []any{
-	(*Block)(nil),                   // 0: secretary.v1.Block
-	(*Document)(nil),                // 1: secretary.v1.Document
-	(*Directory)(nil),               // 2: secretary.v1.Directory
-	(*ListDocumentsRequest)(nil),    // 3: secretary.v1.ListDocumentsRequest
-	(*ListDocumentsResponse)(nil),   // 4: secretary.v1.ListDocumentsResponse
-	(*GetDocumentRequest)(nil),      // 5: secretary.v1.GetDocumentRequest
-	(*GetDocumentResponse)(nil),     // 6: secretary.v1.GetDocumentResponse
-	(*SaveDocumentRequest)(nil),     // 7: secretary.v1.SaveDocumentRequest
-	(*SaveDocumentResponse)(nil),    // 8: secretary.v1.SaveDocumentResponse
-	(*DeleteDocumentRequest)(nil),   // 9: secretary.v1.DeleteDocumentRequest
-	(*DeleteDocumentResponse)(nil),  // 10: secretary.v1.DeleteDocumentResponse
-	(*CreateDirectoryRequest)(nil),  // 11: secretary.v1.CreateDirectoryRequest
-	(*CreateDirectoryResponse)(nil), // 12: secretary.v1.CreateDirectoryResponse
-	(*UpdateDirectoryRequest)(nil),  // 13: secretary.v1.UpdateDirectoryRequest
-	(*UpdateDirectoryResponse)(nil), // 14: secretary.v1.UpdateDirectoryResponse
-	(*DeleteDirectoryRequest)(nil),  // 15: secretary.v1.DeleteDirectoryRequest
-	(*DeleteDirectoryResponse)(nil), // 16: secretary.v1.DeleteDirectoryResponse
+	(*Block)(nil),                           // 0: secretary.v1.Block
+	(*Document)(nil),                        // 1: secretary.v1.Document
+	(*Directory)(nil),                       // 2: secretary.v1.Directory
+	(*ListDocumentsRequest)(nil),            // 3: secretary.v1.ListDocumentsRequest
+	(*ListDocumentsResponse)(nil),           // 4: secretary.v1.ListDocumentsResponse
+	(*GetDocumentRequest)(nil),              // 5: secretary.v1.GetDocumentRequest
+	(*GetDocumentResponse)(nil),             // 6: secretary.v1.GetDocumentResponse
+	(*SaveDocumentRequest)(nil),             // 7: secretary.v1.SaveDocumentRequest
+	(*SaveDocumentResponse)(nil),            // 8: secretary.v1.SaveDocumentResponse
+	(*DeleteDocumentRequest)(nil),           // 9: secretary.v1.DeleteDocumentRequest
+	(*DeleteDocumentResponse)(nil),          // 10: secretary.v1.DeleteDocumentResponse
+	(*DocumentHistoryEntry)(nil),            // 11: secretary.v1.DocumentHistoryEntry
+	(*ListDocumentHistoryRequest)(nil),      // 12: secretary.v1.ListDocumentHistoryRequest
+	(*ListDocumentHistoryResponse)(nil),     // 13: secretary.v1.ListDocumentHistoryResponse
+	(*GetDocumentHistoryEntryRequest)(nil),  // 14: secretary.v1.GetDocumentHistoryEntryRequest
+	(*GetDocumentHistoryEntryResponse)(nil), // 15: secretary.v1.GetDocumentHistoryEntryResponse
+	(*CreateDirectoryRequest)(nil),          // 16: secretary.v1.CreateDirectoryRequest
+	(*CreateDirectoryResponse)(nil),         // 17: secretary.v1.CreateDirectoryResponse
+	(*UpdateDirectoryRequest)(nil),          // 18: secretary.v1.UpdateDirectoryRequest
+	(*UpdateDirectoryResponse)(nil),         // 19: secretary.v1.UpdateDirectoryResponse
+	(*DeleteDirectoryRequest)(nil),          // 20: secretary.v1.DeleteDirectoryRequest
+	(*DeleteDirectoryResponse)(nil),         // 21: secretary.v1.DeleteDirectoryResponse
 }
 var file_secretary_v1_documents_proto_depIdxs = []int32{
 	0,  // 0: secretary.v1.Document.blocks:type_name -> secretary.v1.Block
@@ -1112,27 +1406,33 @@ var file_secretary_v1_documents_proto_depIdxs = []int32{
 	1,  // 3: secretary.v1.GetDocumentResponse.document:type_name -> secretary.v1.Document
 	1,  // 4: secretary.v1.SaveDocumentRequest.document:type_name -> secretary.v1.Document
 	1,  // 5: secretary.v1.SaveDocumentResponse.document:type_name -> secretary.v1.Document
-	2,  // 6: secretary.v1.CreateDirectoryResponse.directory:type_name -> secretary.v1.Directory
-	2,  // 7: secretary.v1.UpdateDirectoryResponse.directory:type_name -> secretary.v1.Directory
-	3,  // 8: secretary.v1.DocumentsService.ListDocuments:input_type -> secretary.v1.ListDocumentsRequest
-	5,  // 9: secretary.v1.DocumentsService.GetDocument:input_type -> secretary.v1.GetDocumentRequest
-	7,  // 10: secretary.v1.DocumentsService.SaveDocument:input_type -> secretary.v1.SaveDocumentRequest
-	9,  // 11: secretary.v1.DocumentsService.DeleteDocument:input_type -> secretary.v1.DeleteDocumentRequest
-	11, // 12: secretary.v1.DocumentsService.CreateDirectory:input_type -> secretary.v1.CreateDirectoryRequest
-	13, // 13: secretary.v1.DocumentsService.UpdateDirectory:input_type -> secretary.v1.UpdateDirectoryRequest
-	15, // 14: secretary.v1.DocumentsService.DeleteDirectory:input_type -> secretary.v1.DeleteDirectoryRequest
-	4,  // 15: secretary.v1.DocumentsService.ListDocuments:output_type -> secretary.v1.ListDocumentsResponse
-	6,  // 16: secretary.v1.DocumentsService.GetDocument:output_type -> secretary.v1.GetDocumentResponse
-	8,  // 17: secretary.v1.DocumentsService.SaveDocument:output_type -> secretary.v1.SaveDocumentResponse
-	10, // 18: secretary.v1.DocumentsService.DeleteDocument:output_type -> secretary.v1.DeleteDocumentResponse
-	12, // 19: secretary.v1.DocumentsService.CreateDirectory:output_type -> secretary.v1.CreateDirectoryResponse
-	14, // 20: secretary.v1.DocumentsService.UpdateDirectory:output_type -> secretary.v1.UpdateDirectoryResponse
-	16, // 21: secretary.v1.DocumentsService.DeleteDirectory:output_type -> secretary.v1.DeleteDirectoryResponse
-	15, // [15:22] is the sub-list for method output_type
-	8,  // [8:15] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	11, // 6: secretary.v1.ListDocumentHistoryResponse.history:type_name -> secretary.v1.DocumentHistoryEntry
+	11, // 7: secretary.v1.GetDocumentHistoryEntryResponse.history:type_name -> secretary.v1.DocumentHistoryEntry
+	2,  // 8: secretary.v1.CreateDirectoryResponse.directory:type_name -> secretary.v1.Directory
+	2,  // 9: secretary.v1.UpdateDirectoryResponse.directory:type_name -> secretary.v1.Directory
+	3,  // 10: secretary.v1.DocumentsService.ListDocuments:input_type -> secretary.v1.ListDocumentsRequest
+	5,  // 11: secretary.v1.DocumentsService.GetDocument:input_type -> secretary.v1.GetDocumentRequest
+	7,  // 12: secretary.v1.DocumentsService.SaveDocument:input_type -> secretary.v1.SaveDocumentRequest
+	9,  // 13: secretary.v1.DocumentsService.DeleteDocument:input_type -> secretary.v1.DeleteDocumentRequest
+	12, // 14: secretary.v1.DocumentsService.ListDocumentHistory:input_type -> secretary.v1.ListDocumentHistoryRequest
+	14, // 15: secretary.v1.DocumentsService.GetDocumentHistoryEntry:input_type -> secretary.v1.GetDocumentHistoryEntryRequest
+	16, // 16: secretary.v1.DocumentsService.CreateDirectory:input_type -> secretary.v1.CreateDirectoryRequest
+	18, // 17: secretary.v1.DocumentsService.UpdateDirectory:input_type -> secretary.v1.UpdateDirectoryRequest
+	20, // 18: secretary.v1.DocumentsService.DeleteDirectory:input_type -> secretary.v1.DeleteDirectoryRequest
+	4,  // 19: secretary.v1.DocumentsService.ListDocuments:output_type -> secretary.v1.ListDocumentsResponse
+	6,  // 20: secretary.v1.DocumentsService.GetDocument:output_type -> secretary.v1.GetDocumentResponse
+	8,  // 21: secretary.v1.DocumentsService.SaveDocument:output_type -> secretary.v1.SaveDocumentResponse
+	10, // 22: secretary.v1.DocumentsService.DeleteDocument:output_type -> secretary.v1.DeleteDocumentResponse
+	13, // 23: secretary.v1.DocumentsService.ListDocumentHistory:output_type -> secretary.v1.ListDocumentHistoryResponse
+	15, // 24: secretary.v1.DocumentsService.GetDocumentHistoryEntry:output_type -> secretary.v1.GetDocumentHistoryEntryResponse
+	17, // 25: secretary.v1.DocumentsService.CreateDirectory:output_type -> secretary.v1.CreateDirectoryResponse
+	19, // 26: secretary.v1.DocumentsService.UpdateDirectory:output_type -> secretary.v1.UpdateDirectoryResponse
+	21, // 27: secretary.v1.DocumentsService.DeleteDirectory:output_type -> secretary.v1.DeleteDirectoryResponse
+	19, // [19:28] is the sub-list for method output_type
+	10, // [10:19] is the sub-list for method input_type
+	10, // [10:10] is the sub-list for extension type_name
+	10, // [10:10] is the sub-list for extension extendee
+	0,  // [0:10] is the sub-list for field type_name
 }
 
 func init() { file_secretary_v1_documents_proto_init() }
@@ -1146,7 +1446,7 @@ func file_secretary_v1_documents_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_secretary_v1_documents_proto_rawDesc), len(file_secretary_v1_documents_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   17,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

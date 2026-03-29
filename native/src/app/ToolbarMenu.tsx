@@ -1,14 +1,16 @@
 interface ToolbarMenuProps {
   isOpen: boolean;
   canDeleteNote: boolean;
+  canOpenHistory: boolean;
   menuRef: React.RefObject<HTMLDivElement | null>;
   onToggle: () => void;
   onDeleteNote: () => void;
+  onOpenHistory: () => void;
   onOpenAI: () => void;
   onOpenSettings: () => void;
 }
 
-export function ToolbarMenu({ isOpen, canDeleteNote, menuRef, onToggle, onDeleteNote, onOpenAI, onOpenSettings }: ToolbarMenuProps) {
+export function ToolbarMenu({ isOpen, canDeleteNote, canOpenHistory, menuRef, onToggle, onDeleteNote, onOpenHistory, onOpenAI, onOpenSettings }: ToolbarMenuProps) {
   return (
     <div className="toolbar-menu-shell" ref={menuRef}>
       <button
@@ -37,6 +39,15 @@ export function ToolbarMenu({ isOpen, canDeleteNote, menuRef, onToggle, onDelete
           >
             Delete Note
           </button>
+          <button
+            type="button"
+            className="toolbar-menu-item"
+            role="menuitem"
+            disabled={!canOpenHistory}
+            onClick={onOpenHistory}
+          >
+            View history
+          </button>
           <button type="button" className="toolbar-menu-item" role="menuitem" disabled>
             Export to Markdown
           </button>
@@ -47,7 +58,10 @@ export function ToolbarMenu({ isOpen, canDeleteNote, menuRef, onToggle, onDelete
             Reindex for AI
           </button>
           <button type="button" className="toolbar-menu-item" role="menuitem" onClick={onOpenAI}>
-            AI chat
+            <span>AI chat</span>
+            <span className="toolbar-menu-shortcut" title="Cmd+Shift+A">
+              Cmd+Shift+A
+            </span>
           </button>
           <button type="button" className="toolbar-menu-item toolbar-menu-item-settings" role="menuitem" onClick={onOpenSettings}>
             Settings

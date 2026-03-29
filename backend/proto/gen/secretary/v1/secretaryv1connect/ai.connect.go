@@ -40,9 +40,6 @@ const (
 	// AIServiceCreateAIThreadProcedure is the fully-qualified name of the AIService's CreateAIThread
 	// RPC.
 	AIServiceCreateAIThreadProcedure = "/secretary.v1.AIService/CreateAIThread"
-	// AIServiceUpdateAIThreadProcedure is the fully-qualified name of the AIService's UpdateAIThread
-	// RPC.
-	AIServiceUpdateAIThreadProcedure = "/secretary.v1.AIService/UpdateAIThread"
 	// AIServiceDeleteAIThreadProcedure is the fully-qualified name of the AIService's DeleteAIThread
 	// RPC.
 	AIServiceDeleteAIThreadProcedure = "/secretary.v1.AIService/DeleteAIThread"
@@ -69,7 +66,6 @@ type AIServiceClient interface {
 	ListAIThreads(context.Context, *connect.Request[v1.ListAIThreadsRequest]) (*connect.Response[v1.ListAIThreadsResponse], error)
 	GetAIThread(context.Context, *connect.Request[v1.GetAIThreadRequest]) (*connect.Response[v1.GetAIThreadResponse], error)
 	CreateAIThread(context.Context, *connect.Request[v1.CreateAIThreadRequest]) (*connect.Response[v1.CreateAIThreadResponse], error)
-	UpdateAIThread(context.Context, *connect.Request[v1.UpdateAIThreadRequest]) (*connect.Response[v1.UpdateAIThreadResponse], error)
 	DeleteAIThread(context.Context, *connect.Request[v1.DeleteAIThreadRequest]) (*connect.Response[v1.DeleteAIThreadResponse], error)
 	CreateAIMessage(context.Context, *connect.Request[v1.CreateAIMessageRequest]) (*connect.Response[v1.CreateAIMessageResponse], error)
 	CreateAIRun(context.Context, *connect.Request[v1.CreateAIRunRequest]) (*connect.Response[v1.CreateAIRunResponse], error)
@@ -106,12 +102,6 @@ func NewAIServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...c
 			httpClient,
 			baseURL+AIServiceCreateAIThreadProcedure,
 			connect.WithSchema(aIServiceMethods.ByName("CreateAIThread")),
-			connect.WithClientOptions(opts...),
-		),
-		updateAIThread: connect.NewClient[v1.UpdateAIThreadRequest, v1.UpdateAIThreadResponse](
-			httpClient,
-			baseURL+AIServiceUpdateAIThreadProcedure,
-			connect.WithSchema(aIServiceMethods.ByName("UpdateAIThread")),
 			connect.WithClientOptions(opts...),
 		),
 		deleteAIThread: connect.NewClient[v1.DeleteAIThreadRequest, v1.DeleteAIThreadResponse](
@@ -164,7 +154,6 @@ type aIServiceClient struct {
 	listAIThreads     *connect.Client[v1.ListAIThreadsRequest, v1.ListAIThreadsResponse]
 	getAIThread       *connect.Client[v1.GetAIThreadRequest, v1.GetAIThreadResponse]
 	createAIThread    *connect.Client[v1.CreateAIThreadRequest, v1.CreateAIThreadResponse]
-	updateAIThread    *connect.Client[v1.UpdateAIThreadRequest, v1.UpdateAIThreadResponse]
 	deleteAIThread    *connect.Client[v1.DeleteAIThreadRequest, v1.DeleteAIThreadResponse]
 	createAIMessage   *connect.Client[v1.CreateAIMessageRequest, v1.CreateAIMessageResponse]
 	createAIRun       *connect.Client[v1.CreateAIRunRequest, v1.CreateAIRunResponse]
@@ -187,11 +176,6 @@ func (c *aIServiceClient) GetAIThread(ctx context.Context, req *connect.Request[
 // CreateAIThread calls secretary.v1.AIService.CreateAIThread.
 func (c *aIServiceClient) CreateAIThread(ctx context.Context, req *connect.Request[v1.CreateAIThreadRequest]) (*connect.Response[v1.CreateAIThreadResponse], error) {
 	return c.createAIThread.CallUnary(ctx, req)
-}
-
-// UpdateAIThread calls secretary.v1.AIService.UpdateAIThread.
-func (c *aIServiceClient) UpdateAIThread(ctx context.Context, req *connect.Request[v1.UpdateAIThreadRequest]) (*connect.Response[v1.UpdateAIThreadResponse], error) {
-	return c.updateAIThread.CallUnary(ctx, req)
 }
 
 // DeleteAIThread calls secretary.v1.AIService.DeleteAIThread.
@@ -234,7 +218,6 @@ type AIServiceHandler interface {
 	ListAIThreads(context.Context, *connect.Request[v1.ListAIThreadsRequest]) (*connect.Response[v1.ListAIThreadsResponse], error)
 	GetAIThread(context.Context, *connect.Request[v1.GetAIThreadRequest]) (*connect.Response[v1.GetAIThreadResponse], error)
 	CreateAIThread(context.Context, *connect.Request[v1.CreateAIThreadRequest]) (*connect.Response[v1.CreateAIThreadResponse], error)
-	UpdateAIThread(context.Context, *connect.Request[v1.UpdateAIThreadRequest]) (*connect.Response[v1.UpdateAIThreadResponse], error)
 	DeleteAIThread(context.Context, *connect.Request[v1.DeleteAIThreadRequest]) (*connect.Response[v1.DeleteAIThreadResponse], error)
 	CreateAIMessage(context.Context, *connect.Request[v1.CreateAIMessageRequest]) (*connect.Response[v1.CreateAIMessageResponse], error)
 	CreateAIRun(context.Context, *connect.Request[v1.CreateAIRunRequest]) (*connect.Response[v1.CreateAIRunResponse], error)
@@ -267,12 +250,6 @@ func NewAIServiceHandler(svc AIServiceHandler, opts ...connect.HandlerOption) (s
 		AIServiceCreateAIThreadProcedure,
 		svc.CreateAIThread,
 		connect.WithSchema(aIServiceMethods.ByName("CreateAIThread")),
-		connect.WithHandlerOptions(opts...),
-	)
-	aIServiceUpdateAIThreadHandler := connect.NewUnaryHandler(
-		AIServiceUpdateAIThreadProcedure,
-		svc.UpdateAIThread,
-		connect.WithSchema(aIServiceMethods.ByName("UpdateAIThread")),
 		connect.WithHandlerOptions(opts...),
 	)
 	aIServiceDeleteAIThreadHandler := connect.NewUnaryHandler(
@@ -325,8 +302,6 @@ func NewAIServiceHandler(svc AIServiceHandler, opts ...connect.HandlerOption) (s
 			aIServiceGetAIThreadHandler.ServeHTTP(w, r)
 		case AIServiceCreateAIThreadProcedure:
 			aIServiceCreateAIThreadHandler.ServeHTTP(w, r)
-		case AIServiceUpdateAIThreadProcedure:
-			aIServiceUpdateAIThreadHandler.ServeHTTP(w, r)
 		case AIServiceDeleteAIThreadProcedure:
 			aIServiceDeleteAIThreadHandler.ServeHTTP(w, r)
 		case AIServiceCreateAIMessageProcedure:
@@ -360,10 +335,6 @@ func (UnimplementedAIServiceHandler) GetAIThread(context.Context, *connect.Reque
 
 func (UnimplementedAIServiceHandler) CreateAIThread(context.Context, *connect.Request[v1.CreateAIThreadRequest]) (*connect.Response[v1.CreateAIThreadResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.AIService.CreateAIThread is not implemented"))
-}
-
-func (UnimplementedAIServiceHandler) UpdateAIThread(context.Context, *connect.Request[v1.UpdateAIThreadRequest]) (*connect.Response[v1.UpdateAIThreadResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.AIService.UpdateAIThread is not implemented"))
 }
 
 func (UnimplementedAIServiceHandler) DeleteAIThread(context.Context, *connect.Request[v1.DeleteAIThreadRequest]) (*connect.Response[v1.DeleteAIThreadResponse], error) {

@@ -939,6 +939,25 @@ func TestAIThreadPersistenceLifecycle(t *testing.T) {
 		t.Fatal("expected ai threads in list response")
 	}
 
+	updateThreadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceUpdateAIThreadProcedure, token, &secretaryv1.UpdateAIThreadRequest{
+		Id:    threadID,
+		Title: "Renamed planning thread",
+	})
+	if err != nil {
+		t.Fatalf("update ai thread: %v", err)
+	}
+	if updateThreadResp.StatusCode != http.StatusOK {
+		t.Fatalf("update ai thread status: %d", updateThreadResp.StatusCode)
+	}
+	var updateThreadPayload secretaryv1.UpdateAIThreadResponse
+	if err := decodeProtoBody(updateThreadResp.Body, &updateThreadPayload); err != nil {
+		t.Fatalf("decode update ai thread: %v", err)
+	}
+	updateThreadResp.Body.Close()
+	if got := updateThreadPayload.Thread.Title; got != "Renamed planning thread" {
+		t.Fatalf("expected renamed ai thread title, got %q", got)
+	}
+
 	deleteThreadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceDeleteAIThreadProcedure, token, &secretaryv1.DeleteAIThreadRequest{Id: threadID})
 	if err != nil {
 		t.Fatalf("delete ai thread: %v", err)
@@ -955,6 +974,97 @@ func TestAIThreadPersistenceLifecycle(t *testing.T) {
 	}
 	if remainingThreads != 0 {
 		t.Fatalf("expected ai thread to be deleted, found %d rows", remainingThreads)
+	}
+}
+
+func TestRunAIThreadTurn(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	srv := New(pool, []byte("test-secret"), 24*time.Hour)
+	srv.SetAIRunner(fakeAIRunner{result: &aiTurnResult{Content: "Here is a grounded reply.", Provider: "test-provider", Model: "test-model", InputTokens: 11, OutputTokens: 7, ResponseJSON: map[string]any{"ok": true}}})
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	userID, email, password := insertUser(t, ctx, pool)
+	defer cleanupUser(t, ctx, pool, userID)
+	token := login(t, ts.URL, email, password)
+
+	workspaceResp, err := authPost(ts.URL+secretaryv1connect.WorkspacesServiceCreateWorkspaceProcedure, token, &secretaryv1.CreateWorkspaceRequest{Name: "AI runtime workspace"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if workspaceResp.StatusCode != http.StatusOK {
+		t.Fatalf("create workspace status: %d", workspaceResp.StatusCode)
+	}
+	var workspacePayload secretaryv1.CreateWorkspaceResponse
+	if err := decodeProtoBody(workspaceResp.Body, &workspacePayload); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	workspaceResp.Body.Close()
+	workspaceID := workspacePayload.Workspace.Id
+	defer cleanupWorkspace(t, ctx, pool, workspaceID)
+
+	threadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceCreateAIThreadProcedure, token, &secretaryv1.CreateAIThreadRequest{WorkspaceId: workspaceID, Title: "Workspace chat"})
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	if threadResp.StatusCode != http.StatusOK {
+		t.Fatalf("create thread status: %d", threadResp.StatusCode)
+	}
+	var threadPayload secretaryv1.CreateAIThreadResponse
+	if err := decodeProtoBody(threadResp.Body, &threadPayload); err != nil {
+		t.Fatalf("decode thread: %v", err)
+	}
+	threadResp.Body.Close()
+
+	runResp, err := authPost(ts.URL+secretaryv1connect.AIServiceRunAIThreadTurnProcedure, token, &secretaryv1.RunAIThreadTurnRequest{ThreadId: threadPayload.Thread.Id, Content: "How are today's priorities lining up?", Mode: "ask"})
+	if err != nil {
+		t.Fatalf("run ai turn: %v", err)
+	}
+	if runResp.StatusCode != http.StatusOK {
+		t.Fatalf("run ai turn status: %d", runResp.StatusCode)
+	}
+	var runPayload secretaryv1.RunAIThreadTurnResponse
+	if err := decodeProtoBody(runResp.Body, &runPayload); err != nil {
+		t.Fatalf("decode run turn: %v", err)
+	}
+	runResp.Body.Close()
+	if got := runPayload.AssistantMessage.GetContent(); got != "Here is a grounded reply." {
+		t.Fatalf("assistant content = %q", got)
+	}
+	if runPayload.Run.GetStatus() != "completed" {
+		t.Fatalf("run status = %q", runPayload.Run.GetStatus())
+	}
+	if runPayload.Run.GetInputTokens() != 11 || runPayload.Run.GetOutputTokens() != 7 {
+		t.Fatalf("unexpected token counts: %+v", runPayload.Run)
+	}
+
+	getThreadResp, err := authPost(ts.URL+secretaryv1connect.AIServiceGetAIThreadProcedure, token, &secretaryv1.GetAIThreadRequest{Id: threadPayload.Thread.Id})
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if getThreadResp.StatusCode != http.StatusOK {
+		t.Fatalf("get thread status: %d", getThreadResp.StatusCode)
+	}
+	var getThreadPayload secretaryv1.GetAIThreadResponse
+	if err := decodeProtoBody(getThreadResp.Body, &getThreadPayload); err != nil {
+		t.Fatalf("decode get thread: %v", err)
+	}
+	getThreadResp.Body.Close()
+	if len(getThreadPayload.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(getThreadPayload.Messages))
+	}
+	if len(getThreadPayload.Runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(getThreadPayload.Runs))
 	}
 }
 
@@ -1078,4 +1188,16 @@ func decodeProtoBody(body io.ReadCloser, target proto.Message) error {
 		return err
 	}
 	return protojson.Unmarshal(data, target)
+}
+
+type fakeAIRunner struct {
+	result *aiTurnResult
+	err    error
+}
+
+func (f fakeAIRunner) RunThreadTurn(context.Context, aiTurnRequest) (*aiTurnResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.result, nil
 }

@@ -76,10 +76,10 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
     }
   }, [authToken, backendUrl, syncMessageSetter, syncTodoIntoPages, userId]);
 
-  const clearTodos = () => {
+  const clearTodos = useCallback(() => {
     setTodos([]);
     setActiveTodoId(null);
-  };
+  }, []);
 
   return {
     todos,

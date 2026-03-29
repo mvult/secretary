@@ -19,7 +19,8 @@ import { SearchView } from './features/search/SearchView';
 import { TodosView } from './features/todos/TodosView';
 import { AIView } from './features/ai/AIView';
 import { SettingsView } from './features/settings/SettingsView';
-import type { BackendTodo } from './lib/backend';
+import { NoteHistoryDialog } from './features/history/NoteHistoryDialog';
+import { getDocumentHistoryEntry, listDocumentHistory, type BackendDocumentHistoryEntry, type BackendTodo } from './lib/backend';
 
 function App() {
   const [state, dispatch] = useOutlineState();
@@ -28,6 +29,13 @@ function App() {
   const journals = getJournalPages(state);
   const refreshTodosRef = useRef<(() => Promise<void>) | null>(null);
   const [isToolbarMenuOpen, setIsToolbarMenuOpen] = useState(false);
+  const [isNoteHistoryOpen, setIsNoteHistoryOpen] = useState(false);
+  const [noteHistoryEntries, setNoteHistoryEntries] = useState<BackendDocumentHistoryEntry[]>([]);
+  const [activeNoteHistoryId, setActiveNoteHistoryId] = useState<number | null>(null);
+  const [activeNoteHistoryEntry, setActiveNoteHistoryEntry] = useState<BackendDocumentHistoryEntry | null>(null);
+  const [isLoadingNoteHistory, setIsLoadingNoteHistory] = useState(false);
+  const [isLoadingNoteHistoryEntry, setIsLoadingNoteHistoryEntry] = useState(false);
+  const [noteHistoryError, setNoteHistoryError] = useState('');
   const toolbarMenuRef = useRef<HTMLDivElement | null>(null);
   const lastTodoGPressRef = useRef<number | null>(null);
 
@@ -65,7 +73,7 @@ function App() {
     backendUrl: session.backendUrl,
     authToken: session.authToken,
     userId: session.userId,
-    syncMessageSetter: (message) => session.setSyncMessage(message),
+    syncMessageSetter: session.setSyncMessage,
     syncTodoIntoPages,
   });
 
@@ -78,7 +86,7 @@ function App() {
     authToken: session.authToken,
     workspaceId: session.workspaceId,
     page,
-    syncMessageSetter: (message) => session.setSyncMessage(message),
+    syncMessageSetter: session.setSyncMessage,
   });
 
   const directory = useDirectoryBrowser({
@@ -120,7 +128,7 @@ function App() {
     todos.clearTodos();
     ai.clearAI();
     session.handleLogout();
-  }, [ai, session, todos]);
+  }, [ai.clearAI, session.handleLogout, todos.clearTodos]);
 
   useEffect(() => {
     if (state.activeView !== 'todos') {
@@ -141,7 +149,7 @@ function App() {
       todos.clearTodos();
       ai.clearAI();
     }
-  }, [ai, session.authToken, todos]);
+  }, [ai.clearAI, session.authToken, todos.clearTodos]);
 
   useEffect(() => {
     if (!isToolbarMenuOpen) {
@@ -163,6 +171,32 @@ function App() {
     setIsToolbarMenuOpen(false);
   }, [state.activePageId, state.activeView]);
 
+  useEffect(() => {
+    if (!isNoteHistoryOpen) {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setIsNoteHistoryOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [isNoteHistoryOpen]);
+
+  useEffect(() => {
+    if ((state.activeView !== 'note' && state.activeView !== 'journals') || !page?.backendId) {
+      setIsNoteHistoryOpen(false);
+      setNoteHistoryEntries([]);
+      setActiveNoteHistoryId(null);
+      setActiveNoteHistoryEntry(null);
+      setNoteHistoryError('');
+    }
+  }, [page, state.activeView]);
+
   const openSettingsFromMenu = () => {
     setIsToolbarMenuOpen(false);
     session.dispatchAfterFlush({ type: 'openSettings' });
@@ -172,6 +206,52 @@ function App() {
     setIsToolbarMenuOpen(false);
     session.dispatchAfterFlush({ type: 'openAI' });
   };
+
+  const loadNoteHistoryEntry = useCallback(async (historyId: number) => {
+    if (!session.authToken) {
+      return;
+    }
+    setIsLoadingNoteHistoryEntry(true);
+    setNoteHistoryError('');
+    try {
+      const entry = await getDocumentHistoryEntry(session.backendUrl, session.authToken, historyId);
+      setActiveNoteHistoryEntry(entry);
+      setActiveNoteHistoryId(entry.id);
+    } catch (error) {
+      setNoteHistoryError(error instanceof Error ? error.message : 'History entry load failed.');
+    } finally {
+      setIsLoadingNoteHistoryEntry(false);
+    }
+  }, [session.authToken, session.backendUrl]);
+
+  const openHistoryFromMenu = useCallback(async () => {
+    if (!page?.backendId || !session.authToken) {
+      return;
+    }
+    setIsToolbarMenuOpen(false);
+    setIsNoteHistoryOpen(true);
+    setIsLoadingNoteHistory(true);
+    setNoteHistoryError('');
+    try {
+      const entries = await listDocumentHistory(session.backendUrl, session.authToken, page.backendId);
+      setNoteHistoryEntries(entries);
+      const firstEntry = entries[0] ?? null;
+      setActiveNoteHistoryId(firstEntry?.id ?? null);
+      setActiveNoteHistoryEntry(firstEntry);
+      if (firstEntry) {
+        void loadNoteHistoryEntry(firstEntry.id);
+      }
+    } catch (error) {
+      setNoteHistoryEntries([]);
+      setActiveNoteHistoryId(null);
+      setActiveNoteHistoryEntry(null);
+      setNoteHistoryError(error instanceof Error ? error.message : 'History load failed.');
+    } finally {
+      setIsLoadingNoteHistory(false);
+    }
+  }, [loadNoteHistoryEntry, page, session.authToken, session.backendUrl]);
+
+  const canOpenHistory = (state.activeView === 'note' || state.activeView === 'journals') && Boolean(page?.backendId && session.authToken);
 
   useGlobalHotkeys({
     state,
@@ -226,23 +306,25 @@ function App() {
   if (!page) {
     return (
       <main className="app-shell">
-        <section className="page-shell" data-center-column={session.centerColumn}>
+        <section className="page-shell" data-center-column={session.centerColumn} data-active-view={state.activeView}>
           <header className="workspace-toolbar">
             <ToolbarMenu
               isOpen={isToolbarMenuOpen}
               canDeleteNote={commands.canDeleteNote}
+              canOpenHistory={false}
               menuRef={toolbarMenuRef}
               onToggle={() => setIsToolbarMenuOpen((current) => !current)}
               onDeleteNote={() => {
                 setIsToolbarMenuOpen(false);
                 commands.handleDeleteNote();
               }}
+              onOpenHistory={() => undefined}
               onOpenAI={openAIFromMenu}
               onOpenSettings={openSettingsFromMenu}
             />
           </header>
 
-          <div className="workspace-content">
+          <div className="workspace-content" data-active-view={state.activeView}>
             {state.activeView === 'settings' ? (
               <SettingsView
                 backendUrl={session.backendUrl}
@@ -278,7 +360,6 @@ function App() {
                 workspaceId={session.workspaceId}
                 aiThreads={ai.aiThreads}
                 activeAIThread={ai.activeAIThread}
-                activeAIThreadId={ai.activeAIThreadId}
                 aiThreadDetail={ai.aiThreadDetail}
                 aiDraftMessage={ai.aiDraftMessage}
                 isLoadingAIThreads={ai.isLoadingAIThreads}
@@ -287,8 +368,11 @@ function App() {
                 onSelectThread={ai.setActiveAIThreadId}
                 onChangeDraft={ai.setAIDraftMessage}
                 onCreateThread={() => void ai.createAIThreadFromCurrentContext()}
-                onDeleteThread={() => void ai.removeActiveAIThread()}
+                onRenameThread={(threadId, title) => void ai.renameAIThread(threadId, title)}
+                onDeleteThread={(threadId) => void ai.removeAIThread(threadId)}
                 onSendMessage={() => void ai.sendAIMessage()}
+                isUpdatingThreadTitle={ai.isUpdatingAIThreadTitle}
+                pendingAIMessage={ai.pendingAIMessage}
               />
             ) : (
               <section className="search-shell">
@@ -321,23 +405,25 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="page-shell" data-center-column={session.centerColumn}>
+      <section className="page-shell" data-center-column={session.centerColumn} data-active-view={state.activeView}>
         <header className="workspace-toolbar">
           <ToolbarMenu
             isOpen={isToolbarMenuOpen}
             canDeleteNote={commands.canDeleteNote}
+            canOpenHistory={canOpenHistory}
             menuRef={toolbarMenuRef}
             onToggle={() => setIsToolbarMenuOpen((current) => !current)}
             onDeleteNote={() => {
               setIsToolbarMenuOpen(false);
               commands.handleDeleteNote();
             }}
+            onOpenHistory={() => void openHistoryFromMenu()}
             onOpenAI={openAIFromMenu}
             onOpenSettings={openSettingsFromMenu}
           />
         </header>
 
-        <div className="workspace-content">
+        <div className="workspace-content" data-active-view={state.activeView}>
           {state.activeView === 'journals' ? (
             <JournalsView
               journals={journals}
@@ -428,7 +514,6 @@ function App() {
               workspaceId={session.workspaceId}
               aiThreads={ai.aiThreads}
               activeAIThread={ai.activeAIThread}
-              activeAIThreadId={ai.activeAIThreadId}
               aiThreadDetail={ai.aiThreadDetail}
               aiDraftMessage={ai.aiDraftMessage}
               isLoadingAIThreads={ai.isLoadingAIThreads}
@@ -437,8 +522,11 @@ function App() {
               onSelectThread={ai.setActiveAIThreadId}
               onChangeDraft={ai.setAIDraftMessage}
               onCreateThread={() => void ai.createAIThreadFromCurrentContext()}
-              onDeleteThread={() => void ai.removeActiveAIThread()}
+              onRenameThread={(threadId, title) => void ai.renameAIThread(threadId, title)}
+              onDeleteThread={(threadId) => void ai.removeAIThread(threadId)}
               onSendMessage={() => void ai.sendAIMessage()}
+              isUpdatingThreadTitle={ai.isUpdatingAIThreadTitle}
+              pendingAIMessage={ai.pendingAIMessage}
             />
           ) : null}
 
@@ -487,6 +575,21 @@ function App() {
             title={commands.pendingDeleteNote?.title ?? null}
             onCancel={() => commands.setPendingDeleteNoteId(null)}
             onConfirm={commands.confirmDeleteNote}
+          />
+
+          <NoteHistoryDialog
+            isOpen={isNoteHistoryOpen}
+            isLoading={isLoadingNoteHistory}
+            isLoadingEntry={isLoadingNoteHistoryEntry}
+            noteTitle={page.title}
+            entries={noteHistoryEntries}
+            activeEntryId={activeNoteHistoryId}
+            activeEntry={activeNoteHistoryEntry}
+            errorMessage={noteHistoryError}
+            onClose={() => setIsNoteHistoryOpen(false)}
+            onSelectEntry={(id) => {
+              void loadNoteHistoryEntry(id);
+            }}
           />
         </div>
       </section>

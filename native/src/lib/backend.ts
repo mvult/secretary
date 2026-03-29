@@ -131,6 +131,12 @@ export interface BackendAIThreadDetail {
   sourceRefs: BackendAISourceRef[];
 }
 
+export interface BackendAIRunTurnResult {
+  userMessage: BackendAIMessage | null;
+  assistantMessage: BackendAIMessage | null;
+  run: BackendAIRun | null;
+}
+
 export interface BackendBlock {
   id: number;
   clientKey: string;
@@ -608,6 +614,19 @@ export async function createAIThread(baseUrl: string, token: string, workspaceId
   return normalizeAIThread(payload.thread);
 }
 
+export async function updateAIThread(baseUrl: string, token: string, id: number, title: string) {
+  const payload = await postJson<{ thread?: BackendAIThread }>(
+    baseUrl,
+    '/secretary.v1.AIService/UpdateAIThread',
+    { id, title },
+    token,
+  );
+  if (!payload.thread) {
+    throw new Error('Updated AI thread was not returned by the server.');
+  }
+  return normalizeAIThread(payload.thread);
+}
+
 export async function deleteAIThread(baseUrl: string, token: string, id: number) {
   await postJson(
     baseUrl,
@@ -628,4 +647,18 @@ export async function createAIMessage(baseUrl: string, token: string, threadId: 
     throw new Error('AI message was not returned by the server.');
   }
   return normalizeAIMessage(payload.message);
+}
+
+export async function runAIThreadTurn(baseUrl: string, token: string, threadId: number, content: string, mode: string) {
+  const payload = await postJson<{ userMessage?: BackendAIMessage; assistantMessage?: BackendAIMessage; run?: BackendAIRun }>(
+    baseUrl,
+    '/secretary.v1.AIService/RunAIThreadTurn',
+    { threadId, content, mode },
+    token,
+  );
+  return {
+    userMessage: payload.userMessage ? normalizeAIMessage(payload.userMessage) : null,
+    assistantMessage: payload.assistantMessage ? normalizeAIMessage(payload.assistantMessage) : null,
+    run: payload.run ? normalizeAIRun(payload.run) : null,
+  } satisfies BackendAIRunTurnResult;
 }

@@ -953,8 +953,8 @@ func maybeCreateDocumentHistorySnapshot(ctx context.Context, qtx *db.Queries, do
 		return nil
 	}
 
-	now := time.Now().UTC()
-	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	dayEnd := dayStart.Add(24 * time.Hour)
 	_, todayErr := qtx.GetLatestDocumentHistoryEntryForDay(ctx, db.GetLatestDocumentHistoryEntryForDayParams{
 		DocumentID:   doc.ID,

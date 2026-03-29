@@ -36,6 +36,7 @@ type Server struct {
 	queries   *db.Queries
 	jwtSecret []byte
 	tokenTTL  time.Duration
+	aiRunner  aiRunner
 }
 
 func New(pool *pgxpool.Pool, jwtSecret []byte, tokenTTL time.Duration) *Server {

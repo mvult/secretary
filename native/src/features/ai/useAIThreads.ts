@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  createAIMessage,
   createAIThread,
   deleteAIThread,
   getAIThread,
   listAIThreads,
+  runAIThreadTurn,
+  updateAIThread,
   type BackendAIThread,
   type BackendAIThreadDetail,
 } from '../../lib/backend';
@@ -19,6 +20,10 @@ interface UseAIThreadsOptions {
   syncMessageSetter: (message: string) => void;
 }
 
+interface LoadAIThreadDetailOptions {
+  silent?: boolean;
+}
+
 export function useAIThreads({ backendUrl, authToken, workspaceId, page, syncMessageSetter }: UseAIThreadsOptions) {
   const [aiThreads, setAIThreads] = useState<BackendAIThread[]>([]);
   const [activeAIThreadId, setActiveAIThreadId] = useState<number | null>(null);
@@ -27,6 +32,8 @@ export function useAIThreads({ backendUrl, authToken, workspaceId, page, syncMes
   const [isLoadingAIThreads, setIsLoadingAIThreads] = useState(false);
   const [isLoadingAIThread, setIsLoadingAIThread] = useState(false);
   const [isSendingAIMessage, setIsSendingAIMessage] = useState(false);
+  const [isUpdatingAIThreadTitle, setIsUpdatingAIThreadTitle] = useState(false);
+  const [pendingAIMessage, setPendingAIMessage] = useState('');
 
   const activeAIThread = useMemo(
     () => (activeAIThreadId ? aiThreads.find((thread) => thread.id === activeAIThreadId) ?? null : null),
@@ -55,20 +62,34 @@ export function useAIThreads({ backendUrl, authToken, workspaceId, page, syncMes
     }
   }, [authToken, backendUrl, syncMessageSetter, workspaceId]);
 
-  const loadAIThreadDetail = useCallback(async (threadId: number, tokenOverride?: string) => {
+  const loadAIThreadDetail = useCallback(async (threadId: number, tokenOverride?: string, options: LoadAIThreadDetailOptions = {}) => {
     const nextToken = tokenOverride ?? authToken;
     if (!backendUrl.trim() || !nextToken || !threadId) {
       setAIThreadDetail(null);
       return;
     }
 
-    setIsLoadingAIThread(true);
+    if (!options.silent) {
+      setIsLoadingAIThread(true);
+    }
     try {
-      setAIThreadDetail(await getAIThread(backendUrl, nextToken, threadId));
+      const detail = await getAIThread(backendUrl, nextToken, threadId);
+      setAIThreadDetail((current) => {
+        if (!current || current.thread?.id !== threadId) {
+          return detail;
+        }
+        return {
+          ...detail,
+          messages: current.messages.length > detail.messages.length ? current.messages : detail.messages,
+          runs: current.runs.length > detail.runs.length ? current.runs : detail.runs,
+        };
+      });
     } catch (error) {
       syncMessageSetter(error instanceof Error ? error.message : 'AI thread load failed.');
     } finally {
-      setIsLoadingAIThread(false);
+      if (!options.silent) {
+        setIsLoadingAIThread(false);
+      }
     }
   }, [authToken, backendUrl, syncMessageSetter]);
 
@@ -103,24 +124,32 @@ export function useAIThreads({ backendUrl, authToken, workspaceId, page, syncMes
     }
 
     setIsSendingAIMessage(true);
+    setAIDraftMessage('');
+    setPendingAIMessage(content);
     try {
       const threadId = await ensureActiveAIThread();
-      const message = await createAIMessage(backendUrl, authToken, threadId, 'user', content);
-      setAIDraftMessage('');
+      const result = await runAIThreadTurn(backendUrl, authToken, threadId, content, 'ask');
       setAIThreadDetail((current) => {
         if (!current || current.thread?.id !== threadId) {
           return current;
         }
         return {
           ...current,
-          messages: [...current.messages, message],
+          messages: [
+            ...current.messages,
+            ...(result.userMessage ? [result.userMessage] : []),
+            ...(result.assistantMessage ? [result.assistantMessage] : []),
+          ],
+          runs: result.run ? [...current.runs, result.run] : current.runs,
         };
       });
       await loadAIThreads();
-      await loadAIThreadDetail(threadId);
+      void loadAIThreadDetail(threadId, undefined, { silent: true });
     } catch (error) {
+      setAIDraftMessage(content);
       syncMessageSetter(error instanceof Error ? error.message : 'AI message send failed.');
     } finally {
+      setPendingAIMessage('');
       setIsSendingAIMessage(false);
     }
   }, [aiDraftMessage, authToken, backendUrl, ensureActiveAIThread, loadAIThreadDetail, loadAIThreads, syncMessageSetter]);
@@ -142,26 +171,61 @@ export function useAIThreads({ backendUrl, authToken, workspaceId, page, syncMes
     }
   }, [authToken, backendUrl, loadAIThreadDetail, page, syncMessageSetter, workspaceId]);
 
-  const removeActiveAIThread = useCallback(async () => {
-    if (!authToken || !activeAIThreadId) {
+  const renameAIThread = useCallback(async (threadId: number, title: string) => {
+    if (!authToken || !threadId) {
+      return;
+    }
+    const nextTitle = title.trim();
+    if (!nextTitle) {
+      syncMessageSetter('Thread title is required.');
+      return;
+    }
+    setIsUpdatingAIThreadTitle(true);
+    try {
+      const updatedThread = await updateAIThread(backendUrl, authToken, threadId, nextTitle);
+      setAIThreads((current) => current.map((thread) => (thread.id === threadId ? updatedThread : thread)));
+      setAIThreadDetail((current) => {
+        if (!current?.thread || current.thread.id !== threadId) {
+          return current;
+        }
+        return {
+          ...current,
+          thread: updatedThread,
+        };
+      });
+    } catch (error) {
+      syncMessageSetter(error instanceof Error ? error.message : 'AI thread rename failed.');
+    } finally {
+      setIsUpdatingAIThreadTitle(false);
+    }
+  }, [authToken, backendUrl, syncMessageSetter]);
+
+  const removeAIThread = useCallback(async (threadId: number) => {
+    if (!authToken || !threadId) {
       return;
     }
     try {
-      await deleteAIThread(backendUrl, authToken, activeAIThreadId);
-      setAIThreads((current) => current.filter((thread) => thread.id !== activeAIThreadId));
-      setAIThreadDetail((current) => (current?.thread?.id === activeAIThreadId ? null : current));
-      setActiveAIThreadId((current) => (current === activeAIThreadId ? null : current));
+      await deleteAIThread(backendUrl, authToken, threadId);
+      const remainingThreads = aiThreads.filter((thread) => thread.id !== threadId);
+      setAIThreads(remainingThreads);
+      setAIThreadDetail((current) => (current?.thread?.id === threadId ? null : current));
+      setActiveAIThreadId((current) => {
+        if (current !== threadId) {
+          return current;
+        }
+        return remainingThreads[0]?.id ?? null;
+      });
     } catch (error) {
       syncMessageSetter(error instanceof Error ? error.message : 'AI thread delete failed.');
     }
-  }, [activeAIThreadId, authToken, backendUrl, syncMessageSetter]);
+  }, [aiThreads, authToken, backendUrl, syncMessageSetter]);
 
-  const clearAI = () => {
+  const clearAI = useCallback(() => {
     setAIThreads([]);
     setActiveAIThreadId(null);
     setAIThreadDetail(null);
     setAIDraftMessage('');
-  };
+  }, []);
 
   return {
     aiThreads,
@@ -173,12 +237,15 @@ export function useAIThreads({ backendUrl, authToken, workspaceId, page, syncMes
     isLoadingAIThreads,
     isLoadingAIThread,
     isSendingAIMessage,
+    isUpdatingAIThreadTitle,
+    pendingAIMessage,
     activeAIThread,
     loadAIThreads,
     loadAIThreadDetail,
     sendAIMessage,
     createAIThreadFromCurrentContext,
-    removeActiveAIThread,
+    renameAIThread,
+    removeAIThread,
     clearAI,
   };
 }

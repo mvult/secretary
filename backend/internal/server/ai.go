@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -28,9 +29,11 @@ func (s *Server) ListAIThreads(ctx context.Context, req *connect.Request[secreta
 	if err := s.ensureWorkspaceAccess(ctx, workspaceID, int32(userID)); err != nil {
 		return nil, err
 	}
+	log.Printf("AI ListAIThreads start: workspace_id=%d user_id=%d", workspaceID, userID)
 
 	rows, err := s.queries.ListAIThreadsByWorkspace(ctx, workspaceID)
 	if err != nil {
+		log.Printf("AI ListAIThreads failed: workspace_id=%d user_id=%d err=%v", workspaceID, userID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list ai threads"))
 	}
 
@@ -38,6 +41,7 @@ func (s *Server) ListAIThreads(ctx context.Context, req *connect.Request[secreta
 	for _, row := range rows {
 		threads = append(threads, aiThreadToProto(row))
 	}
+	log.Printf("AI ListAIThreads done: workspace_id=%d user_id=%d thread_count=%d", workspaceID, userID, len(threads))
 	return connect.NewResponse(&secretaryv1.ListAIThreadsResponse{Threads: threads}), nil
 }
 
@@ -51,21 +55,26 @@ func (s *Server) GetAIThread(ctx context.Context, req *connect.Request[secretary
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("AI GetAIThread start: thread_id=%d user_id=%d", thread.ID, userID)
 
 	messages, err := s.queries.ListAIMessagesByThread(ctx, thread.ID)
 	if err != nil {
+		log.Printf("AI GetAIThread messages failed: thread_id=%d err=%v", thread.ID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list ai messages"))
 	}
 	runs, err := s.queries.ListAIRunsByThread(ctx, thread.ID)
 	if err != nil {
+		log.Printf("AI GetAIThread runs failed: thread_id=%d err=%v", thread.ID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list ai runs"))
 	}
 	artifacts, err := s.queries.ListAIArtifactsByThread(ctx, thread.ID)
 	if err != nil {
+		log.Printf("AI GetAIThread artifacts failed: thread_id=%d err=%v", thread.ID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list ai artifacts"))
 	}
 	sourceRefs, err := s.queries.ListAISourceRefsByThread(ctx, thread.ID)
 	if err != nil {
+		log.Printf("AI GetAIThread source refs failed: thread_id=%d err=%v", thread.ID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list ai source refs"))
 	}
 
@@ -82,6 +91,7 @@ func (s *Server) GetAIThread(ctx context.Context, req *connect.Request[secretary
 	for _, sourceRef := range sourceRefs {
 		resp.SourceRefs = append(resp.SourceRefs, aiSourceRefToProto(sourceRef))
 	}
+	log.Printf("AI GetAIThread done: thread_id=%d messages=%d runs=%d artifacts=%d sources=%d", thread.ID, len(messages), len(runs), len(artifacts), len(sourceRefs))
 
 	return connect.NewResponse(resp), nil
 }
@@ -98,6 +108,7 @@ func (s *Server) CreateAIThread(ctx context.Context, req *connect.Request[secret
 	if err := s.ensureWorkspaceAccess(ctx, workspaceID, int32(userID)); err != nil {
 		return nil, err
 	}
+	log.Printf("AI CreateAIThread start: workspace_id=%d user_id=%d document_id=%d title=%q", workspaceID, userID, req.Msg.DocumentId, strings.TrimSpace(req.Msg.Title))
 
 	title := strings.TrimSpace(req.Msg.Title)
 	var documentID pgtype.Int4
@@ -122,10 +133,38 @@ func (s *Server) CreateAIThread(ctx context.Context, req *connect.Request[secret
 		CreatedByUserID: pgtype.Int4{Int32: int32(userID), Valid: true},
 	})
 	if err != nil {
+		log.Printf("AI CreateAIThread failed: workspace_id=%d user_id=%d err=%v", workspaceID, userID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create ai thread"))
 	}
+	log.Printf("AI CreateAIThread done: thread_id=%d workspace_id=%d document_id=%d title=%q", thread.ID, thread.WorkspaceID, thread.DocumentID.Int32, thread.Title.String)
 
 	return connect.NewResponse(&secretaryv1.CreateAIThreadResponse{Thread: aiThreadToProto(thread)}), nil
+}
+
+func (s *Server) UpdateAIThread(ctx context.Context, req *connect.Request[secretaryv1.UpdateAIThreadRequest]) (*connect.Response[secretaryv1.UpdateAIThreadResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	thread, err := s.getAuthorizedAIThread(ctx, req.Msg.Id, userID)
+	if err != nil {
+		return nil, err
+	}
+	title := strings.TrimSpace(req.Msg.Title)
+	log.Printf("AI UpdateAIThread start: thread_id=%d user_id=%d title=%q", thread.ID, userID, title)
+	if title == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("title is required"))
+	}
+	updatedThread, err := s.queries.UpdateAIThread(ctx, db.UpdateAIThreadParams{
+		ID:    thread.ID,
+		Title: optionalText(title),
+	})
+	if err != nil {
+		log.Printf("AI UpdateAIThread failed: thread_id=%d user_id=%d err=%v", thread.ID, userID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update ai thread"))
+	}
+	log.Printf("AI UpdateAIThread done: thread_id=%d title=%q", updatedThread.ID, updatedThread.Title.String)
+	return connect.NewResponse(&secretaryv1.UpdateAIThreadResponse{Thread: aiThreadToProto(updatedThread)}), nil
 }
 
 func (s *Server) DeleteAIThread(ctx context.Context, req *connect.Request[secretaryv1.DeleteAIThreadRequest]) (*connect.Response[secretaryv1.DeleteAIThreadResponse], error) {
@@ -137,9 +176,12 @@ func (s *Server) DeleteAIThread(ctx context.Context, req *connect.Request[secret
 	if err != nil {
 		return nil, err
 	}
+	log.Printf("AI DeleteAIThread start: thread_id=%d user_id=%d", thread.ID, userID)
 	if err := s.queries.DeleteAIThread(ctx, thread.ID); err != nil {
+		log.Printf("AI DeleteAIThread failed: thread_id=%d user_id=%d err=%v", thread.ID, userID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete ai thread"))
 	}
+	log.Printf("AI DeleteAIThread done: thread_id=%d user_id=%d", thread.ID, userID)
 	return connect.NewResponse(&secretaryv1.DeleteAIThreadResponse{}), nil
 }
 
@@ -161,6 +203,7 @@ func (s *Server) CreateAIMessage(ctx context.Context, req *connect.Request[secre
 	if content == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("content is required"))
 	}
+	log.Printf("AI CreateAIMessage start: thread_id=%d user_id=%d role=%s content_preview=%q", thread.ID, userID, role, clampString(content, 120))
 
 	runID := pgtype.Int8{}
 	if req.Msg.RunId != 0 {
@@ -194,13 +237,139 @@ func (s *Server) CreateAIMessage(ctx context.Context, req *connect.Request[secre
 		RunID:           runID,
 	})
 	if err != nil {
+		log.Printf("AI CreateAIMessage failed: thread_id=%d user_id=%d role=%s err=%v", thread.ID, userID, role, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create ai message"))
 	}
 	if err := s.queries.TouchAIThread(ctx, thread.ID); err != nil {
+		log.Printf("AI CreateAIMessage touch failed: thread_id=%d message_id=%d err=%v", thread.ID, message.ID, err)
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update ai thread timestamp"))
 	}
+	log.Printf("AI CreateAIMessage done: thread_id=%d message_id=%d role=%s", thread.ID, message.ID, role)
 
 	return connect.NewResponse(&secretaryv1.CreateAIMessageResponse{Message: aiMessageToProto(message)}), nil
+}
+
+func (s *Server) RunAIThreadTurn(ctx context.Context, req *connect.Request[secretaryv1.RunAIThreadTurnRequest]) (*connect.Response[secretaryv1.RunAIThreadTurnResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if s.aiRunner == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("ai runtime is not configured on the server"))
+	}
+	thread, err := s.getAuthorizedAIThread(ctx, req.Msg.ThreadId, userID)
+	if err != nil {
+		return nil, err
+	}
+	content := strings.TrimSpace(req.Msg.Content)
+	if content == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("content is required"))
+	}
+	mode := normalizeAIRunMode(req.Msg.Mode)
+	if mode == "" {
+		mode = "ask"
+	}
+	if !validAIRunMode(mode) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid ai run mode"))
+	}
+	log.Printf("AI RunAIThreadTurn start: thread_id=%d user_id=%d mode=%s content_preview=%q", thread.ID, userID, mode, clampString(content, 160))
+
+	userMessage, err := s.queries.CreateAIMessage(ctx, db.CreateAIMessageParams{
+		ThreadID:        thread.ID,
+		Role:            "user",
+		Content:         content,
+		CreatedByUserID: pgtype.Int4{Int32: int32(userID), Valid: true},
+	})
+	if err != nil {
+		log.Printf("AI RunAIThreadTurn user message failed: thread_id=%d user_id=%d err=%v", thread.ID, userID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create ai message"))
+	}
+	requestStruct, err := structpb.NewStruct(map[string]any{"thread_id": thread.ID, "content": content, "mode": mode})
+	if err != nil {
+		log.Printf("AI RunAIThreadTurn request encode failed: thread_id=%d message_id=%d err=%v", thread.ID, userMessage.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to encode ai request"))
+	}
+	requestJSON, err := marshalStruct(requestStruct)
+	if err != nil {
+		log.Printf("AI RunAIThreadTurn request persist encode failed: thread_id=%d message_id=%d err=%v", thread.ID, userMessage.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to persist ai request"))
+	}
+	now := time.Now().UTC()
+	run, err := s.queries.CreateAIRun(ctx, db.CreateAIRunParams{
+		TriggerMessageID: pgtype.Int8{Int64: userMessage.ID, Valid: true},
+		Status:           "running",
+		Mode:             mode,
+		RequestJson:      requestJSON,
+		StartedAt:        pgtype.Timestamptz{Time: now, Valid: true},
+	})
+	if err != nil {
+		log.Printf("AI RunAIThreadTurn run create failed: thread_id=%d message_id=%d err=%v", thread.ID, userMessage.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create ai run"))
+	}
+	log.Printf("AI RunAIThreadTurn persisted: thread_id=%d user_message_id=%d run_id=%d", thread.ID, userMessage.ID, run.ID)
+
+	result, runErr := s.aiRunner.RunThreadTurn(ctx, aiTurnRequest{Thread: thread, UserID: int32(userID), Content: content, Mode: mode, RunID: run.ID})
+	completedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+	if runErr != nil {
+		log.Printf("RunAIThreadTurn failed: thread_id=%d run_id=%d mode=%s err=%v", thread.ID, run.ID, mode, runErr)
+		_, updateErr := s.queries.UpdateAIRun(ctx, db.UpdateAIRunParams{
+			ID:           run.ID,
+			Status:       "failed",
+			Mode:         mode,
+			Provider:     optionalText("openai"),
+			Model:        optionalText(""),
+			RequestJson:  requestJSON,
+			ErrorMessage: optionalText(runErr.Error()),
+			StartedAt:    run.StartedAt,
+			CompletedAt:  completedAt,
+		})
+		if updateErr != nil {
+			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ai run failed: %v (also failed to update run: %v)", runErr, updateErr))
+		}
+		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("ai run failed: %w", runErr))
+	}
+	responseJSON, err := marshalArbitraryJSON(result.ResponseJSON)
+	if err != nil {
+		log.Printf("RunAIThreadTurn response encoding failed: thread_id=%d run_id=%d err=%v", thread.ID, run.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to persist ai response"))
+	}
+	assistantContent := strings.TrimSpace(result.Content)
+	if assistantContent == "" {
+		assistantContent = "I couldn't produce a reply."
+	}
+	assistantMessage, err := s.queries.CreateAIMessage(ctx, db.CreateAIMessageParams{
+		ThreadID: thread.ID,
+		Role:     "assistant",
+		Content:  assistantContent,
+		RunID:    pgtype.Int8{Int64: run.ID, Valid: true},
+	})
+	if err != nil {
+		log.Printf("RunAIThreadTurn assistant message create failed: thread_id=%d run_id=%d err=%v", thread.ID, run.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create assistant message"))
+	}
+	updatedRun, err := s.queries.UpdateAIRun(ctx, db.UpdateAIRunParams{
+		ID:           run.ID,
+		Status:       "completed",
+		Mode:         mode,
+		Provider:     optionalText(result.Provider),
+		Model:        optionalText(result.Model),
+		RequestJson:  requestJSON,
+		ResponseJson: responseJSON,
+		InputTokens:  optionalInt4(result.InputTokens),
+		OutputTokens: optionalInt4(result.OutputTokens),
+		StartedAt:    run.StartedAt,
+		CompletedAt:  completedAt,
+	})
+	if err != nil {
+		log.Printf("RunAIThreadTurn run update failed: thread_id=%d run_id=%d err=%v", thread.ID, run.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update ai run"))
+	}
+	if err := s.queries.TouchAIThread(ctx, thread.ID); err != nil {
+		log.Printf("RunAIThreadTurn thread touch failed: thread_id=%d run_id=%d err=%v", thread.ID, run.ID, err)
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update ai thread timestamp"))
+	}
+	log.Printf("AI RunAIThreadTurn done: thread_id=%d run_id=%d assistant_message_id=%d provider=%s model=%s input_tokens=%d output_tokens=%d", thread.ID, updatedRun.ID, assistantMessage.ID, result.Provider, result.Model, result.InputTokens, result.OutputTokens)
+	return connect.NewResponse(&secretaryv1.RunAIThreadTurnResponse{UserMessage: aiMessageToProto(userMessage), AssistantMessage: aiMessageToProto(assistantMessage), Run: aiRunToProto(updatedRun)}), nil
 }
 
 func (s *Server) CreateAIRun(ctx context.Context, req *connect.Request[secretaryv1.CreateAIRunRequest]) (*connect.Response[secretaryv1.CreateAIRunResponse], error) {
@@ -616,6 +785,13 @@ func marshalStruct(value *structpb.Struct) ([]byte, error) {
 	return json.Marshal(value.AsMap())
 }
 
+func marshalArbitraryJSON(value any) ([]byte, error) {
+	if value == nil {
+		return nil, nil
+	}
+	return json.Marshal(value)
+}
+
 func structFromJSON(value []byte) *structpb.Struct {
 	if len(value) == 0 {
 		return nil
@@ -690,7 +866,7 @@ func normalizeAIRunMode(mode string) string {
 
 func validAIRunMode(mode string) bool {
 	switch mode {
-	case "ask", "draft", "edit", "todo_assist":
+	case "ask", "draft", "edit", "todo_assist", "heartbeat":
 		return true
 	default:
 		return false
