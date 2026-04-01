@@ -16,6 +16,7 @@ interface OutlineRowProps {
   onCycleStatus: () => void;
   onIndent: (direction: 'indent' | 'outdent') => void;
   onSplit: (selectionStart: number, selectionEnd: number) => void;
+  onMergeWithPrevious: () => void;
   onStructuredPaste: (text: string) => void;
   onToggleStatus: (nodeId: string) => void;
   onOpenDocumentLink: (targetDocumentId: number) => void;
@@ -51,6 +52,7 @@ export function OutlineRow({
   onCycleStatus,
   onIndent,
   onSplit,
+  onMergeWithPrevious,
   onStructuredPaste,
   onToggleStatus,
   onOpenDocumentLink,
@@ -166,6 +168,17 @@ export function OutlineRow({
                 const selectionEnd = textareaRef.current?.selectionEnd ?? selectionStart;
                 onSplit(selectionStart, selectionEnd);
                 return;
+              }
+
+              if (event.key === 'Backspace' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+                const selectionStart = textareaRef.current?.selectionStart ?? state.draftText.length;
+                const selectionEnd = textareaRef.current?.selectionEnd ?? selectionStart;
+
+                if (selectionStart === 0 && selectionEnd === 0) {
+                  event.preventDefault();
+                  onMergeWithPrevious();
+                  return;
+                }
               }
 
               if (event.key === 'j' && !event.metaKey && !event.ctrlKey && !event.altKey) {

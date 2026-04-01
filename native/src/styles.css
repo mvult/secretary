@@ -1183,6 +1183,7 @@ button {
 .rows {
   display: grid;
   gap: 0;
+  padding-bottom: 32vh;
 }
 
 .row {

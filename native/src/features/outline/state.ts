@@ -4,6 +4,7 @@ import {
   createNotePage,
   createTodayJournalPage,
   cycleSelectedStatuses,
+  deleteWordForward,
   deleteSelection,
   deleteNotePage,
   focusNode,
@@ -15,6 +16,7 @@ import {
   mergeRemotePage,
   moveCaret,
   moveFocus,
+  mergeWithPreviousAtCursorStart,
   moveSelection,
   pasteBelow,
   openSearchView,
@@ -45,6 +47,7 @@ export type OutlineAction =
   | { type: 'moveFocus'; direction: 1 | -1; extendSelection: boolean }
   | { type: 'jumpFocus'; position: 'start' | 'end' }
   | { type: 'insertTextAtCursor'; text: string }
+  | { type: 'deleteWordForward' }
   | { type: 'yankLine' }
   | { type: 'pasteBelow'; text?: string; preferStructured?: boolean }
   | { type: 'pasteStructured'; text: string }
@@ -58,6 +61,7 @@ export type OutlineAction =
   | { type: 'openAbove' }
   | { type: 'openBelow' }
   | { type: 'splitNodeAtCursor'; selectionStart: number; selectionEnd: number }
+  | { type: 'mergeWithPreviousAtCursorStart' }
   | { type: 'deleteSelection' }
   | { type: 'selectJournal' }
   | { type: 'selectJournalPage'; pageId: string }
@@ -118,6 +122,8 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return jumpFocusInPage(currentState, action.position);
     case 'insertTextAtCursor':
       return withHistory(currentState, (active) => insertTextAtCursor(active, action.text));
+    case 'deleteWordForward':
+      return withHistory(currentState, deleteWordForward);
     case 'yankLine':
       return yankLine(currentState);
     case 'pasteBelow':
@@ -146,6 +152,8 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return withHistory(currentState, (active) =>
         splitNodeAtCursor(active, action.selectionStart, action.selectionEnd),
       );
+    case 'mergeWithPreviousAtCursorStart':
+      return withHistory(currentState, mergeWithPreviousAtCursorStart);
     case 'deleteSelection':
       return withHistory(currentState, deleteSelection);
     case 'selectJournal':

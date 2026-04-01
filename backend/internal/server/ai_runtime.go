@@ -7,11 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,7 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
 	db "github.com/mvult/secretary/backend/internal/db/gen"
-	"google.golang.org/protobuf/types/known/structpb"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -33,6 +30,7 @@ const (
 	defaultAIMaxRecordings = 8
 	defaultAISearchDocs    = 8
 	agentDirectoryName     = "AI"
+	agentSkillsDirectory   = "skills"
 	lockedSystemDocument   = "System"
 	workspaceToplineThread = "Workspace"
 	workspaceSystemThread  = "System"
@@ -78,12 +76,16 @@ type secretaryAIRunner struct {
 	maxIterations   int
 	maxContextChars int
 	httpClient      *http.Client
-	skills          []runtimeSkill
 }
 
 type runtimeSkill struct {
-	Name    string
-	Content string
+	DocumentID  int64
+	Title       string
+	Name        string
+	Description string
+	Metadata    map[string]any
+	Content     string
+	Frontmatter string
 }
 
 type aiToolEnv struct {
@@ -237,25 +239,36 @@ type createDocumentRequest struct {
 	Content string `json:"content"`
 }
 
-type rewriteDocumentRequest struct {
-	DocumentID int64  `json:"document_id"`
-	Content    string `json:"content"`
+type insertBlockRequest struct {
+	DocumentID    int64  `json:"document_id"`
+	ParentBlockID int64  `json:"parent_block_id,omitempty"`
+	AfterBlockID  int64  `json:"after_block_id,omitempty"`
+	Text          string `json:"text"`
 }
 
-type appendDocumentRequest struct {
-	DocumentID int64  `json:"document_id"`
-	Content    string `json:"content"`
+type moveBlockRequest struct {
+	BlockID       int64 `json:"block_id"`
+	ParentBlockID int64 `json:"parent_block_id,omitempty"`
+	AfterBlockID  int64 `json:"after_block_id,omitempty"`
 }
 
-type mutateDocumentResponse struct {
+type mutateBlockResponse struct {
 	DocumentID int64  `json:"document_id"`
-	Title      string `json:"title"`
+	BlockID    int64  `json:"block_id"`
 	Applied    bool   `json:"applied"`
 	Message    string `json:"message"`
 }
 
 type listSkillsResponse struct {
-	Skills []string `json:"skills"`
+	Skills []skillSummary `json:"skills"`
+}
+
+type skillSummary struct {
+	DocumentID  int64          `json:"document_id"`
+	Title       string         `json:"title"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type getSkillRequest struct {
@@ -263,8 +276,12 @@ type getSkillRequest struct {
 }
 
 type getSkillResponse struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
+	DocumentID  int64          `json:"document_id"`
+	Title       string         `json:"title"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	Content     string         `json:"content"`
 }
 
 func (s *Server) SetAIRunner(r aiRunner) {
@@ -288,10 +305,6 @@ func (s *Server) ConfigureAI(cfg AIConfig) error {
 	if maxContextChars <= 0 {
 		maxContextChars = defaultAIContextTokens * 4
 	}
-	skills, err := loadRuntimeSkills(cfg.SkillsDir)
-	if err != nil {
-		return err
-	}
 	baseURL := strings.TrimSpace(cfg.BaseURL)
 	if baseURL == "" {
 		baseURL = "https://api.openai.com/v1"
@@ -304,54 +317,20 @@ func (s *Server) ConfigureAI(cfg AIConfig) error {
 		maxIterations:   maxIterations,
 		maxContextChars: maxContextChars,
 		httpClient:      &http.Client{Timeout: 90 * time.Second},
-		skills:          skills,
 	}
 	return nil
 }
 
-func loadRuntimeSkills(explicitDir string) ([]runtimeSkill, error) {
-	candidates := []string{}
-	if strings.TrimSpace(explicitDir) != "" {
-		candidates = append(candidates, explicitDir)
-	}
-	candidates = append(candidates, ".agents/skills", filepath.Join("..", ".agents", "skills"))
-	for _, candidate := range candidates {
-		info, err := os.Stat(candidate)
-		if err != nil || !info.IsDir() {
-			continue
-		}
-		return readSkillsFromDir(candidate)
-	}
-	return nil, nil
-}
-
-func readSkillsFromDir(root string) ([]runtimeSkill, error) {
-	result := make([]runtimeSkill, 0)
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if d.IsDir() || !strings.EqualFold(d.Name(), "SKILL.md") {
-			return nil
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		name := filepath.Base(filepath.Dir(path))
-		result = append(result, runtimeSkill{Name: name, Content: strings.TrimSpace(string(content))})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
-	return result, nil
-}
-
 func (r *secretaryAIRunner) RunThreadTurn(ctx context.Context, req aiTurnRequest) (*aiTurnResult, error) {
 	log.Printf("AI runtime turn start: thread_id=%d run_id=%d workspace_id=%d user_id=%d mode=%s", req.Thread.ID, req.RunID, req.Thread.WorkspaceID, req.UserID, req.Mode)
-	toolEnv := &aiToolEnv{ctx: ctx, server: r.server, workspaceID: req.Thread.WorkspaceID, userID: req.UserID, thread: req.Thread, runID: req.RunID, mode: req.Mode, skills: r.skills}
+	toolEnv := &aiToolEnv{ctx: ctx, server: r.server, workspaceID: req.Thread.WorkspaceID, userID: req.UserID, thread: req.Thread, runID: req.RunID, mode: req.Mode}
+	skills, err := toolEnv.loadWorkspaceSkills()
+	if err != nil {
+		log.Printf("AI runtime load skills failed: thread_id=%d run_id=%d err=%v", req.Thread.ID, req.RunID, err)
+		return nil, fmt.Errorf("load workspace skills: %w", err)
+	}
+	toolEnv.skills = skills
+	log.Printf("AI runtime loaded skills: thread_id=%d run_id=%d skill_count=%d", req.Thread.ID, req.RunID, len(skills))
 	threadMessages, err := r.server.queries.ListAIMessagesByThread(ctx, req.Thread.ID)
 	if err != nil {
 		log.Printf("AI runtime list messages failed: thread_id=%d run_id=%d err=%v", req.Thread.ID, req.RunID, err)
@@ -608,7 +587,7 @@ func (e *aiToolEnv) buildInstruction() (string, error) {
 		"The document titled System is locked. Read it freely, but never edit it.",
 		"Use tools when discussing project state, memories, recordings, or todos instead of guessing.",
 		"When editing documents, preserve the user's structure as much as possible and keep changes intentional.",
-		"If you need repository or workflow guidance from installed skills, call list_skills and get_skill.",
+		"If you need workflow guidance from workspace skills, call list_skills and get_skill.",
 	}
 	if e.thread.DocumentID.Valid {
 		doc, blocks, err := e.server.loadAuthorizedDocument(e.ctx, e.thread.DocumentID.Int32, e.userID)
@@ -636,15 +615,12 @@ func (e *aiToolEnv) buildInstruction() (string, error) {
 	if e.mode == "ask" {
 		parts = append(parts, "Do not modify documents or todos unless the user explicitly asks. Prefer retrieval and explanation.")
 	}
-	if e.mode == "draft" {
-		parts = append(parts, "Do not apply mutations directly. If an edit would help, create a draft artifact via the mutation tools.")
-	}
 	if len(e.skills) > 0 {
 		names := make([]string, 0, len(e.skills))
 		for _, skill := range e.skills {
 			names = append(names, skill.Name)
 		}
-		parts = append(parts, "Available skills: "+strings.Join(names, ", "))
+		parts = append(parts, "Available workspace skills: "+strings.Join(names, ", "))
 	}
 	log.Printf("AI instruction build done: thread_id=%d run_id=%d parts=%d skill_count=%d", e.thread.ID, e.runID, len(parts), len(e.skills))
 	return strings.Join(parts, "\n\n"), nil
@@ -753,53 +729,56 @@ func (e *aiToolEnv) buildTools() (map[string]aiToolDefinition, []aiModelTool, er
 			},
 		},
 		{
-			Name:        "rewrite_document",
-			Description: "Rewrite a document from plaintext outline content.",
+			Name:        "insert_block",
+			Description: "Insert a new block into an existing document without replacing other content.",
 			Parameters: schemaObject(
-				schemaInteger("document_id", "Document ID to rewrite."),
-				schemaString("content", "Replacement plaintext outline content."),
+				schemaInteger("document_id", "Document ID to insert into."),
+				schemaInteger("parent_block_id", "Optional parent block ID for nested insertion. Use 0 for root."),
+				schemaInteger("after_block_id", "Optional sibling block ID to insert after. Use 0 to insert at the start."),
+				schemaString("text", "Block text to insert."),
 			),
 			Execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var req rewriteDocumentRequest
+				var req insertBlockRequest
 				if err := decodeToolArgs(raw, &req); err != nil {
 					return "", err
 				}
-				resp, err := e.rewriteDocument(ctx, req)
+				resp, err := e.insertBlock(ctx, req)
 				return marshalToolResult(resp, err)
 			},
 		},
 		{
-			Name:        "append_document",
-			Description: "Append new root-level lines to a document.",
+			Name:        "move_block",
+			Description: "Move an existing block to a new parent or sibling position without deleting content.",
 			Parameters: schemaObject(
-				schemaInteger("document_id", "Document ID to append to."),
-				schemaString("content", "Plaintext outline content to append."),
+				schemaInteger("block_id", "Block ID to move."),
+				schemaInteger("parent_block_id", "Optional new parent block ID. Use 0 for root."),
+				schemaInteger("after_block_id", "Optional sibling block ID to move after. Use 0 to move to the start."),
 			),
 			Execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
-				var req appendDocumentRequest
+				var req moveBlockRequest
 				if err := decodeToolArgs(raw, &req); err != nil {
 					return "", err
 				}
-				resp, err := e.appendDocument(ctx, req)
+				resp, err := e.moveBlock(ctx, req)
 				return marshalToolResult(resp, err)
 			},
 		},
 		{
 			Name:        "list_skills",
-			Description: "List installed skills that can provide workflow or domain guidance.",
+			Description: "List workspace skills from the AI/skills directory.",
 			Parameters:  schemaObject(),
 			Execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var req struct{}
 				if err := decodeToolArgs(raw, &req); err != nil {
 					return "", err
 				}
-				resp := listSkillsResponse{Skills: e.skillNames()}
+				resp := listSkillsResponse{Skills: e.skillSummaries()}
 				return marshalToolResult(resp, nil)
 			},
 		},
 		{
 			Name:        "get_skill",
-			Description: "Load the full text of one installed skill by name.",
+			Description: "Load the full document for one workspace skill by name.",
 			Parameters:  schemaObject(schemaString("name", "Skill name to load.")),
 			Execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
 				var req getSkillRequest
@@ -871,6 +850,20 @@ func (e *aiToolEnv) skillNames() []string {
 	return result
 }
 
+func (e *aiToolEnv) skillSummaries() []skillSummary {
+	result := make([]skillSummary, 0, len(e.skills))
+	for _, skill := range e.skills {
+		result = append(result, skillSummary{
+			DocumentID:  skill.DocumentID,
+			Title:       skill.Title,
+			Name:        skill.Name,
+			Description: skill.Description,
+			Metadata:    skill.Metadata,
+		})
+	}
+	return result
+}
+
 func (e *aiToolEnv) getSkill(req getSkillRequest) (getSkillResponse, error) {
 	name := strings.TrimSpace(req.Name)
 	if name == "" {
@@ -878,10 +871,168 @@ func (e *aiToolEnv) getSkill(req getSkillRequest) (getSkillResponse, error) {
 	}
 	for _, skill := range e.skills {
 		if skill.Name == name {
-			return getSkillResponse{Name: skill.Name, Content: skill.Content}, nil
+			_ = e.addSourceRef("document", skill.DocumentID, skill.Title, skill.Content)
+			return getSkillResponse{DocumentID: skill.DocumentID, Title: skill.Title, Name: skill.Name, Description: skill.Description, Metadata: skill.Metadata, Content: skill.Content}, nil
 		}
 	}
 	return getSkillResponse{}, errors.New("skill not found")
+}
+
+func (e *aiToolEnv) loadWorkspaceSkills() ([]runtimeSkill, error) {
+	directories, err := e.server.queries.ListDirectoriesByWorkspace(e.ctx, e.workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	documents, err := e.server.queries.ListDocumentsByWorkspace(e.ctx, e.workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	aiDirectory := findDirectoryByName(directories, agentDirectoryName, 0)
+	if aiDirectory == nil {
+		return nil, nil
+	}
+	skillsDirectory := findDirectoryByName(directories, agentSkillsDirectory, aiDirectory.ID)
+	if skillsDirectory == nil {
+		return nil, nil
+	}
+	allowedDirectoryIDs := descendantDirectoryIDs(directories, skillsDirectory.ID)
+	allowedDirectoryIDs[skillsDirectory.ID] = struct{}{}
+	result := make([]runtimeSkill, 0)
+	for _, doc := range documents {
+		if doc.Kind != "note" || !doc.DirectoryID.Valid {
+			continue
+		}
+		if _, ok := allowedDirectoryIDs[doc.DirectoryID.Int32]; !ok {
+			continue
+		}
+		blocks, err := e.server.queries.ListBlocksByDocument(e.ctx, doc.ID)
+		if err != nil {
+			return nil, err
+		}
+		skill, ok, err := runtimeSkillFromDocument(doc, blocks)
+		if err != nil {
+			log.Printf("AI runtime skip invalid skill: workspace_id=%d document_id=%d title=%q err=%v", e.workspaceID, doc.ID, doc.Title, err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		result = append(result, skill)
+	}
+	sort.SliceStable(result, func(i, j int) bool {
+		if result[i].Name == result[j].Name {
+			return result[i].DocumentID < result[j].DocumentID
+		}
+		return result[i].Name < result[j].Name
+	})
+	return result, nil
+}
+
+func findDirectoryByName(directories []db.Directory, name string, parentID int32) *db.Directory {
+	for i := range directories {
+		directory := directories[i]
+		actualParentID := int32(0)
+		if directory.ParentID.Valid {
+			actualParentID = directory.ParentID.Int32
+		}
+		if directory.Name == name && actualParentID == parentID {
+			return &directories[i]
+		}
+	}
+	return nil
+}
+
+func descendantDirectoryIDs(directories []db.Directory, rootID int32) map[int32]struct{} {
+	childrenByParent := make(map[int32][]int32)
+	for _, directory := range directories {
+		if !directory.ParentID.Valid {
+			continue
+		}
+		childrenByParent[directory.ParentID.Int32] = append(childrenByParent[directory.ParentID.Int32], directory.ID)
+	}
+	result := map[int32]struct{}{}
+	stack := []int32{rootID}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, childID := range childrenByParent[current] {
+			if _, seen := result[childID]; seen {
+				continue
+			}
+			result[childID] = struct{}{}
+			stack = append(stack, childID)
+		}
+	}
+	return result
+}
+
+func runtimeSkillFromDocument(doc db.Document, blocks []db.Block) (runtimeSkill, bool, error) {
+	frontmatterText, err := firstSkillFrontmatterBlock(blocks)
+	if err != nil {
+		return runtimeSkill{}, false, err
+	}
+	if strings.TrimSpace(frontmatterText) == "" {
+		return runtimeSkill{}, false, nil
+	}
+	parsed, err := parseSkillFrontmatter(frontmatterText)
+	if err != nil {
+		return runtimeSkill{}, false, err
+	}
+	name := strings.TrimSpace(parsed.Name)
+	if name == "" {
+		return runtimeSkill{}, false, errors.New("frontmatter name is required")
+	}
+	return runtimeSkill{
+		DocumentID:  int64(doc.ID),
+		Title:       doc.Title,
+		Name:        name,
+		Description: strings.TrimSpace(parsed.Description),
+		Metadata:    parsed.Metadata,
+		Content:     renderDocumentOutline(doc, blocks),
+		Frontmatter: strings.TrimSpace(frontmatterText),
+	}, true, nil
+}
+
+type parsedSkillFrontmatter struct {
+	Name        string         `yaml:"name"`
+	Description string         `yaml:"description"`
+	Metadata    map[string]any `yaml:"metadata"`
+}
+
+func firstSkillFrontmatterBlock(blocks []db.Block) (string, error) {
+	rootBlocks := make([]db.Block, 0)
+	for _, block := range blocks {
+		if block.ParentBlockID.Valid {
+			continue
+		}
+		rootBlocks = append(rootBlocks, block)
+	}
+	if len(rootBlocks) == 0 {
+		return "", nil
+	}
+	sort.SliceStable(rootBlocks, func(i, j int) bool { return rootBlocks[i].SortOrder < rootBlocks[j].SortOrder })
+	return rootBlocks[0].Text, nil
+}
+
+func parseSkillFrontmatter(raw string) (parsedSkillFrontmatter, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return parsedSkillFrontmatter{}, nil
+	}
+	if strings.HasPrefix(trimmed, "---") {
+		trimmed = strings.TrimPrefix(trimmed, "---")
+		trimmed = strings.TrimSpace(trimmed)
+		if idx := strings.LastIndex(trimmed, "\n---"); idx >= 0 {
+			trimmed = strings.TrimSpace(trimmed[:idx])
+		} else if strings.HasSuffix(trimmed, "---") {
+			trimmed = strings.TrimSpace(strings.TrimSuffix(trimmed, "---"))
+		}
+	}
+	var parsed parsedSkillFrontmatter
+	if err := yaml.Unmarshal([]byte(trimmed), &parsed); err != nil {
+		return parsedSkillFrontmatter{}, fmt.Errorf("parse skill frontmatter: %w", err)
+	}
+	return parsed, nil
 }
 
 func (e *aiToolEnv) searchDocuments(_ context.Context, req documentSearchRequest) (documentSearchResponse, error) {
@@ -1031,131 +1182,338 @@ func (e *aiToolEnv) getRecording(_ context.Context, req getRecordingRequest) (ge
 	return getRecordingResponse{RecordingID: int64(row.ID), Name: row.Name.String, CreatedAt: formatTime(row.CreatedAt), Summary: row.Summary.String, Transcript: clampString(row.Transcript.String, 12000)}, nil
 }
 
-func (e *aiToolEnv) createDocument(_ context.Context, req createDocumentRequest) (mutateDocumentResponse, error) {
-	log.Printf("AI tool create_document start: run_id=%d title=%q content_chars=%d apply=%v", e.runID, strings.TrimSpace(req.Title), len(strings.TrimSpace(req.Content)), e.allowApplyMutations())
+func (e *aiToolEnv) createDocument(_ context.Context, req createDocumentRequest) (mutateBlockResponse, error) {
+	log.Printf("AI tool create_document start: run_id=%d title=%q", e.runID, strings.TrimSpace(req.Title))
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
-		return mutateDocumentResponse{}, errors.New("title is required")
+		return mutateBlockResponse{}, errors.New("title is required")
 	}
 	if strings.EqualFold(title, lockedSystemDocument) {
-		return mutateDocumentResponse{}, errors.New("the System document is locked")
+		return mutateBlockResponse{}, errors.New("the System document is locked")
 	}
 	directoryID, err := e.ensureAIDirectory()
 	if err != nil {
-		log.Printf("AI tool create_document ensure dir failed: run_id=%d err=%v", e.runID, err)
-		return mutateDocumentResponse{}, err
+		return mutateBlockResponse{}, err
 	}
 	doc := &secretaryv1.Document{ClientKey: "tool-" + uuid.NewString(), WorkspaceId: int64(e.workspaceID), Kind: "note", Title: title, DirectoryId: int64(directoryID), Blocks: blocksFromPlainText(req.Content, 0)}
-	artifactID, err := e.createMutationArtifact("create_document", 0, title, req.Content)
-	if err != nil {
-		log.Printf("AI tool create_document artifact failed: run_id=%d title=%q err=%v", e.runID, title, err)
-		return mutateDocumentResponse{}, err
-	}
-	if !e.allowApplyMutations() {
-		log.Printf("AI tool create_document drafted: run_id=%d artifact_id=%d title=%q", e.runID, artifactID, title)
-		return mutateDocumentResponse{Title: title, Applied: false, Message: fmt.Sprintf("Drafted document creation as artifact %d.", artifactID)}, nil
-	}
 	resp, err := e.server.SaveDocument(e.ctx, connect.NewRequest(&secretaryv1.SaveDocumentRequest{Document: doc}))
 	if err != nil {
-		log.Printf("AI tool create_document apply failed: run_id=%d title=%q err=%v", e.runID, title, err)
-		return mutateDocumentResponse{}, err
+		return mutateBlockResponse{}, err
 	}
 	saved := resp.Msg.Document
 	log.Printf("AI tool create_document done: run_id=%d document_id=%d title=%q", e.runID, saved.Id, saved.Title)
-	return mutateDocumentResponse{DocumentID: saved.Id, Title: saved.Title, Applied: true, Message: "Document created."}, nil
+	return mutateBlockResponse{DocumentID: saved.Id, Applied: true, Message: "Document created."}, nil
 }
 
-func (e *aiToolEnv) rewriteDocument(_ context.Context, req rewriteDocumentRequest) (mutateDocumentResponse, error) {
-	log.Printf("AI tool rewrite_document start: run_id=%d document_id=%d content_chars=%d apply=%v", e.runID, req.DocumentID, len(strings.TrimSpace(req.Content)), e.allowApplyMutations())
-	doc, blocks, err := e.server.loadAuthorizedDocument(e.ctx, int32(req.DocumentID), e.userID)
+func (e *aiToolEnv) insertBlock(_ context.Context, req insertBlockRequest) (mutateBlockResponse, error) {
+	log.Printf("AI tool insert_block start: run_id=%d document_id=%d parent_block_id=%d after_block_id=%d", e.runID, req.DocumentID, req.ParentBlockID, req.AfterBlockID)
+	text := strings.TrimSpace(req.Text)
+	if req.DocumentID <= 0 {
+		return mutateBlockResponse{}, errors.New("document_id is required")
+	}
+	if text == "" {
+		return mutateBlockResponse{}, errors.New("text is required")
+	}
+	doc, _, err := e.server.loadAuthorizedDocument(e.ctx, int32(req.DocumentID), e.userID)
 	if err != nil {
-		log.Printf("AI tool rewrite_document load failed: run_id=%d document_id=%d err=%v", e.runID, req.DocumentID, err)
-		return mutateDocumentResponse{}, err
+		return mutateBlockResponse{}, err
 	}
 	if isLockedSystemDocument(doc) {
-		return mutateDocumentResponse{}, errors.New("the System document is locked")
+		return mutateBlockResponse{}, errors.New("the System document is locked")
 	}
-	artifactID, err := e.createMutationArtifact("rewrite_document", int64(doc.ID), doc.Title, req.Content)
+	block, err := e.insertDocumentBlock(doc, req.ParentBlockID, req.AfterBlockID, text)
 	if err != nil {
-		log.Printf("AI tool rewrite_document artifact failed: run_id=%d document_id=%d err=%v", e.runID, doc.ID, err)
-		return mutateDocumentResponse{}, err
+		return mutateBlockResponse{}, err
 	}
-	if !e.allowApplyMutations() {
-		log.Printf("AI tool rewrite_document drafted: run_id=%d artifact_id=%d document_id=%d", e.runID, artifactID, doc.ID)
-		return mutateDocumentResponse{DocumentID: int64(doc.ID), Title: doc.Title, Applied: false, Message: fmt.Sprintf("Drafted rewrite as artifact %d.", artifactID)}, nil
-	}
-	protoDoc, err := e.serverDocumentProto(doc, blocks)
-	if err != nil {
-		return mutateDocumentResponse{}, err
-	}
-	protoDoc.Blocks = blocksFromPlainText(req.Content, protoDoc.Id)
-	_, err = e.server.SaveDocument(e.ctx, connect.NewRequest(&secretaryv1.SaveDocumentRequest{Document: protoDoc}))
-	if err != nil {
-		log.Printf("AI tool rewrite_document apply failed: run_id=%d document_id=%d err=%v", e.runID, doc.ID, err)
-		return mutateDocumentResponse{}, err
-	}
-	log.Printf("AI tool rewrite_document done: run_id=%d document_id=%d", e.runID, doc.ID)
-	return mutateDocumentResponse{DocumentID: int64(doc.ID), Title: doc.Title, Applied: true, Message: "Document rewritten."}, nil
+	log.Printf("AI tool insert_block done: run_id=%d document_id=%d block_id=%d", e.runID, doc.ID, block.ID)
+	return mutateBlockResponse{DocumentID: int64(doc.ID), BlockID: int64(block.ID), Applied: true, Message: "Block inserted."}, nil
 }
 
-func (e *aiToolEnv) appendDocument(_ context.Context, req appendDocumentRequest) (mutateDocumentResponse, error) {
-	log.Printf("AI tool append_document start: run_id=%d document_id=%d content_chars=%d apply=%v", e.runID, req.DocumentID, len(strings.TrimSpace(req.Content)), e.allowApplyMutations())
-	doc, blocks, err := e.server.loadAuthorizedDocument(e.ctx, int32(req.DocumentID), e.userID)
+func (e *aiToolEnv) moveBlock(_ context.Context, req moveBlockRequest) (mutateBlockResponse, error) {
+	log.Printf("AI tool move_block start: run_id=%d block_id=%d parent_block_id=%d after_block_id=%d", e.runID, req.BlockID, req.ParentBlockID, req.AfterBlockID)
+	if req.BlockID <= 0 {
+		return mutateBlockResponse{}, errors.New("block_id is required")
+	}
+	block, doc, err := e.loadAuthorizedBlock(req.BlockID)
 	if err != nil {
-		log.Printf("AI tool append_document load failed: run_id=%d document_id=%d err=%v", e.runID, req.DocumentID, err)
-		return mutateDocumentResponse{}, err
+		return mutateBlockResponse{}, err
 	}
 	if isLockedSystemDocument(doc) {
-		return mutateDocumentResponse{}, errors.New("the System document is locked")
+		return mutateBlockResponse{}, errors.New("the System document is locked")
 	}
-	appendBlocks := blocksFromPlainText(req.Content, int64(doc.ID))
-	artifactID, err := e.createMutationArtifact("append_document", int64(doc.ID), doc.Title, req.Content)
+	moved, err := e.moveDocumentBlock(block, doc, req.ParentBlockID, req.AfterBlockID)
 	if err != nil {
-		log.Printf("AI tool append_document artifact failed: run_id=%d document_id=%d err=%v", e.runID, doc.ID, err)
-		return mutateDocumentResponse{}, err
+		return mutateBlockResponse{}, err
 	}
-	if !e.allowApplyMutations() {
-		log.Printf("AI tool append_document drafted: run_id=%d artifact_id=%d document_id=%d", e.runID, artifactID, doc.ID)
-		return mutateDocumentResponse{DocumentID: int64(doc.ID), Title: doc.Title, Applied: false, Message: fmt.Sprintf("Drafted append as artifact %d.", artifactID)}, nil
-	}
-	protoDoc, err := e.serverDocumentProto(doc, blocks)
-	if err != nil {
-		return mutateDocumentResponse{}, err
-	}
-	protoDoc.Blocks = append(protoDoc.Blocks, appendBlocks...)
-	resp, err := e.server.SaveDocument(e.ctx, connect.NewRequest(&secretaryv1.SaveDocumentRequest{Document: protoDoc}))
-	if err != nil {
-		log.Printf("AI tool append_document apply failed: run_id=%d document_id=%d err=%v", e.runID, doc.ID, err)
-		return mutateDocumentResponse{}, err
-	}
-	log.Printf("AI tool append_document done: run_id=%d document_id=%d", e.runID, resp.Msg.Document.Id)
-	return mutateDocumentResponse{DocumentID: resp.Msg.Document.Id, Title: resp.Msg.Document.Title, Applied: true, Message: "Document updated."}, nil
+	log.Printf("AI tool move_block done: run_id=%d document_id=%d block_id=%d", e.runID, doc.ID, moved.ID)
+	return mutateBlockResponse{DocumentID: int64(doc.ID), BlockID: int64(moved.ID), Applied: true, Message: "Block moved."}, nil
 }
 
-func (e *aiToolEnv) serverDocumentProto(doc db.Document, blocks []db.Block) (*secretaryv1.Document, error) {
-	statuses, err := e.server.loadBlockTodoStatuses(e.ctx, e.server.queries, blocks)
-	if err != nil {
-		return nil, err
+func (e *aiToolEnv) loadAuthorizedBlock(blockID int64) (db.Block, db.Document, error) {
+	if blockID <= 0 {
+		return db.Block{}, db.Document{}, errors.New("block_id is required")
 	}
-	return documentToProto(doc, blocks, statuses, nil), nil
+	var block db.Block
+	err := e.server.db.QueryRow(e.ctx, `
+		SELECT id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
+		FROM block
+		WHERE id = $1
+	`, int32(blockID)).Scan(
+		&block.ID,
+		&block.DocumentID,
+		&block.ParentBlockID,
+		&block.SortOrder,
+		&block.Text,
+		&block.TodoID,
+		&block.CreatedAt,
+		&block.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Block{}, db.Document{}, errors.New("block not found")
+	}
+	if err != nil {
+		return db.Block{}, db.Document{}, err
+	}
+	doc, _, err := e.server.loadAuthorizedDocument(e.ctx, block.DocumentID, e.userID)
+	if err != nil {
+		return db.Block{}, db.Document{}, err
+	}
+	return block, doc, nil
 }
 
-func (e *aiToolEnv) createMutationArtifact(operation string, documentID int64, title string, content string) (int64, error) {
-	log.Printf("AI artifact create start: run_id=%d operation=%s document_id=%d title=%q apply=%v", e.runID, operation, documentID, title, e.allowApplyMutations())
-	payload, err := structpb.NewStruct(map[string]any{"operation": operation, "document_id": documentID, "title": title, "content": content, "applied": e.allowApplyMutations()})
+func (e *aiToolEnv) insertDocumentBlock(doc db.Document, parentBlockID int64, afterBlockID int64, text string) (db.Block, error) {
+	tx, err := e.server.db.BeginTx(e.ctx, pgx.TxOptions{})
 	if err != nil {
-		return 0, err
+		return db.Block{}, err
 	}
-	resp, err := e.server.CreateAIArtifact(e.ctx, connect.NewRequest(&secretaryv1.CreateAIArtifactRequest{RunId: e.runID, Kind: "patch", Title: title, ContentJson: payload}))
+	defer tx.Rollback(e.ctx)
+	qtx := e.server.queries.WithTx(tx)
+	blocks, err := qtx.ListBlocksByDocument(e.ctx, doc.ID)
 	if err != nil {
-		log.Printf("AI artifact create failed: run_id=%d operation=%s document_id=%d err=%v", e.runID, operation, documentID, err)
-		return 0, err
+		return db.Block{}, err
 	}
-	if documentID > 0 {
-		_ = e.addSourceRef("document", documentID, title, clampString(content, 240))
+	blockByID := blocksByID(blocks)
+	parentID, err := validateTargetParent(parentBlockID, doc.ID, blockByID)
+	if err != nil {
+		return db.Block{}, err
 	}
-	log.Printf("AI artifact create done: run_id=%d artifact_id=%d operation=%s document_id=%d", e.runID, resp.Msg.Artifact.Id, operation, documentID)
-	return resp.Msg.Artifact.Id, nil
+	siblingIDs, insertIndex, err := insertionPosition(parentID, afterBlockID, blockByID, 0)
+	if err != nil {
+		return db.Block{}, err
+	}
+	created, err := qtx.CreateBlock(e.ctx, db.CreateBlockParams{DocumentID: doc.ID, ParentBlockID: parentID, SortOrder: 1, Text: text})
+	if err != nil {
+		return db.Block{}, err
+	}
+	ordered := insertInt32At(siblingIDs, insertIndex, created.ID)
+	created, err = e.reindexSiblings(qtx, blockByID, doc, parentID, ordered, created.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if err := reconcileBlockDocumentLinks(e.ctx, qtx, doc, created); err != nil {
+		return db.Block{}, err
+	}
+	finalDoc, finalBlocks, err := reloadDocumentAndBlocks(e.ctx, qtx, doc.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	statuses, err := e.server.loadBlockTodoStatuses(e.ctx, qtx, finalBlocks)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if err := maybeCreateDocumentHistorySnapshot(e.ctx, qtx, finalDoc, finalBlocks, statuses); err != nil {
+		return db.Block{}, err
+	}
+	if err := tx.Commit(e.ctx); err != nil {
+		return db.Block{}, err
+	}
+	return created, nil
+}
+
+func (e *aiToolEnv) moveDocumentBlock(block db.Block, doc db.Document, parentBlockID int64, afterBlockID int64) (db.Block, error) {
+	tx, err := e.server.db.BeginTx(e.ctx, pgx.TxOptions{})
+	if err != nil {
+		return db.Block{}, err
+	}
+	defer tx.Rollback(e.ctx)
+	qtx := e.server.queries.WithTx(tx)
+	blocks, err := qtx.ListBlocksByDocument(e.ctx, doc.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	blockByID := blocksByID(blocks)
+	current, ok := blockByID[block.ID]
+	if !ok {
+		return db.Block{}, errors.New("block not found")
+	}
+	parentID, err := validateTargetParent(parentBlockID, doc.ID, blockByID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if parentID.Valid && (parentID.Int32 == current.ID || isDescendantBlock(current.ID, parentID.Int32, blockByID)) {
+		return db.Block{}, errors.New("cannot move a block into itself or its descendants")
+	}
+	oldParentID := current.ParentBlockID
+	targetSiblingIDs, insertIndex, err := insertionPosition(parentID, afterBlockID, blockByID, current.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	orderedTarget := insertInt32At(targetSiblingIDs, insertIndex, current.ID)
+	moved, err := e.reindexSiblings(qtx, blockByID, doc, parentID, orderedTarget, current.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if !sameParent(oldParentID, parentID) {
+		remaining := siblingIDsForParent(oldParentID, blockByID, current.ID)
+		if _, err := e.reindexSiblings(qtx, blockByID, doc, oldParentID, remaining, 0); err != nil {
+			return db.Block{}, err
+		}
+	}
+	finalDoc, finalBlocks, err := reloadDocumentAndBlocks(e.ctx, qtx, doc.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	statuses, err := e.server.loadBlockTodoStatuses(e.ctx, qtx, finalBlocks)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if err := maybeCreateDocumentHistorySnapshot(e.ctx, qtx, finalDoc, finalBlocks, statuses); err != nil {
+		return db.Block{}, err
+	}
+	if err := tx.Commit(e.ctx); err != nil {
+		return db.Block{}, err
+	}
+	return moved, nil
+}
+
+func validateTargetParent(parentBlockID int64, documentID int32, blockByID map[int32]db.Block) (pgtype.Int4, error) {
+	if parentBlockID <= 0 {
+		return pgtype.Int4{}, nil
+	}
+	parent, ok := blockByID[int32(parentBlockID)]
+	if !ok {
+		return pgtype.Int4{}, errors.New("parent block not found")
+	}
+	if parent.DocumentID != documentID {
+		return pgtype.Int4{}, errors.New("parent block must belong to the same document")
+	}
+	return pgtype.Int4{Int32: parent.ID, Valid: true}, nil
+}
+
+func insertionPosition(parentID pgtype.Int4, afterBlockID int64, blockByID map[int32]db.Block, excludeBlockID int32) ([]int32, int, error) {
+	siblingIDs := siblingIDsForParent(parentID, blockByID, excludeBlockID)
+	if afterBlockID <= 0 {
+		return siblingIDs, 0, nil
+	}
+	after, ok := blockByID[int32(afterBlockID)]
+	if !ok {
+		return nil, 0, errors.New("after block not found")
+	}
+	if !sameParent(after.ParentBlockID, parentID) {
+		return nil, 0, errors.New("after block must be a sibling under the target parent")
+	}
+	for index, siblingID := range siblingIDs {
+		if siblingID == after.ID {
+			return siblingIDs, index + 1, nil
+		}
+	}
+	return nil, 0, errors.New("after block must be a sibling under the target parent")
+}
+
+func siblingIDsForParent(parentID pgtype.Int4, blockByID map[int32]db.Block, excludeBlockID int32) []int32 {
+	siblings := make([]db.Block, 0)
+	for _, block := range blockByID {
+		if block.ID == excludeBlockID || !sameParent(block.ParentBlockID, parentID) {
+			continue
+		}
+		siblings = append(siblings, block)
+	}
+	sort.SliceStable(siblings, func(i, j int) bool { return siblings[i].SortOrder < siblings[j].SortOrder })
+	result := make([]int32, 0, len(siblings))
+	for _, sibling := range siblings {
+		result = append(result, sibling.ID)
+	}
+	return result
+}
+
+func (e *aiToolEnv) reindexSiblings(qtx *db.Queries, blockByID map[int32]db.Block, doc db.Document, parentID pgtype.Int4, orderedIDs []int32, targetBlockID int32) (db.Block, error) {
+	var target db.Block
+	for index, blockID := range orderedIDs {
+		block := blockByID[blockID]
+		updated, err := qtx.UpdateBlock(e.ctx, db.UpdateBlockParams{ID: block.ID, DocumentID: block.DocumentID, ParentBlockID: parentID, SortOrder: int32(index + 1), Text: block.Text, TodoID: block.TodoID})
+		if err != nil {
+			return db.Block{}, err
+		}
+		blockByID[blockID] = updated
+		if targetBlockID == 0 || updated.ID == targetBlockID {
+			target = updated
+		}
+		if block.ParentBlockID != parentID || block.SortOrder != int32(index+1) {
+			if err := reconcileBlockDocumentLinks(e.ctx, qtx, doc, updated); err != nil {
+				return db.Block{}, err
+			}
+		}
+	}
+	return target, nil
+}
+
+func reloadDocumentAndBlocks(ctx context.Context, qtx *db.Queries, documentID int32) (db.Document, []db.Block, error) {
+	doc, err := qtx.GetDocument(ctx, documentID)
+	if err != nil {
+		return db.Document{}, nil, err
+	}
+	blocks, err := qtx.ListBlocksByDocument(ctx, documentID)
+	if err != nil {
+		return db.Document{}, nil, err
+	}
+	return doc, blocks, nil
+}
+
+func blocksByID(blocks []db.Block) map[int32]db.Block {
+	result := make(map[int32]db.Block, len(blocks))
+	for _, block := range blocks {
+		result[block.ID] = block
+	}
+	return result
+}
+
+func isDescendantBlock(blockID int32, candidateParentID int32, blockByID map[int32]db.Block) bool {
+	currentID := candidateParentID
+	for currentID != 0 {
+		if currentID == blockID {
+			return true
+		}
+		current, ok := blockByID[currentID]
+		if !ok || !current.ParentBlockID.Valid {
+			break
+		}
+		currentID = current.ParentBlockID.Int32
+	}
+	return false
+}
+
+func insertInt32At(values []int32, index int, value int32) []int32 {
+	if index < 0 {
+		index = 0
+	}
+	if index > len(values) {
+		index = len(values)
+	}
+	result := make([]int32, 0, len(values)+1)
+	result = append(result, values[:index]...)
+	result = append(result, value)
+	result = append(result, values[index:]...)
+	return result
+}
+
+func sameParent(a pgtype.Int4, b pgtype.Int4) bool {
+	if a.Valid != b.Valid {
+		return false
+	}
+	if !a.Valid {
+		return true
+	}
+	return a.Int32 == b.Int32
 }
 
 func (e *aiToolEnv) addSourceRef(kind string, sourceID int64, label string, quote string) error {
@@ -1361,8 +1719,4 @@ func parseInt32(value string) (int32, error) {
 		return 0, err
 	}
 	return int32(parsed), nil
-}
-
-func (e *aiToolEnv) allowApplyMutations() bool {
-	return e.mode == "edit"
 }

@@ -1019,6 +1019,39 @@ export function insertTextAtCursor(state: OutlineState, text: string): OutlineSt
   };
 }
 
+export function deleteWordForward(state: OutlineState): OutlineState {
+  if (state.editingId) {
+    return state;
+  }
+
+  const target = getFocusedNode(state);
+  if (!target) {
+    return state;
+  }
+
+  const cursor = getNormalCursor(state);
+  const end = findWordForward(target.text, cursor);
+  if (end <= cursor) {
+    return state;
+  }
+
+  const nextText = `${target.text.slice(0, cursor)}${target.text.slice(end)}`;
+  const nextState = replaceActivePage(state, (page) => ({
+    ...page,
+    nodes: page.nodes.map((node) => (node.id === target.id ? { ...node, text: nextText } : node)),
+  }));
+
+  return {
+    ...nextState,
+    normalCursor: clampCursor(cursor, nextText),
+    anchorId: null,
+    editingId: null,
+    draftText: '',
+    editCursor: 'end',
+    mode: 'normal',
+  };
+}
+
 export function startEditing(state: OutlineState, placement: 'current' | 'after' | 'start' | 'end' = 'current'): OutlineState {
   const target = getActiveNodes(state).find((node) => node.id === state.focusedId);
   if (!target) {
@@ -1101,6 +1134,10 @@ function getSubtreeEnd(nodes: OutlineNode[], startIndex: number): number {
   return endIndex;
 }
 
+function hasDirectChildren(nodes: OutlineNode[], nodeId: string) {
+  return nodes.some((node) => node.parentId === nodeId);
+}
+
 function getSelectedRoots(nodes: OutlineNode[], selectedIds: string[]) {
   const selectedSet = new Set(selectedIds);
   return nodes.filter((node) => selectedSet.has(node.id) && (!node.parentId || !selectedSet.has(node.parentId)));
@@ -1163,8 +1200,9 @@ export function openBelow(state: OutlineState): OutlineState {
   }
 
   const focusedNode = nodes[focusedIndex];
-  const insertAt = getSubtreeEnd(nodes, focusedIndex);
-  const newNode = createSiblingNode(focusedNode.parentId);
+  const insertAsChild = hasDirectChildren(nodes, focusedNode.id);
+  const insertAt = insertAsChild ? focusedIndex + 1 : getSubtreeEnd(nodes, focusedIndex);
+  const newNode = createSiblingNode(insertAsChild ? focusedNode.id : focusedNode.parentId);
   const nextState = replaceActivePage(state, (page) => ({
     ...page,
     nodes: [...page.nodes.slice(0, insertAt), newNode, ...page.nodes.slice(insertAt)],
@@ -1225,8 +1263,9 @@ export function splitNodeAtCursor(state: OutlineState, selectionStart: number, s
   const end = Math.max(start, Math.min(selectionEnd, draft.length));
   const before = draft.slice(0, start);
   const after = draft.slice(end);
-  const newNode = createSiblingNode(currentNode.parentId);
-  const insertAt = getSubtreeEnd(nodes, focusedIndex);
+  const insertAsChild = hasDirectChildren(nodes, currentNode.id);
+  const newNode = createSiblingNode(insertAsChild ? currentNode.id : currentNode.parentId);
+  const insertAt = insertAsChild ? focusedIndex + 1 : getSubtreeEnd(nodes, focusedIndex);
   const nextState = replaceActivePage(state, (page) => {
     const nextNodes = [...page.nodes];
 
@@ -1254,6 +1293,58 @@ export function splitNodeAtCursor(state: OutlineState, selectionStart: number, s
     editingId: newNode.id,
     draftText: after,
     editCursor: 'start',
+    mode: 'insert',
+  };
+}
+
+export function mergeWithPreviousAtCursorStart(state: OutlineState): OutlineState {
+  if (!state.editingId) {
+    return state;
+  }
+
+  const nodes = getActiveNodes(state);
+  const currentIndex = nodes.findIndex((node) => node.id === state.editingId);
+  if (currentIndex <= 0) {
+    return state;
+  }
+
+  const currentNode = nodes[currentIndex];
+  const previousNode = nodes[currentIndex - 1];
+  const mergedText = `${previousNode.text}${state.draftText}`;
+  const mergedCursor = previousNode.text.length;
+  const nextNodes = nodes
+    .map((node) => {
+      if (node.id === previousNode.id) {
+        return {
+          ...node,
+          text: mergedText,
+        };
+      }
+
+      if (node.parentId === currentNode.id) {
+        return {
+          ...node,
+          parentId: previousNode.id,
+        };
+      }
+
+      return node;
+    })
+    .filter((node) => node.id !== currentNode.id);
+
+  const nextState = replaceActivePage(state, (page) => ({
+    ...page,
+    nodes: nextNodes,
+  }));
+
+  return {
+    ...nextState,
+    focusedId: previousNode.id,
+    normalCursor: mergedCursor,
+    anchorId: null,
+    editingId: previousNode.id,
+    draftText: mergedText,
+    editCursor: mergedCursor,
     mode: 'insert',
   };
 }

@@ -351,6 +351,16 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
 
           if (key === 'w') {
             event.preventDefault();
+
+            if (lastDPressRef.current && Date.now() - lastDPressRef.current <= 320) {
+              dispatch({ type: 'deleteWordForward' });
+              lastDPressRef.current = null;
+              lastGPressRef.current = null;
+              lastBracketPressRef.current = null;
+              lastYPressRef.current = null;
+              return;
+            }
+
             lastDPressRef.current = null;
             lastGPressRef.current = null;
             lastBracketPressRef.current = null;
@@ -423,6 +433,7 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
             onSplit={(selectionStart, selectionEnd) =>
               dispatch({ type: 'splitNodeAtCursor', selectionStart, selectionEnd })
             }
+            onMergeWithPrevious={() => dispatch({ type: 'mergeWithPreviousAtCursorStart' })}
             onStructuredPaste={(text) => dispatch({ type: 'pasteStructured', text })}
             onToggleStatus={(nodeId) => dispatch({ type: 'toggleNodeStatus', nodeId })}
             onOpenDocumentLink={onOpenDocumentLink}
