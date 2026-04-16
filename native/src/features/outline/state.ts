@@ -14,6 +14,8 @@ import {
   hydratePages,
   makeSnapshot,
   mergeRemotePage,
+  getPageBackendBlockIds,
+  syncRemoteTodoToPage,
   moveCaret,
   moveFocus,
   mergeWithPreviousAtCursorStart,
@@ -77,9 +79,14 @@ export type OutlineAction =
   | { type: 'toggleNodeStatus'; nodeId: string }
   | { type: 'toggleVisualMode' }
   | { type: 'updatePageTitle'; title: string }
-  | { type: 'hydrate'; pages: OutlineState['pages'] }
-  | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string }
+  | { type: 'hydrate'; pages: OutlineState['pages']; source?: string }
+  | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string; source?: string }
+  | { type: 'syncRemoteTodo'; sourceDocumentId: number; sourceBlockId: number; todoId: number; status: OutlineState['pages'][number]['nodes'][number]['todoStatus']; updatedAt?: string }
   | { type: 'undo' };
+
+function logIdentityChange(label: string, details: Record<string, unknown>) {
+  console.debug(`[identity-debug] ${label}`, details);
+}
 
 const initialState: OutlineState = {
   pages: [],
@@ -185,9 +192,40 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
     case 'updatePageTitle':
       return withHistory(currentState, (active) => updatePageTitle(active, action.title));
     case 'hydrate':
+      logIdentityChange('hydrate pages', {
+        source: action.source ?? 'unknown',
+        pages: action.pages.filter((page) => page.backendId).map((page) => ({
+          pageId: page.id,
+          backendDocumentId: page.backendId,
+          ids: getPageBackendBlockIds(page).slice(-12),
+          count: getPageBackendBlockIds(page).length,
+        })),
+      });
       return hydratePages(currentState, action.pages);
     case 'mergeRemotePage':
-      return mergeRemotePage(currentState, action.page, action.previousPageId);
+      {
+        const previousPage = currentState.pages.find((entry) => entry.id === action.previousPageId)
+          ?? (action.page.backendId ? currentState.pages.find((entry) => entry.backendId === action.page.backendId) : null)
+          ?? currentState.pages.find((entry) => entry.id === action.page.id)
+          ?? null;
+        const previousIds = previousPage ? getPageBackendBlockIds(previousPage) : [];
+        const nextIds = getPageBackendBlockIds(action.page);
+        logIdentityChange('mergeRemotePage', {
+          source: action.source ?? 'unknown',
+          pageId: action.page.id,
+          previousPageId: action.previousPageId ?? null,
+          backendDocumentId: action.page.backendId ?? previousPage?.backendId ?? null,
+          previousCount: previousIds.length,
+          nextCount: nextIds.length,
+          previousTail: previousIds.slice(-12),
+          nextTail: nextIds.slice(-12),
+          removed: previousIds.filter((id) => !nextIds.includes(id)).slice(-12),
+          added: nextIds.filter((id) => !previousIds.includes(id)).slice(-12),
+        });
+        return mergeRemotePage(currentState, action.page, action.previousPageId);
+      }
+    case 'syncRemoteTodo':
+      return syncRemoteTodoToPage(currentState, action.sourceDocumentId, action.sourceBlockId, action.todoId, action.status, action.updatedAt);
     case 'undo': {
       const previous = currentState.history[currentState.history.length - 1];
       if (!previous) {

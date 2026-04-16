@@ -20,6 +20,7 @@ import (
 	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
 	"github.com/mvult/secretary/backend/gen/secretary/v1/secretaryv1connect"
 	"github.com/mvult/secretary/backend/internal/db/gen"
+	"github.com/mvult/secretary/backend/internal/server/agent"
 	"github.com/rs/cors"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -36,7 +37,7 @@ type Server struct {
 	queries   *db.Queries
 	jwtSecret []byte
 	tokenTTL  time.Duration
-	aiRunner  aiRunner
+	aiRunner  agent.Runner
 }
 
 func New(pool *pgxpool.Pool, jwtSecret []byte, tokenTTL time.Duration) *Server {

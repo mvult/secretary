@@ -11,6 +11,9 @@ import { useAppCommands } from './app/useAppCommands';
 import { useGlobalHotkeys } from './app/useGlobalHotkeys';
 import { ToolbarMenu } from './app/ToolbarMenu';
 import { DeleteNoteDialog } from './app/DeleteNoteDialog';
+import { SaveFailureDialog } from './app/SaveFailureDialog';
+import { StaleBlockRecoveryDialog } from './app/StaleBlockRecoveryDialog';
+import { SyncConfirmDialog } from './app/SyncConfirmDialog';
 import { DocumentLinkDialog } from './features/document-links/DocumentLinkDialog';
 import { JournalsView } from './features/journals/JournalsView';
 import { NoteView } from './features/notes/NoteView';
@@ -48,26 +51,15 @@ function App() {
     if (!todo.sourceDocumentId || !todo.sourceBlockId) {
       return;
     }
-    const sourcePage = session.stateRef.current.pages.find((entry) => entry.backendId === todo.sourceDocumentId);
-    if (!sourcePage) {
-      return;
-    }
-    const node = sourcePage.nodes.find((entry) => entry.backendId === todo.sourceBlockId || entry.todoId === todo.id);
-    if (!node || node.todoStatus === todo.status) {
-      return;
-    }
     dispatch({
-      type: 'mergeRemotePage',
-      page: {
-        ...sourcePage,
-        nodes: sourcePage.nodes.map((entry) => (
-          entry.id === node.id
-            ? { ...entry, todoStatus: todo.status, todoId: todo.id, updatedAt: todo.updatedAt || entry.updatedAt }
-            : entry
-        )),
-      },
+      type: 'syncRemoteTodo',
+      sourceDocumentId: todo.sourceDocumentId,
+      sourceBlockId: todo.sourceBlockId,
+      todoId: todo.id,
+      status: todo.status,
+      updatedAt: todo.updatedAt || undefined,
     });
-  }, [dispatch, session.stateRef]);
+  }, [dispatch]);
 
   const todos = useTodos({
     backendUrl: session.backendUrl,
@@ -294,6 +286,7 @@ function App() {
     setActiveAIThreadId: ai.setActiveAIThreadId,
     jumpBack: commands.jumpBack,
     jumpForward: commands.jumpForward,
+    openTodayJournal: commands.openTodayJournal,
     dispatchAfterFlush: session.dispatchAfterFlush,
     openDirectoryBrowser: commands.openDirectoryBrowser,
   });
@@ -301,6 +294,66 @@ function App() {
   const pagesByBackendId = useMemo(
     () => new Map(state.pages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
     [state.pages],
+  );
+
+  const modalOverlays = (
+    <>
+      <SyncConfirmDialog
+        reason={session.pendingSyncConfirmation?.reason ?? null}
+        dirtyPages={session.pendingSyncConfirmation?.dirtyPages ?? []}
+        onCancel={session.cancelPendingSync}
+        onConfirm={() => void session.confirmPendingSync()}
+      />
+
+      <SaveFailureDialog
+        pageTitle={session.saveFailureAlert?.pageTitle ?? null}
+        message={session.saveFailureAlert?.message ?? ''}
+        onClose={session.dismissSaveFailureAlert}
+      />
+
+      <StaleBlockRecoveryDialog
+        pageTitle={session.staleBlockRecovery?.pageTitle ?? null}
+        blockId={session.staleBlockRecovery?.blockId ?? null}
+        onKeepLocal={session.dismissStaleBlockRecovery}
+        onRepairThisNote={() => void session.repairStalePageInPlace()}
+        onReloadServerCopy={() => void session.reloadStalePageFromServer()}
+      />
+
+      <DocumentLinkDialog
+        isOpen={documentLinks.isDocumentLinkPickerOpen}
+        query={documentLinks.documentLinkQuery}
+        inputRef={documentLinks.documentLinkInputRef}
+        matches={documentLinks.documentLinkMatches}
+        activeMatch={documentLinks.activeDocumentLinkMatch}
+        onClose={documentLinks.closeDocumentLinkPicker}
+        onChangeQuery={documentLinks.setDocumentLinkQuery}
+        onMove={documentLinks.moveActiveDocumentLinkResult}
+        onInsert={commands.insertDocumentLink}
+      />
+
+      <DeleteNoteDialog
+        title={commands.pendingDeleteNote?.title ?? null}
+        onCancel={() => commands.setPendingDeleteNoteId(null)}
+        onConfirm={commands.confirmDeleteNote}
+      />
+
+      {page ? (
+        <NoteHistoryDialog
+          isOpen={isNoteHistoryOpen}
+          isLoading={isLoadingNoteHistory}
+          isLoadingEntry={isLoadingNoteHistoryEntry}
+          noteTitle={page.title}
+          entries={noteHistoryEntries}
+          activeEntryId={activeNoteHistoryId}
+          activeEntry={activeNoteHistoryEntry}
+          errorMessage={noteHistoryError}
+          onClose={() => setIsNoteHistoryOpen(false)}
+          onSelectEntry={(id) => {
+            void loadNoteHistoryEntry(id);
+          }}
+        />
+      ) : null}
+    </>
   );
 
   if (!page) {
@@ -398,6 +451,7 @@ function App() {
               </section>
             )}
           </div>
+          {modalOverlays}
         </section>
       </main>
     );
@@ -432,7 +486,7 @@ function App() {
               dispatch={dispatch}
               pagesByBackendId={pagesByBackendId}
               activePageSaveMessage={session.activePageSaveMessage}
-              onSelectJournalPage={(pageId) => session.dispatchAfterFlush({ type: 'selectJournalPage', pageId })}
+              onSelectJournalPage={(pageId) => commands.openJournalPage(pageId, { recordJump: true })}
               onOpenDocumentLinkPicker={documentLinks.openDocumentLinkPicker}
               onFollowDocumentLink={commands.followDocumentLink}
               onOpenDocumentLink={commands.openDocumentLinkTarget}
@@ -559,38 +613,7 @@ function App() {
             />
           ) : null}
 
-          <DocumentLinkDialog
-            isOpen={documentLinks.isDocumentLinkPickerOpen}
-            query={documentLinks.documentLinkQuery}
-            inputRef={documentLinks.documentLinkInputRef}
-            matches={documentLinks.documentLinkMatches}
-            activeMatch={documentLinks.activeDocumentLinkMatch}
-            onClose={documentLinks.closeDocumentLinkPicker}
-            onChangeQuery={documentLinks.setDocumentLinkQuery}
-            onMove={documentLinks.moveActiveDocumentLinkResult}
-            onInsert={commands.insertDocumentLink}
-          />
-
-          <DeleteNoteDialog
-            title={commands.pendingDeleteNote?.title ?? null}
-            onCancel={() => commands.setPendingDeleteNoteId(null)}
-            onConfirm={commands.confirmDeleteNote}
-          />
-
-          <NoteHistoryDialog
-            isOpen={isNoteHistoryOpen}
-            isLoading={isLoadingNoteHistory}
-            isLoadingEntry={isLoadingNoteHistoryEntry}
-            noteTitle={page.title}
-            entries={noteHistoryEntries}
-            activeEntryId={activeNoteHistoryId}
-            activeEntry={activeNoteHistoryEntry}
-            errorMessage={noteHistoryError}
-            onClose={() => setIsNoteHistoryOpen(false)}
-            onSelectEntry={(id) => {
-              void loadNoteHistoryEntry(id);
-            }}
-          />
+          {modalOverlays}
         </div>
       </section>
     </main>

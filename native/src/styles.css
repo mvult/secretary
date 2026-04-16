@@ -86,8 +86,12 @@ button {
   align-items: flex-start;
   justify-content: flex-end;
   gap: 20px;
-  padding-bottom: 4px;
-  position: relative;
+  padding: 8px 0 6px;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: rgba(10, 12, 16, 0.94);
+  backdrop-filter: blur(10px);
 }
 
 .workspace-content {
@@ -226,7 +230,9 @@ button {
 .history-dialog {
   width: min(980px, 100%);
   min-height: min(720px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
   grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
 }
 
 .history-layout {
@@ -253,8 +259,11 @@ button {
 
 .history-detail-card {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
   padding: 18px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .history-snapshot-title {
@@ -263,7 +272,10 @@ button {
 
 .history-node-list {
   display: grid;
+  align-content: start;
   gap: 4px;
+  overflow: auto;
+  padding-right: 6px;
 }
 
 .history-node-row {
@@ -282,6 +294,75 @@ button {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+.confirm-dialog-danger {
+  border-color: rgba(214, 95, 74, 0.55);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(214, 95, 74, 0.16);
+}
+
+.save-failure-dialog {
+  width: min(760px, 100%);
+}
+
+.save-failure-message {
+  font-size: 1rem;
+  color: rgba(255, 226, 221, 0.96);
+}
+
+.save-failure-detail {
+  padding: 14px 16px;
+  border: 1px solid rgba(214, 95, 74, 0.3);
+  border-radius: 14px;
+  background: rgba(79, 23, 18, 0.4);
+  color: rgba(255, 233, 229, 0.96);
+}
+
+.sync-confirm-dialog {
+  width: min(760px, 100%);
+}
+
+.stale-block-dialog {
+  width: min(820px, 100%);
+}
+
+.stale-block-actions {
+  flex-wrap: wrap;
+}
+
+.stale-block-code {
+  font-family: var(--font-mono);
+  color: rgba(255, 233, 229, 0.96);
+}
+
+.sync-confirm-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+  padding: 6px 2px 2px;
+}
+
+.sync-confirm-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.sync-confirm-title {
+  font-weight: 600;
+}
+
+.sync-confirm-kind {
+  color: rgba(237, 242, 255, 0.58);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
 }
 
 .settings-button {
@@ -308,9 +389,10 @@ button {
 
 .note-header-sticky {
   position: sticky;
-  top: 0;
+  top: 54px;
   z-index: 10;
   padding-top: 8px;
+  padding-bottom: 12px;
   background: rgba(10, 12, 16, 0.94);
   backdrop-filter: blur(10px);
 }
@@ -1283,6 +1365,15 @@ button {
 .row-content {
   min-width: 0;
   align-self: stretch;
+  display: grid;
+  gap: 2px;
+}
+
+.row-block-id {
+  color: rgba(237, 242, 255, 0.34);
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+  letter-spacing: 0.05em;
 }
 
 .row-activator {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject } from 'react';
 import {
   createWorkspace,
+  getDocument,
   listDocuments,
   listWorkspaces,
   login,
@@ -12,13 +13,71 @@ import { getPageTitle, getPagesForPersistence } from '../outline/tree';
 import { reduceOutlineState, type OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
 import { formatPanelTimestamp } from '../../app/format';
-import { describeSaveFailure, findPageForPersistence, pageHash, pagePersistenceKey } from '../../app/pagePersistence';
+import { describeInvalidBlockTree, describeSaveFailure, findPageForPersistence, normalizePageForSave, pageHash, pagePersistenceKey, validatePageForSave } from '../../app/pagePersistence';
 import { SETTINGS_STORAGE_KEY, type PageSaveIndicator, type StoredSettings } from '../../app/types';
 
 interface UseSessionSyncOptions {
   state: OutlineState;
   dispatch: Dispatch<OutlineAction>;
   onPagesSavedRef?: MutableRefObject<(() => Promise<void>) | null>;
+}
+
+type StaleBlockRecovery = {
+  pageId: string;
+  pageTitle: string;
+  blockId: number;
+  hash: string;
+  message: string;
+};
+
+type PausedSaveState = {
+  hash: string;
+  blockId: number;
+};
+
+function logSaveDebug(label: string, details: Record<string, unknown>) {
+  console.debug(`[save-debug] ${label}`, details);
+}
+
+function buildRequestToSavedNodeMap(requestPage: OutlinePage, savedPage: OutlinePage) {
+  const byBackendId = new Map(savedPage.nodes.filter((node) => node.backendId).map((node) => [node.backendId!, node]));
+  const result = new Map<string, OutlinePage['nodes'][number]>();
+
+  requestPage.nodes.forEach((node, index) => {
+    const savedNode = (node.backendId ? byBackendId.get(node.backendId) : null) ?? savedPage.nodes[index] ?? null;
+    if (savedNode) {
+      result.set(node.id, savedNode);
+    }
+  });
+
+  return result;
+}
+
+function mergeSavedIdentitiesIntoPage(requestPage: OutlinePage, latestPage: OutlinePage, savedPage: OutlinePage): OutlinePage {
+  const requestToSaved = buildRequestToSavedNodeMap(requestPage, savedPage);
+
+  return {
+    ...latestPage,
+    backendId: savedPage.backendId,
+    workspaceId: savedPage.workspaceId,
+    directoryId: latestPage.directoryId,
+    createdAt: savedPage.createdAt,
+    updatedAt: savedPage.updatedAt,
+    nodes: latestPage.nodes.map((node) => {
+      const savedNode = requestToSaved.get(node.id);
+      if (!savedNode) {
+        return node;
+      }
+
+      return {
+        ...node,
+        backendId: savedNode.backendId,
+        todoId: savedNode.todoId,
+        createdAt: savedNode.createdAt,
+        updatedAt: savedNode.updatedAt,
+      };
+    }),
+  };
 }
 
 export interface SessionSyncState {
@@ -46,6 +105,15 @@ export interface SessionSyncState {
   activePageSaveMessage: string;
   activePageIsDirty: boolean;
   activePageHasNewerEdits: boolean;
+  saveFailureAlert: { pageTitle: string; message: string } | null;
+  dismissSaveFailureAlert: () => void;
+  staleBlockRecovery: StaleBlockRecovery | null;
+  dismissStaleBlockRecovery: () => void;
+  repairStalePageInPlace: () => Promise<void>;
+  reloadStalePageFromServer: () => Promise<void>;
+  pendingSyncConfirmation: { reason: 'startup' | 'login' | 'manual'; dirtyPages: { pageId: string; title: string; kind: OutlinePage['kind'] }[] } | null;
+  confirmPendingSync: () => Promise<void>;
+  cancelPendingSync: () => void;
   stateRef: MutableRefObject<OutlineState>;
   pagesRef: MutableRefObject<OutlinePage[]>;
   flushDirtyPages: (snapshotOverride?: OutlinePage[]) => Promise<void>;
@@ -53,6 +121,23 @@ export interface SessionSyncState {
   runLogin: () => Promise<void>;
   runSync: () => Promise<void>;
   handleLogout: () => void;
+}
+
+function clearInvalidServerBlockIds(page: OutlinePage, validBlockIds: Set<number>): OutlinePage {
+  return {
+    ...page,
+    nodes: page.nodes.map((node) => (
+      node.backendId && !validBlockIds.has(node.backendId)
+        ? {
+            ...node,
+            backendId: undefined,
+            todoId: null,
+            createdAt: undefined,
+            updatedAt: undefined,
+          }
+        : node
+    )),
+  };
 }
 
 export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionSyncOptions): SessionSyncState {
@@ -69,6 +154,9 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
   const [pageSaveIndicators, setPageSaveIndicators] = useState<Record<string, PageSaveIndicator>>({});
   const [bootstrapped, setBootstrapped] = useState(false);
   const [initialLoadResolved, setInitialLoadResolved] = useState(false);
+  const [saveFailureAlert, setSaveFailureAlert] = useState<{ pageTitle: string; message: string } | null>(null);
+  const [staleBlockRecovery, setStaleBlockRecovery] = useState<StaleBlockRecovery | null>(null);
+  const [pendingSyncConfirmation, setPendingSyncConfirmation] = useState<{ reason: 'startup' | 'login' | 'manual'; dirtyPages: { pageId: string; title: string; kind: OutlinePage['kind'] }[] } | null>(null);
   const stateRef = useRef(state);
   const pagesForPersistence = useMemo(() => getPagesForPersistence(state), [state]);
   const pagesRef = useRef(pagesForPersistence);
@@ -77,6 +165,8 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
   const flushPromiseRef = useRef<Promise<void> | null>(null);
   const pendingFlushRef = useRef(false);
   const bootSyncRef = useRef(false);
+  const pendingSyncRequestRef = useRef<{ tokenOverride?: string; workspaceOverride?: number | null } | null>(null);
+  const pausedSaveStateRef = useRef<Map<string, PausedSaveState>>(new Map());
   const page = useMemo(
     () => state.pages.find((entry) => entry.id === state.activePageId) ?? null,
     [state.activePageId, state.pages],
@@ -174,7 +264,7 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
   }, [authToken, backendUrl, bootstrapped]);
 
   const applyRemotePages = useCallback((nextPages: OutlinePage[]) => {
-    dispatch({ type: 'hydrate', pages: nextPages });
+    dispatch({ type: 'hydrate', pages: nextPages, source: 'session:applyRemotePages' });
     const hashes = new Map<string, string>();
     for (const nextPage of nextPages) {
       hashes.set(nextPage.id, pageHash(nextPage));
@@ -182,6 +272,17 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
     lastSavedHashesRef.current = hashes;
     setPageSaveIndicators({});
   }, [dispatch]);
+
+  const getDirtyPages = useCallback(() => {
+    const snapshot = getPagesForPersistence(stateRef.current);
+    return snapshot
+      .filter((page) => lastSavedHashesRef.current.get(page.id) !== pageHash(page))
+      .map((page) => ({
+        pageId: page.id,
+        title: getPageTitle(page),
+        kind: page.kind,
+      }));
+  }, [stateRef]);
 
   const syncFromBackend = useCallback(async (tokenOverride?: string, workspaceOverride?: number | null) => {
     const nextToken = tokenOverride ?? authToken;
@@ -231,14 +332,95 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
     }
   }, [applyRemotePages, authToken, backendUrl, workspaceId]);
 
+  const requestSyncConfirmation = useCallback((reason: 'startup' | 'login' | 'manual', tokenOverride?: string, workspaceOverride?: number | null) => {
+    pendingSyncRequestRef.current = { tokenOverride, workspaceOverride };
+    setPendingSyncConfirmation({
+      reason,
+      dirtyPages: getDirtyPages(),
+    });
+  }, [getDirtyPages]);
+
+  const confirmPendingSync = useCallback(async () => {
+    const request = pendingSyncRequestRef.current;
+    pendingSyncRequestRef.current = null;
+    setPendingSyncConfirmation(null);
+    setInitialLoadResolved(false);
+    await syncFromBackend(request?.tokenOverride, request?.workspaceOverride ?? null);
+    if (onPagesSavedRef?.current) {
+      await onPagesSavedRef.current();
+    }
+  }, [onPagesSavedRef, syncFromBackend]);
+
+  const cancelPendingSync = useCallback(() => {
+    pendingSyncRequestRef.current = null;
+    setPendingSyncConfirmation(null);
+    setInitialLoadResolved(true);
+    setSyncMessage('Sync cancelled.');
+  }, []);
+
+  const dismissSaveFailureAlert = useCallback(() => {
+    setSaveFailureAlert(null);
+  }, []);
+
+  const dismissStaleBlockRecovery = useCallback(() => {
+    setStaleBlockRecovery(null);
+  }, []);
+
+  const clearPausedSaveState = useCallback((pageId: string) => {
+    pausedSaveStateRef.current.delete(pageId);
+  }, []);
+
+  const repairPageWithServerBlockIds = useCallback(async (pageToRepair: OutlinePage) => {
+    if (!authToken || !pageToRepair.backendId) {
+      return null;
+    }
+
+    const serverDocument = await getDocument(backendUrl, authToken, pageToRepair.backendId);
+    const existingServerBlockIds = new Set(serverDocument.blocks.map((block) => block.id));
+    const repairedPage = clearInvalidServerBlockIds(pageToRepair, existingServerBlockIds);
+    return pageHash(repairedPage) === pageHash(pageToRepair) ? null : repairedPage;
+  }, [authToken, backendUrl]);
+
+  const reloadStalePageFromServer = useCallback(async () => {
+    if (!staleBlockRecovery || !authToken) {
+      return;
+    }
+
+    const sourcePage = stateRef.current.pages.find((entry) => entry.id === staleBlockRecovery.pageId) ?? null;
+    if (!sourcePage?.backendId) {
+      setSyncMessage('This page does not have a server copy to reload.');
+      return;
+    }
+
+    const serverDocument = await getDocument(backendUrl, authToken, sourcePage.backendId);
+    const savedPage = documentToOutlinePage(serverDocument);
+    dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: sourcePage.id, source: 'session:reloadStalePageFromServer' });
+    clearPausedSaveState(sourcePage.id);
+    clearPausedSaveState(savedPage.id);
+    lastSavedHashesRef.current.delete(sourcePage.id);
+    lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
+    setPageSaveIndicators((current) => {
+      const next = { ...current };
+      delete next[pagePersistenceKey(sourcePage)];
+      next[pagePersistenceKey(savedPage)] = {
+        status: 'saved',
+        message: `Reloaded ${formatPanelTimestamp(savedPage.updatedAt || savedPage.createdAt || '')}`,
+        hash: pageHash(savedPage),
+      };
+      return next;
+    });
+    setStaleBlockRecovery(null);
+    setSaveFailureAlert(null);
+    setSyncMessage(`Reloaded ${getPageTitle(savedPage)} from the server.`);
+  }, [authToken, backendUrl, clearPausedSaveState, dispatch, staleBlockRecovery, stateRef]);
+
   useEffect(() => {
     if (!bootstrapped || bootSyncRef.current || !authToken || !backendUrl.trim()) {
       return;
     }
     bootSyncRef.current = true;
-    setInitialLoadResolved(false);
-    void syncFromBackend();
-  }, [authToken, backendUrl, bootstrapped, syncFromBackend]);
+    requestSyncConfirmation('startup');
+  }, [authToken, backendUrl, bootstrapped, requestSyncConfirmation]);
 
   useEffect(() => {
     if (!bootstrapped || !initialLoadResolved || state.pages.length > 0) {
@@ -270,6 +452,30 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
         for (const snapshotPage of snapshot) {
           const currentPage = findPageForPersistence(pagesRef.current, snapshotPage) ?? snapshotPage;
           const currentHash = pageHash(currentPage);
+          const pausedSave = pausedSaveStateRef.current.get(currentPage.id) ?? null;
+          if (pausedSave && pausedSave.hash === currentHash) {
+            logSaveDebug('skip blocked page', {
+              pageId: currentPage.id,
+              backendDocumentId: currentPage.backendId ?? null,
+              title: getPageTitle(currentPage),
+              hash: currentHash,
+              missingBlockId: pausedSave.blockId,
+            });
+            continue;
+          }
+          if (pausedSave && pausedSave.hash !== currentHash) {
+            clearPausedSaveState(currentPage.id);
+            if (staleBlockRecovery?.pageId === currentPage.id) {
+              setStaleBlockRecovery(null);
+            }
+            logSaveDebug('resume page after edit', {
+              pageId: currentPage.id,
+              backendDocumentId: currentPage.backendId ?? null,
+              title: getPageTitle(currentPage),
+              previousPausedHash: pausedSave.hash,
+              nextHash: currentHash,
+            });
+          }
           if (lastSavedHashesRef.current.get(currentPage.id) === currentHash) {
             continue;
           }
@@ -281,18 +487,89 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
           }));
 
           try {
-            const requestHash = currentHash;
+            const pageToSave = normalizePageForSave(currentPage);
+            if (pageHash(pageToSave) !== currentHash) {
+              logSaveDebug('normalized page before save', {
+                pageId: currentPage.id,
+                backendDocumentId: currentPage.backendId ?? null,
+                title: getPageTitle(currentPage),
+                originalNodeOrder: currentPage.nodes.map((node) => ({
+                  id: node.id,
+                  backendId: node.backendId ?? null,
+                  parentId: node.parentId,
+                  text: node.text.trim() || '(blank block)',
+                })),
+                normalizedNodeOrder: pageToSave.nodes.map((node) => ({
+                  id: node.id,
+                  backendId: node.backendId ?? null,
+                  parentId: node.parentId,
+                  text: node.text.trim() || '(blank block)',
+                })),
+              });
+            }
+
+            const validationMessage = validatePageForSave(pageToSave);
+            if (validationMessage) {
+              logSaveDebug('invalid block tree after normalization', {
+                pageId: currentPage.id,
+                backendDocumentId: currentPage.backendId ?? null,
+                title: getPageTitle(currentPage),
+                issue: describeInvalidBlockTree(pageToSave),
+              });
+              throw new Error(validationMessage);
+            }
+
+            const requestHash = pageHash(pageToSave);
             const requestPageId = currentPage.id;
-            const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(currentPage, workspaceId!));
+            const outgoingBlockIds = pageToSave.nodes
+              .filter((node) => node.backendId)
+              .map((node) => node.backendId);
+            logSaveDebug('save request', {
+              pageId: requestPageId,
+              backendDocumentId: currentPage.backendId ?? null,
+              title: getPageTitle(currentPage),
+              nodeCount: pageToSave.nodes.length,
+              outgoingBlockIds,
+            });
+            const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(pageToSave, workspaceId!));
             const savedPage = documentToOutlinePage(savedDocument);
             const latestPage = findPageForPersistence(pagesRef.current, currentPage) ?? findPageForPersistence(pagesRef.current, savedPage);
             const latestHash = latestPage ? pageHash(latestPage) : null;
 
             if (latestHash === requestHash || !currentPage.backendId) {
-              dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: requestPageId });
+              logSaveDebug('save response merge', {
+                pageId: requestPageId,
+                backendDocumentId: savedPage.backendId ?? null,
+                title: getPageTitle(savedPage),
+                latestHashMatchesRequest: latestHash === requestHash,
+                forcedBecauseNewDocument: !currentPage.backendId,
+                returnedBlockIds: savedPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
+              });
+              dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: requestPageId, source: 'session:saveResponseMerge' });
+              clearPausedSaveState(requestPageId);
+              clearPausedSaveState(savedPage.id);
               lastSavedHashesRef.current.delete(requestPageId);
               lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
             } else {
+              const identityMergedPage = latestPage
+                ? mergeSavedIdentitiesIntoPage(pageToSave, latestPage, savedPage)
+                : savedPage;
+              logSaveDebug('save response skipped merge', {
+                pageId: requestPageId,
+                backendDocumentId: currentPage.backendId ?? null,
+                title: getPageTitle(currentPage),
+                latestHash,
+                requestHash,
+                latestPageId: latestPage?.id ?? null,
+                latestOutgoingBlockIds: latestPage?.nodes.filter((node) => node.backendId).map((node) => node.backendId) ?? [],
+                returnedBlockIds: savedPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
+                mergedBlockIds: identityMergedPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
+              });
+              dispatch({ type: 'mergeRemotePage', page: identityMergedPage, previousPageId: latestPage?.id ?? requestPageId, source: 'session:saveResponseIdentityMerge' });
+              clearPausedSaveState(requestPageId);
+              clearPausedSaveState(identityMergedPage.id);
+              lastSavedHashesRef.current.delete(requestPageId);
+              lastSavedHashesRef.current.set(identityMergedPage.id, pageHash(identityMergedPage));
               pendingFlushRef.current = true;
             }
 
@@ -315,11 +592,59 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
             savedAnyPage = true;
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Save failed.';
+            const staleMatch = message.match(/block\s+(\d+)\s+does not belong to document/i);
+            if (staleMatch && currentPage.backendId) {
+              try {
+                const repairedPage = await repairPageWithServerBlockIds(currentPage);
+                if (repairedPage) {
+                  logSaveDebug('auto-repaired stale block ids', {
+                    pageId: currentPage.id,
+                    backendDocumentId: currentPage.backendId ?? null,
+                    title: getPageTitle(currentPage),
+                    removedBlockIds: currentPage.nodes
+                      .filter((node, index) => node.backendId && !repairedPage.nodes[index]?.backendId)
+                      .map((node) => node.backendId),
+                  });
+                  dispatch({ type: 'mergeRemotePage', page: repairedPage, previousPageId: currentPage.id, source: 'session:autoRepairStaleBlockIds' });
+                  clearPausedSaveState(currentPage.id);
+                  clearPausedSaveState(repairedPage.id);
+                  setStaleBlockRecovery(null);
+                  setSaveFailureAlert(null);
+                  setSyncMessage(`Recovered stale block ids in ${getPageTitle(currentPage)}. Retrying save.`);
+                  pendingFlushRef.current = true;
+                  continue;
+                }
+              } catch {
+                // Fall through to the normal save failure handling if the repair lookup fails.
+              }
+            }
             console.error('Document save failed', describeSaveFailure(currentPage, error));
+            logSaveDebug('save failure', {
+              pageId: currentPage.id,
+              backendDocumentId: currentPage.backendId ?? null,
+              title: getPageTitle(currentPage),
+              message,
+              missingBlockId: staleMatch ? Number(staleMatch[1]) : null,
+              outgoingBlockIds: currentPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
+            });
             setPageSaveIndicators((current) => ({
               ...current,
               [pageKey]: { status: 'failed', message, hash: currentHash },
             }));
+            if (staleMatch) {
+              pausedSaveStateRef.current.set(currentPage.id, {
+                hash: currentHash,
+                blockId: Number(staleMatch[1]),
+              });
+              setStaleBlockRecovery({
+                pageId: currentPage.id,
+                pageTitle: getPageTitle(currentPage),
+                blockId: Number(staleMatch[1]),
+                hash: currentHash,
+                message,
+              });
+            }
+            setSaveFailureAlert({ pageTitle: getPageTitle(currentPage), message });
             setSyncMessage(`Save failed for ${getPageTitle(currentPage)}: ${message}`);
           }
         }
@@ -339,6 +664,34 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
     });
     await flushPromiseRef.current;
   }, [authToken, backendUrl, dispatch, onPagesSavedRef, syncEnabled, workspaceId]);
+
+  const repairStalePageInPlace = useCallback(async () => {
+    if (!staleBlockRecovery || !authToken || !workspaceId) {
+      return;
+    }
+
+    const sourcePage = stateRef.current.pages.find((entry) => entry.id === staleBlockRecovery.pageId) ?? null;
+    if (!sourcePage) {
+      setSyncMessage('The failed local page is no longer available.');
+      setStaleBlockRecovery(null);
+      return;
+    }
+
+    if (!sourcePage.backendId) {
+      setSyncMessage('This page does not have a server copy to repair against.');
+      return;
+    }
+
+    const repairedPage = (await repairPageWithServerBlockIds(sourcePage)) ?? sourcePage;
+
+    dispatch({ type: 'mergeRemotePage', page: repairedPage, previousPageId: sourcePage.id, source: 'session:repairStalePageInPlace' });
+    clearPausedSaveState(sourcePage.id);
+    clearPausedSaveState(repairedPage.id);
+    setStaleBlockRecovery(null);
+    setSaveFailureAlert(null);
+    setSyncMessage(`Repaired missing server block ids in ${getPageTitle(sourcePage)}. Autosave can retry now.`);
+    await flushDirtyPages([repairedPage]);
+  }, [authToken, clearPausedSaveState, dispatch, flushDirtyPages, repairPageWithServerBlockIds, staleBlockRecovery, stateRef, workspaceId]);
 
   const persistSignature = useMemo(
     () => pagesForPersistence.map((nextPage) => `${nextPage.id}:${pageHash(nextPage)}`).join('|'),
@@ -417,10 +770,8 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
       setUserId(response.user.id);
       setPassword('');
       setSyncMessage(`Logged in as ${response.user.firstName || email}.`);
-      await syncFromBackend(response.token, null);
-      if (onPagesSavedRef?.current) {
-        await onPagesSavedRef.current();
-      }
+      setInitialLoadResolved(true);
+      requestSyncConfirmation('login', response.token, null);
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Login failed.');
     } finally {
@@ -431,14 +782,11 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
   const runSync = useCallback(async () => {
     try {
       await flushDirtyPages();
-      await syncFromBackend();
-      if (onPagesSavedRef?.current) {
-        await onPagesSavedRef.current();
-      }
+      requestSyncConfirmation('manual');
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Sync failed.');
     }
-  }, [flushDirtyPages, onPagesSavedRef, syncFromBackend]);
+  }, [flushDirtyPages, requestSyncConfirmation]);
 
   const handleLogout = useCallback(() => {
     setAuthToken('');
@@ -475,6 +823,15 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
     activePageSaveMessage,
     activePageIsDirty,
     activePageHasNewerEdits,
+    saveFailureAlert,
+    dismissSaveFailureAlert,
+    staleBlockRecovery,
+    dismissStaleBlockRecovery,
+    repairStalePageInPlace,
+    reloadStalePageFromServer,
+    pendingSyncConfirmation,
+    confirmPendingSync,
+    cancelPendingSync,
     stateRef,
     pagesRef,
     flushDirtyPages,

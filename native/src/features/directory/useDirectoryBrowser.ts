@@ -271,12 +271,12 @@ export function useDirectoryBrowser({
       return;
     }
     const renamedPage = { ...pageToRename, title: nextTitle };
-    dispatch({ type: 'mergeRemotePage', page: renamedPage, previousPageId: pageToRename.id });
+    dispatch({ type: 'mergeRemotePage', page: renamedPage, previousPageId: pageToRename.id, source: 'directory:renameLocal' });
     setIsSubmittingDirectoryPrompt(true);
     try {
       if (syncEnabled) {
         const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(renamedPage, workspaceId!));
-        dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: pageToRename.id });
+        dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: pageToRename.id, source: 'directory:renameSaved' });
       }
       setDirectoryPrompt(null);
       setDirectoryPromptValue('');
@@ -337,7 +337,7 @@ export function useDirectoryBrowser({
 
     const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(duplicatedPage, workspaceId));
     const savedPage = documentToOutlinePage(savedDocument);
-    dispatch({ type: 'mergeRemotePage', page: savedPage });
+    dispatch({ type: 'mergeRemotePage', page: savedPage, source: 'directory:duplicateSaved' });
     return savedPage;
   }, [authToken, backendUrl, dispatch, workspaceId]);
 
@@ -379,11 +379,11 @@ export function useDirectoryBrowser({
         return;
       }
       const movedPage = { ...clipboardPage, directoryId: activeDirectoryId ?? null };
-      dispatch({ type: 'mergeRemotePage', page: movedPage, previousPageId: clipboardPage.id });
+      dispatch({ type: 'mergeRemotePage', page: movedPage, previousPageId: clipboardPage.id, source: 'directory:moveLocal' });
       try {
         if (syncEnabled) {
           const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(movedPage, workspaceId!));
-          dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: clipboardPage.id });
+          dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: clipboardPage.id, source: 'directory:moveSaved' });
         }
         setActiveDirectoryEntryKey(`note-${movedPage.id}`);
         setDirectoryClipboard(null);

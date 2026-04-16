@@ -3,7 +3,7 @@ import { deleteDocument, type BackendTodo } from '../lib/backend';
 import { findDocumentLinkAtCursor } from '../features/outline/documentLinks';
 import type { OutlineAction } from '../features/outline/state';
 import type { OutlinePage, OutlineState } from '../features/outline/types';
-import { getPageTitle } from '../features/outline/tree';
+import { getJournalPage, getPageTitle } from '../features/outline/tree';
 import { JUMPLIST_LIMIT, type DirectoryEntry, type JumpLocation } from './types';
 
 interface UseAppCommandsOptions {
@@ -198,6 +198,23 @@ export function useAppCommands({
     resetSearch();
   }, [navigateToPage, resetSearch, state.pages]);
 
+  const openJournalPage = useCallback((pageId: string, options?: { recordJump?: boolean }) => {
+    const targetPage = stateRef.current.pages.find((entry) => entry.id === pageId && entry.kind === 'journal') ?? null;
+    if (!targetPage) {
+      return;
+    }
+    navigateToPage(targetPage, { recordJump: options?.recordJump });
+  }, [navigateToPage, stateRef]);
+
+  const openTodayJournal = useCallback(() => {
+    const targetPage = getJournalPage(stateRef.current);
+    if (targetPage) {
+      navigateToPage(targetPage, { recordJump: true });
+      return;
+    }
+    dispatchAfterFlush({ type: 'createTodayJournal' });
+  }, [dispatchAfterFlush, navigateToPage, stateRef]);
+
   const submitSearch = useCallback(() => {
     const nextTitle = searchQuery.trim();
     if (activeSearchMatch) {
@@ -313,6 +330,8 @@ export function useAppCommands({
     jumpBack,
     jumpForward,
     navigateToPage,
+    openJournalPage,
+    openTodayJournal,
     openDirectoryBrowser,
     openDirectoryEntry,
     openSearchResult,

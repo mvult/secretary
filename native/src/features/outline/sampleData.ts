@@ -18,7 +18,7 @@ export function getDateKey(date: Date) {
 
 export function getCurrentJournalDate(now = new Date()) {
   const journalDate = new Date(now);
-  if (journalDate.getHours() >= 20) {
+  if (journalDate.getHours() >= 18) {
     journalDate.setDate(journalDate.getDate() + 1);
   }
   return journalDate;

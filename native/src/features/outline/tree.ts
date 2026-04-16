@@ -14,6 +14,18 @@ function clonePages(pages: OutlinePage[]) {
   return pages.map((page) => ({ ...page, nodes: cloneNodes(page.nodes) }));
 }
 
+export function getPageBackendBlockIds(page: OutlinePage) {
+  return page.nodes.filter((node) => node.backendId).map((node) => node.backendId!);
+}
+
+export function summarizePageBackendBlockIds(page: OutlinePage) {
+  const ids = getPageBackendBlockIds(page);
+  return {
+    count: ids.length,
+    tail: ids.slice(-12),
+  };
+}
+
 function getNodeMap(nodes: OutlineNode[]) {
   return new Map(nodes.map((node) => [node.id, node]));
 }
@@ -606,6 +618,44 @@ export function mergeRemotePage(state: OutlineState, page: OutlinePage, previous
     focusedId: activePage.nodes.some((node) => node.id === focusedId) ? focusedId : getSafeFocusedId(activePage.nodes),
     anchorId: remapNodeId(state.anchorId, nodeIdMap),
     editingId: remapNodeId(state.editingId, nodeIdMap),
+  };
+}
+
+export function syncRemoteTodoToPage(
+  state: OutlineState,
+  sourceDocumentId: number,
+  sourceBlockId: number,
+  todoId: number,
+  status: OutlineNode['todoStatus'],
+  updatedAt?: string,
+): OutlineState {
+  const pageIndex = state.pages.findIndex((entry) => entry.backendId === sourceDocumentId);
+  if (pageIndex === -1) {
+    return state;
+  }
+
+  const page = state.pages[pageIndex];
+  const node = page.nodes.find((entry) => entry.backendId === sourceBlockId || entry.todoId === todoId);
+  if (!node || node.todoStatus === status) {
+    return state;
+  }
+
+  const nextPages = state.pages.map((entry, index) => (
+    index === pageIndex
+      ? {
+          ...entry,
+          nodes: entry.nodes.map((item) => (
+            item.id === node.id
+              ? { ...item, todoStatus: status, todoId, updatedAt: updatedAt || item.updatedAt }
+              : item
+          )),
+        }
+      : entry
+  ));
+
+  return {
+    ...state,
+    pages: nextPages,
   };
 }
 
@@ -1275,7 +1325,7 @@ export function splitNodeAtCursor(state: OutlineState, selectionStart: number, s
     };
     nextNodes.splice(insertAt, 0, {
       ...newNode,
-      todoStatus: currentNode.todoStatus ?? null,
+      todoStatus: after.trim() ? currentNode.todoStatus ?? null : null,
       text: after,
     });
 

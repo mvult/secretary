@@ -7,6 +7,7 @@ from typing import Dict, List, Optional
 
 from textual.app import ComposeResult
 from textual.containers import Container, Vertical
+from textual.css.query import NoMatches
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Header, Static, TextArea
@@ -171,13 +172,16 @@ class RecordingDetailScreen(Screen):
 
     async def update_display(self):
         """Update all display elements with recording data"""
-        if not self.recording:
+        if not self.recording or not self.is_mounted:
             return
 
-        title_widget = self.query_one("#recording-title", Static)
-        date_widget = self.query_one("#recording-date", Static)
-        storage_widget = self.query_one("#storage-status", Static)
-        text_widget = self.query_one("#analysis-text", TextArea)
+        try:
+            title_widget = self.query_one("#recording-title", Static)
+            date_widget = self.query_one("#recording-date", Static)
+            storage_widget = self.query_one("#storage-status", Static)
+            text_widget = self.query_one("#analysis-text", TextArea)
+        except NoMatches:
+            return
 
         title_widget.update(self.recording.name)
         date_widget.update(f"Created: {self.recording.created_at_formatted}")

@@ -50,12 +50,14 @@ func main() {
 	}
 
 	srv := server.New(pool, []byte(jwtSecret), time.Duration(ttlHours)*time.Hour)
-	if err := srv.ConfigureAI(server.AIConfig{
-		APIKey:    os.Getenv("OPENAI_API_KEY"),
-		BaseURL:   os.Getenv("OPENAI_BASE_URL"),
-		Model:     os.Getenv("OPENAI_MODEL"),
-		SkillsDir: os.Getenv("AI_SKILLS_DIR"),
-	}); err != nil {
+	if err := srv.ConfigureAI(
+		os.Getenv("OPENAI_API_KEY"),
+		os.Getenv("OPENAI_BASE_URL"),
+		os.Getenv("OPENAI_MODEL"),
+		os.Getenv("AI_SKILLS_DIR"),
+		0,
+		0,
+	); err != nil {
 		log.Printf("ai disabled: %v", err)
 	}
 	httpServer := &http.Server{

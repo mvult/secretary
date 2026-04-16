@@ -308,7 +308,7 @@ func (s *Server) RunAIThreadTurn(ctx context.Context, req *connect.Request[secre
 	}
 	log.Printf("AI RunAIThreadTurn persisted: thread_id=%d user_message_id=%d run_id=%d", thread.ID, userMessage.ID, run.ID)
 
-	result, runErr := s.aiRunner.RunThreadTurn(ctx, aiTurnRequest{Thread: thread, UserID: int32(userID), Content: content, Mode: mode, RunID: run.ID})
+	result, runErr := s.aiRunner.RunThreadTurn(ctx, newAgentRequest(thread, int32(userID), content, mode, run.ID))
 	completedAt := pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
 	if runErr != nil {
 		log.Printf("RunAIThreadTurn failed: thread_id=%d run_id=%d mode=%s err=%v", thread.ID, run.ID, mode, runErr)

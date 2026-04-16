@@ -45,6 +45,7 @@ interface UseGlobalHotkeysOptions {
   setActiveAIThreadId: React.Dispatch<React.SetStateAction<number | null>>;
   jumpBack: () => void;
   jumpForward: () => void;
+  openTodayJournal: () => void;
   dispatchAfterFlush: (action: any) => void;
   openDirectoryBrowser: () => void;
 }
@@ -90,6 +91,7 @@ export function useGlobalHotkeys({
   setActiveAIThreadId,
   jumpBack,
   jumpForward,
+  openTodayJournal,
   dispatchAfterFlush,
   openDirectoryBrowser,
 }: UseGlobalHotkeysOptions) {
@@ -347,7 +349,7 @@ export function useGlobalHotkeys({
 
       if (event.key.toLowerCase() === 'j') {
         event.preventDefault();
-        dispatchAfterFlush({ type: 'selectJournal' });
+        openTodayJournal();
         return;
       }
       if (event.key.toLowerCase() === 'k') {
@@ -403,6 +405,7 @@ export function useGlobalHotkeys({
     lastDirectoryDPressRef,
     lastTodoGPressRef,
     moveSelectedDirectoryToClipboard,
+    openTodayJournal,
     openCreateDirectoryPrompt,
     openDirectoryBrowser,
     openDirectoryEntry,

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -399,22 +400,54 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		if incoming.WorkspaceId <= 0 {
 			return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workspace_id is required"))
 		}
-		if err := s.ensureWorkspaceAccessWithQueries(ctx, qtx, int32(incoming.WorkspaceId), int32(userID)); err != nil {
+		workspaceID := int32(incoming.WorkspaceId)
+		if err := s.ensureWorkspaceAccessWithQueries(ctx, qtx, workspaceID, int32(userID)); err != nil {
 			return nil, err
 		}
-		if err := validateDocumentDirectory(ctx, qtx, int32(incoming.WorkspaceId), kind, directoryID); err != nil {
+		if err := validateDocumentDirectory(ctx, qtx, workspaceID, kind, directoryID); err != nil {
 			return nil, err
 		}
 
-		savedDoc, err = qtx.CreateDocument(ctx, db.CreateDocumentParams{
-			WorkspaceID: int32(incoming.WorkspaceId),
-			DirectoryID: directoryID,
-			Kind:        kind,
-			Title:       title,
-			JournalDate: journalDate,
-		})
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create document"))
+		if kind == "journal" && journalDate.Valid {
+			existingJournal, err := findWorkspaceJournalByDate(ctx, qtx, workspaceID, journalDate)
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up existing journal"))
+			}
+			if existingJournal != nil {
+				savedDoc, err = qtx.UpdateDocument(ctx, db.UpdateDocumentParams{
+					ID:          existingJournal.ID,
+					DirectoryID: directoryID,
+					Kind:        kind,
+					Title:       title,
+					JournalDate: journalDate,
+				})
+				if err != nil {
+					return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update existing journal"))
+				}
+			} else {
+				savedDoc, err = qtx.CreateDocument(ctx, db.CreateDocumentParams{
+					WorkspaceID: workspaceID,
+					DirectoryID: directoryID,
+					Kind:        kind,
+					Title:       title,
+					JournalDate: journalDate,
+				})
+				if err != nil {
+					return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create document"))
+				}
+			}
+		} else {
+
+			savedDoc, err = qtx.CreateDocument(ctx, db.CreateDocumentParams{
+				WorkspaceID: workspaceID,
+				DirectoryID: directoryID,
+				Kind:        kind,
+				Title:       title,
+				JournalDate: journalDate,
+			})
+			if err != nil {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create document"))
+			}
 		}
 	}
 
@@ -480,6 +513,15 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		if blockMsg.Id > 0 {
 			existingBlock, ok := existingByID[int32(blockMsg.Id)]
 			if !ok {
+				incomingIDs := make([]int64, 0, len(incoming.Blocks))
+				for _, incomingBlock := range incoming.Blocks {
+					incomingIDs = append(incomingIDs, incomingBlock.Id)
+				}
+				existingIDs := make([]int32, 0, len(existingBlocks))
+				for _, existing := range existingBlocks {
+					existingIDs = append(existingIDs, existing.ID)
+				}
+				log.Printf("SaveDocument stale block id: document_id=%d incoming_block_id=%d incoming_block_client_key=%q incoming_parent_block_id=%d incoming_parent_client_key=%q incoming_sort_order=%d incoming_block_ids=%v existing_block_ids=%v", savedDoc.ID, blockMsg.Id, blockMsg.ClientKey, blockMsg.ParentBlockId, blockMsg.ParentClientKey, blockMsg.SortOrder, incomingIDs, existingIDs)
 				return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("block %d does not belong to document", blockMsg.Id))
 			}
 			if blockMatchesParams(existingBlock, params) {
@@ -852,6 +894,24 @@ func formatDate(value pgtype.Date) string {
 		return ""
 	}
 	return value.Time.Format("2006-01-02")
+}
+
+func findWorkspaceJournalByDate(ctx context.Context, queries *db.Queries, workspaceID int32, journalDate pgtype.Date) (*db.Document, error) {
+	if !journalDate.Valid {
+		return nil, nil
+	}
+	documents, err := queries.ListDocumentsByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	journalDateKey := formatDate(journalDate)
+	for _, document := range documents {
+		if document.Kind == "journal" && formatDate(document.JournalDate) == journalDateKey {
+			match := document
+			return &match, nil
+		}
+	}
+	return nil, nil
 }
 
 func validateBlockMessage(block *secretaryv1.Block) error {

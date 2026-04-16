@@ -52,7 +52,15 @@ export function outlinePageToDocument(page: OutlinePage, workspaceId: number): B
     createdAt: page.createdAt ?? '',
     updatedAt: page.updatedAt ?? '',
     blocks: page.nodes.map<BackendBlock>((node, index) => {
+      if (!node.backendId && !node.id.trim()) {
+        throw new Error(`Cannot save a new block without a local id in ${page.id}.`);
+      }
+
       const parent = node.parentId ? nodeById.get(node.parentId) ?? null : null;
+      if (parent && !parent.backendId && !parent.id.trim()) {
+        throw new Error(`Cannot save a block with a new parent missing a local id in ${page.id}.`);
+      }
+
       return {
         id: node.backendId ?? 0,
         clientKey: node.backendId ? '' : node.id,

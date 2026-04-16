@@ -489,6 +489,19 @@ export async function listDocuments(baseUrl: string, token: string, workspaceId:
   } satisfies BackendDocumentIndex;
 }
 
+export async function getDocument(baseUrl: string, token: string, id: number) {
+  const payload = await postJson<{ document?: BackendDocument }>(
+    baseUrl,
+    '/secretary.v1.DocumentsService/GetDocument',
+    { id },
+    token,
+  );
+  if (!payload.document) {
+    throw new Error('Document was not returned by the server.');
+  }
+  return normalizeDocument(payload.document);
+}
+
 export async function saveDocument(baseUrl: string, token: string, document: BackendDocument) {
   const payload = await postJson<{ document?: BackendDocument }>(
     baseUrl,

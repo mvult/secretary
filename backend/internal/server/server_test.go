@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	secretaryv1 "github.com/mvult/secretary/backend/gen/secretary/v1"
 	"github.com/mvult/secretary/backend/gen/secretary/v1/secretaryv1connect"
+	"github.com/mvult/secretary/backend/internal/server/agent"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -990,7 +991,7 @@ func TestRunAIThreadTurn(t *testing.T) {
 	t.Cleanup(pool.Close)
 
 	srv := New(pool, []byte("test-secret"), 24*time.Hour)
-	srv.SetAIRunner(fakeAIRunner{result: &aiTurnResult{Content: "Here is a grounded reply.", Provider: "test-provider", Model: "test-model", InputTokens: 11, OutputTokens: 7, ResponseJSON: map[string]any{"ok": true}}})
+	srv.SetAIRunner(fakeAIRunner{result: &agent.Result{Content: "Here is a grounded reply.", Provider: "test-provider", Model: "test-model", InputTokens: 11, OutputTokens: 7, ResponseJSON: map[string]any{"ok": true}}})
 	ts := httptest.NewServer(srv.Routes())
 	defer ts.Close()
 
@@ -1191,11 +1192,11 @@ func decodeProtoBody(body io.ReadCloser, target proto.Message) error {
 }
 
 type fakeAIRunner struct {
-	result *aiTurnResult
+	result *agent.Result
 	err    error
 }
 
-func (f fakeAIRunner) RunThreadTurn(context.Context, aiTurnRequest) (*aiTurnResult, error) {
+func (f fakeAIRunner) RunThreadTurn(context.Context, agent.Request) (*agent.Result, error) {
 	if f.err != nil {
 		return nil, f.err
 	}

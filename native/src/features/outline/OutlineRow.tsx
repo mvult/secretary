@@ -127,6 +127,8 @@ export function OutlineRow({
       ) : null}
 
       <div className="row-content">
+        {/* Keeping the block id render commented for future stale-id debugging. */}
+        {/* {node.backendId ? <span className="row-block-id">#{node.backendId}</span> : null} */}
         {isEditing ? (
           <textarea
             ref={textareaRef}
