@@ -137,6 +137,12 @@ export interface BackendAIRunTurnResult {
   run: BackendAIRun | null;
 }
 
+export interface PomodoroUnlockApproval {
+  decision: 'approve' | 'deny';
+  time: number;
+  reason: string;
+}
+
 export interface BackendBlock {
   id: number;
   clientKey: string;
@@ -674,4 +680,24 @@ export async function runAIThreadTurn(baseUrl: string, token: string, threadId: 
     assistantMessage: payload.assistantMessage ? normalizeAIMessage(payload.assistantMessage) : null,
     run: payload.run ? normalizeAIRun(payload.run) : null,
   } satisfies BackendAIRunTurnResult;
+}
+
+export async function approvePomodoroUnlock(baseUrl: string, token: string, alias: string, rationale: string) {
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}/api/pomodoro/approve`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ alias, rationale }),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const payload = await response.json() as Partial<PomodoroUnlockApproval>;
+  return {
+    decision: payload.decision === 'approve' ? 'approve' : 'deny',
+    time: typeof payload.time === 'number' ? payload.time : 0,
+    reason: typeof payload.reason === 'string' ? payload.reason : '',
+  } satisfies PomodoroUnlockApproval;
 }

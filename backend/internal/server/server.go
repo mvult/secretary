@@ -38,6 +38,9 @@ type Server struct {
 	jwtSecret []byte
 	tokenTTL  time.Duration
 	aiRunner  agent.Runner
+	aiAPIKey  string
+	aiBaseURL string
+	aiModel   string
 }
 
 func New(pool *pgxpool.Pool, jwtSecret []byte, tokenTTL time.Duration) *Server {
@@ -53,6 +56,8 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/activity-events", s.handleActivityEvent)
+	mux.Handle("/api/pomodoro/approve", s.authMiddleware(http.HandlerFunc(s.handlePomodoroApprove)))
 
 	// Mount ConnectRPC handlers
 	recPath, recHandler := secretaryv1connect.NewRecordingsServiceHandler(s)
@@ -69,6 +74,9 @@ func (s *Server) Routes() http.Handler {
 
 	documentPath, documentHandler := secretaryv1connect.NewDocumentsServiceHandler(s)
 	mux.Handle(documentPath, s.authMiddleware(documentHandler))
+
+	activityPath, activityHandler := secretaryv1connect.NewActivitiesServiceHandler(s)
+	mux.Handle(activityPath, s.authMiddleware(activityHandler))
 
 	aiPath, aiHandler := secretaryv1connect.NewAIServiceHandler(s)
 	mux.Handle(aiPath, s.authMiddleware(aiHandler))

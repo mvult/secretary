@@ -89,6 +89,8 @@ export interface SessionSyncState {
   setPassword: Dispatch<React.SetStateAction<string>>;
   centerColumn: boolean;
   setCenterColumn: Dispatch<React.SetStateAction<boolean>>;
+  editorFontScale: number;
+  setEditorFontScale: Dispatch<React.SetStateAction<number>>;
   syncMessage: string;
   setSyncMessage: Dispatch<React.SetStateAction<string>>;
   authToken: string;
@@ -145,6 +147,7 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [centerColumn, setCenterColumn] = useState(false);
+  const [editorFontScale, setEditorFontScale] = useState(1);
   const [syncMessage, setSyncMessage] = useState('');
   const [authToken, setAuthToken] = useState('');
   const [userId, setUserId] = useState<number | null>(null);
@@ -230,6 +233,7 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
       setUserId(parsed.userId ?? null);
       setWorkspaceId(parsed.workspaceId ?? null);
       setCenterColumn(parsed.centerColumn ?? false);
+      setEditorFontScale(typeof parsed.editorFontScale === 'number' ? Math.min(1.5, Math.max(0.75, parsed.editorFontScale)) : 1);
     } catch {
       window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
     }
@@ -249,9 +253,10 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
       userId: userId ?? undefined,
       workspaceId: workspaceId ?? undefined,
       centerColumn,
+      editorFontScale,
     };
     window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
-  }, [authToken, backendUrl, bootstrapped, centerColumn, email, userId, workspaceId]);
+  }, [authToken, backendUrl, bootstrapped, centerColumn, editorFontScale, email, userId, workspaceId]);
 
   useEffect(() => {
     if (!bootstrapped) {
@@ -807,6 +812,8 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
     setPassword,
     centerColumn,
     setCenterColumn,
+    editorFontScale,
+    setEditorFontScale,
     syncMessage,
     setSyncMessage,
     authToken,

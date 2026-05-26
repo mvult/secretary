@@ -1,0 +1,24 @@
+# Node modules
+node_modules
+frontend/node_modules
+
+# Build artifacts
+dist
+frontend/dist
+backend/bin
+backend/internal/server/dist
+
+# Generated code (we generate inside the build)
+# Note: You might want to keep local gen if you dev locally, but for Docker we regenerate
+# backend/gen
+# frontend/src/gen
+# backend/internal/db/gen
+
+# Go
+go.sum
+backend/go.sum
+
+# Misc
+.DS_Store
+.env
+.git

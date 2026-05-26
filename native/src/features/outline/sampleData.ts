@@ -16,12 +16,24 @@ export function getDateKey(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-export function getCurrentJournalDate(now = new Date()) {
-  const journalDate = new Date(now);
-  if (journalDate.getHours() >= 18) {
-    journalDate.setDate(journalDate.getDate() + 1);
+function shiftDate(date: Date, days: number) {
+  const nextDate = new Date(date);
+  nextDate.setDate(nextDate.getDate() + days);
+  return nextDate;
+}
+
+export function getAvailableJournalDates(now = new Date()) {
+  if (now.getDay() === 5 && now.getHours() >= 18) {
+    return [1, 2, 3].map((days) => shiftDate(now, days));
   }
-  return journalDate;
+  if (now.getHours() >= 18) {
+    return [shiftDate(now, 1)];
+  }
+  return [new Date(now)];
+}
+
+export function getCurrentJournalDate(now = new Date()) {
+  return getAvailableJournalDates(now)[0] ?? new Date(now);
 }
 
 export function createJournalPage(date = getCurrentJournalDate()): OutlinePage {

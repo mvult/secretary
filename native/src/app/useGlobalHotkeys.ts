@@ -21,6 +21,7 @@ interface UseGlobalHotkeysOptions {
   directoryEntries: DirectoryEntry[];
   currentDirectory: { parentId: number } | null;
   enterDirectory: (directoryId: number | null) => void;
+  createNoteHere: () => void;
   openCreateDirectoryPrompt: () => void;
   renameDirectoryEntry: () => Promise<void>;
   pasteClipboardHere: () => Promise<void>;
@@ -67,6 +68,7 @@ export function useGlobalHotkeys({
   directoryEntries,
   currentDirectory,
   enterDirectory,
+  createNoteHere,
   openCreateDirectoryPrompt,
   renameDirectoryEntry,
   pasteClipboardHere,
@@ -134,7 +136,7 @@ export function useGlobalHotkeys({
         return;
       }
 
-      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos' || state.activeView === 'directory' || state.activeView === 'ai')) {
+      if (event.key === 'Escape' && (state.activeView === 'search' || state.activeView === 'settings' || state.activeView === 'todos' || state.activeView === 'directory' || state.activeView === 'ai' || state.activeView === 'pomodoro')) {
         event.preventDefault();
         setDirectoryPrompt(null);
         lastTodoGPressRef.current = null;
@@ -168,9 +170,14 @@ export function useGlobalHotkeys({
           setActiveDirectoryEntryKey(directoryEntries[nextIndex]?.key ?? null);
         };
 
-        if (lowerKey === 'a') {
+        if (lowerKey === 'a' && event.shiftKey) {
           event.preventDefault();
           openCreateDirectoryPrompt();
+          return;
+        }
+        if (lowerKey === 'a') {
+          event.preventDefault();
+          createNoteHere();
           return;
         }
         if (lowerKey === 'r') {
@@ -363,6 +370,11 @@ export function useGlobalHotkeys({
         openDirectoryBrowser();
         return;
       }
+      if (event.key.toLowerCase() === 'p') {
+        event.preventDefault();
+        dispatchAfterFlush({ type: 'openPomodoro' });
+        return;
+      }
       if (event.key.toLowerCase() === 't') {
         event.preventDefault();
         dispatchAfterFlush({ type: 'openTodos' });
@@ -389,6 +401,7 @@ export function useGlobalHotkeys({
     clearPendingDirectoryMove,
     closeDocumentLinkPicker,
     copySelectedDirectoryToClipboard,
+    createNoteHere,
     currentDirectory,
     enterDirectory,
     cutSelectedNoteToClipboard,

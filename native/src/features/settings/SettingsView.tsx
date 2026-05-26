@@ -3,6 +3,7 @@ interface SettingsViewProps {
   email: string;
   password: string;
   centerColumn: boolean;
+  editorFontScale: number;
   authToken: string;
   workspaceId: number | null;
   isSyncing: boolean;
@@ -13,6 +14,7 @@ interface SettingsViewProps {
   onChangeEmail: (value: string) => void;
   onChangePassword: (value: string) => void;
   onChangeCenterColumn: (value: boolean) => void;
+  onChangeEditorFontScale: (value: number) => void;
   onLogin: () => void;
   onSync: () => void;
   onLogout?: () => void;
@@ -23,6 +25,7 @@ export function SettingsView({
   email,
   password,
   centerColumn,
+  editorFontScale,
   authToken,
   workspaceId,
   isSyncing,
@@ -33,6 +36,7 @@ export function SettingsView({
   onChangeEmail,
   onChangePassword,
   onChangeCenterColumn,
+  onChangeEditorFontScale,
   onLogin,
   onSync,
   onLogout,
@@ -67,9 +71,22 @@ export function SettingsView({
         ) : null}
 
         {showCenterColumnToggle ? (
+          <label className="settings-range" htmlFor="editor-font-scale">
+            <span className="settings-toggle-copy">
+              <span className="settings-label">Editor font size</span>
+              <span className="settings-message">Scale note and journal body text.</span>
+            </span>
+            <span className="settings-range-control">
+              <input id="editor-font-scale" type="range" min="0.75" max="1.5" step="0.05" value={editorFontScale} onChange={(event) => onChangeEditorFontScale(Number(event.target.value))} />
+              <span className="settings-range-value">{Math.round(editorFontScale * 100)}%</span>
+            </span>
+          </label>
+        ) : null}
+
+        {showCenterColumnToggle ? (
           <div className="settings-hotkeys">
             <span className="settings-label">Hotkeys</span>
-            <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+T` todos. `Cmd+Shift+A` AI threads. `Cmd+,` settings. `v` enters row selection. `[[` inserts a doc link. `gd` follows it. `Ctrl+O` / `Ctrl+I` move through jumps.</p>
+            <p className="settings-message">`Cmd+J` journals. `Cmd+K` note search. `Cmd+O` directories. `Cmd+P` pomodoro. `Cmd+T` todos. `Cmd+Shift+A` AI threads. `Cmd+,` settings. `v` enters row selection. `[[` inserts a doc link. `gd` follows it. `Ctrl+O` / `Ctrl+I` move through jumps.</p>
           </div>
         ) : null}
 

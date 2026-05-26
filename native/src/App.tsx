@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { getCurrentPage, getJournalPage, getJournalPages } from './features/outline/tree';
 import { useOutlineState } from './features/outline/state';
 import { useSessionSync } from './features/session/useSessionSync';
@@ -23,6 +23,8 @@ import { TodosView } from './features/todos/TodosView';
 import { AIView } from './features/ai/AIView';
 import { SettingsView } from './features/settings/SettingsView';
 import { NoteHistoryDialog } from './features/history/NoteHistoryDialog';
+import { PomodoroView } from './features/pomodoro/PomodoroView';
+import { usePomodoro } from './features/pomodoro/usePomodoro';
 import { getDocumentHistoryEntry, listDocumentHistory, type BackendDocumentHistoryEntry, type BackendTodo } from './lib/backend';
 
 function App() {
@@ -43,6 +45,7 @@ function App() {
   const lastTodoGPressRef = useRef<number | null>(null);
 
   const session = useSessionSync({ state, dispatch, onPagesSavedRef: refreshTodosRef });
+  const editorFontScaleStyle = { '--editor-font-scale': session.editorFontScale } as CSSProperties;
 
   const search = useSearchView(state);
   const documentLinks = useDocumentLinkPicker(state);
@@ -114,6 +117,11 @@ function App() {
     setActiveDirectoryId: directory.setActiveDirectoryId,
     setActiveDirectoryEntryKey: directory.setActiveDirectoryEntryKey,
     currentPage: page,
+  });
+
+  const pomodoro = usePomodoro({
+    backendUrl: session.backendUrl,
+    authToken: session.authToken,
   });
 
   const handleLogout = useCallback(() => {
@@ -262,6 +270,7 @@ function App() {
     directoryEntries: directory.directoryEntries,
     currentDirectory: directory.currentDirectory,
     enterDirectory: directory.enterDirectory,
+    createNoteHere: directory.createNoteHere,
     openCreateDirectoryPrompt: directory.openCreateDirectoryPrompt,
     renameDirectoryEntry: directory.renameDirectoryEntry,
     pasteClipboardHere: directory.pasteClipboardHere,
@@ -359,7 +368,7 @@ function App() {
   if (!page) {
     return (
       <main className="app-shell">
-        <section className="page-shell" data-center-column={session.centerColumn} data-active-view={state.activeView}>
+        <section className="page-shell" data-center-column={session.centerColumn} data-active-view={state.activeView} style={editorFontScaleStyle}>
           <header className="workspace-toolbar">
             <ToolbarMenu
               isOpen={isToolbarMenuOpen}
@@ -384,6 +393,7 @@ function App() {
                 email={session.email}
                 password={session.password}
                 centerColumn={session.centerColumn}
+                editorFontScale={session.editorFontScale}
                 authToken={session.authToken}
                 workspaceId={session.workspaceId}
                 isSyncing={session.isSyncing}
@@ -403,6 +413,7 @@ function App() {
                   session.setSyncMessage('');
                 }}
                 onChangeCenterColumn={session.setCenterColumn}
+                onChangeEditorFontScale={session.setEditorFontScale}
                 onLogin={() => void session.runLogin()}
                 onSync={() => void session.runSync()}
               />
@@ -459,7 +470,7 @@ function App() {
 
   return (
     <main className="app-shell">
-      <section className="page-shell" data-center-column={session.centerColumn} data-active-view={state.activeView}>
+      <section className="page-shell" data-center-column={session.centerColumn} data-active-view={state.activeView} style={editorFontScaleStyle}>
         <header className="workspace-toolbar">
           <ToolbarMenu
             isOpen={isToolbarMenuOpen}
@@ -590,6 +601,7 @@ function App() {
               email={session.email}
               password={session.password}
               centerColumn={session.centerColumn}
+              editorFontScale={session.editorFontScale}
               authToken={session.authToken}
               workspaceId={session.workspaceId}
               isSyncing={session.isSyncing}
@@ -607,9 +619,22 @@ function App() {
                 session.setSyncMessage('');
               }}
               onChangeCenterColumn={session.setCenterColumn}
+              onChangeEditorFontScale={session.setEditorFontScale}
               onLogin={() => void session.runLogin()}
               onSync={() => void session.runSync()}
               onLogout={handleLogout}
+            />
+          ) : null}
+
+          {state.activeView === 'pomodoro' ? (
+            <PomodoroView
+              status={pomodoro.status}
+              isLoading={pomodoro.isLoading}
+              isSubmitting={pomodoro.isSubmitting}
+              errorMessage={pomodoro.errorMessage}
+              onRefresh={() => void pomodoro.refresh()}
+              onSubmitUnlock={(alias, rationale) => void pomodoro.submitUnlock(alias, rationale)}
+              onLock={(alias) => void pomodoro.lock(alias)}
             />
           ) : null}
 

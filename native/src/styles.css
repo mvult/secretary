@@ -36,6 +36,10 @@ textarea {
   font-family: var(--font-ui);
 }
 
+input {
+  font-family: var(--font-ui);
+}
+
 button {
   cursor: pointer;
 }
@@ -316,6 +320,96 @@ button {
   border-radius: 14px;
   background: rgba(79, 23, 18, 0.4);
   color: rgba(255, 233, 229, 0.96);
+}
+
+.pomodoro-shell {
+  display: grid;
+  gap: 18px;
+}
+
+.pomodoro-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.pomodoro-card {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.pomodoro-card-wide {
+  grid-column: 1 / -1;
+}
+
+.pomodoro-status-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.pomodoro-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(237, 242, 255, 0.94);
+  resize: vertical;
+}
+
+.pomodoro-warning {
+  margin: 0;
+  color: rgba(255, 196, 181, 0.95);
+  font-size: 0.85rem;
+}
+
+.pomodoro-target-list {
+  display: grid;
+  gap: 10px;
+}
+
+.pomodoro-target-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.pomodoro-target-title {
+  font-weight: 650;
+}
+
+.pomodoro-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(186, 92, 72, 0.18);
+  color: rgba(255, 215, 205, 0.96);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pomodoro-pill-open {
+  background: rgba(84, 137, 102, 0.18);
+  color: rgba(212, 243, 222, 0.96);
+}
+
+@media (max-width: 900px) {
+  .pomodoro-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pomodoro-card-wide {
+    grid-column: auto;
+  }
 }
 
 .sync-confirm-dialog {
@@ -1186,6 +1280,7 @@ button {
 }
 
 .settings-toggle,
+.settings-range,
 .settings-hotkeys {
   display: flex;
   align-items: center;
@@ -1201,6 +1296,26 @@ button {
 .settings-hotkeys {
   display: grid;
   gap: 4px;
+}
+
+.settings-range-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 190px;
+}
+
+.settings-range-control input {
+  width: 130px;
+  accent-color: #89a7db;
+}
+
+.settings-range-value {
+  width: 42px;
+  color: rgba(203, 215, 238, 0.72);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-align: right;
 }
 
 .settings-toggle input {
@@ -1314,7 +1429,7 @@ button {
   min-height: 1.5rem;
   color: rgba(203, 215, 238, 0.3);
   font-family: var(--font-mono);
-  font-size: 1.15rem;
+  font-size: calc(1.15rem * var(--editor-font-scale, 1));
   line-height: 1.4;
 }
 
@@ -1390,18 +1505,18 @@ button {
   word-break: break-word;
   color: rgba(237, 242, 255, 0.94);
   font-family: var(--font-mono);
-  font-size: 1.15rem;
+  font-size: calc(1.15rem * var(--editor-font-scale, 1));
   line-height: 1.42;
 }
 
 .row-text[data-heading-level='1'] {
-  font-size: 1.42rem;
+  font-size: calc(1.42rem * var(--editor-font-scale, 1));
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
 .row-text[data-heading-level='2'] {
-  font-size: 1.26rem;
+  font-size: calc(1.26rem * var(--editor-font-scale, 1));
   font-weight: 650;
   letter-spacing: -0.01em;
 }

@@ -1,5 +1,5 @@
 import { cycleStatus } from './keymap';
-import { createJournalPage, formatPageDate, getCurrentJournalDate, getDateKey } from './sampleData';
+import { createJournalPage, formatPageDate, getAvailableJournalDates, getCurrentJournalDate, getDateKey } from './sampleData';
 import type { CursorPlacement, OutlineNode, OutlinePage, OutlineSnapshot, OutlineState, YankBuffer, YankedOutlineNode } from './types';
 
 function buildIndexMap(nodes: OutlineNode[]) {
@@ -384,8 +384,14 @@ export function getSelectedInfo(state: OutlineState) {
 }
 
 export function getJournalPage(state: OutlineState) {
-  const todayKey = getDateKey(getCurrentJournalDate());
-  return state.pages.find((page) => page.kind === 'journal' && page.date === todayKey) ?? null;
+  const availableDateKeys = getAvailableJournalDates().map(getDateKey);
+  for (const dateKey of availableDateKeys) {
+    const page = state.pages.find((entry) => entry.kind === 'journal' && entry.date === dateKey);
+    if (page) {
+      return page;
+    }
+  }
+  return null;
 }
 
 export function getJournalPages(state: OutlineState) {
@@ -467,30 +473,35 @@ export function updatePageTitle(state: OutlineState, title: string): OutlineStat
 }
 
 export function ensureTodayJournalPage(state: OutlineState): OutlineState {
-  const todayKey = getDateKey(getCurrentJournalDate());
-  const existing = state.pages.find((page) => page.kind === 'journal' && page.date === todayKey);
-  if (existing) {
+  const availableDateKeys = new Set(getAvailableJournalDates().map(getDateKey));
+  const missingDates = Array.from(availableDateKeys).filter(
+    (dateKey) => !state.pages.some((page) => page.kind === 'journal' && page.date === dateKey),
+  );
+  if (missingDates.length === 0) {
     return state;
   }
 
-  const journalPage = createJournalPage();
   return {
     ...state,
-    pages: [journalPage, ...state.pages],
+    pages: [...missingDates.map((dateKey) => createJournalPage(new Date(`${dateKey}T12:00:00`))), ...state.pages],
   };
 }
 
 export function createTodayJournalPage(state: OutlineState): OutlineState {
-  const todayKey = getDateKey(getCurrentJournalDate());
-  const existing = state.pages.find((page) => page.kind === 'journal' && page.date === todayKey);
-  if (existing) {
-    return selectJournalPage(state, existing.id);
+  const nextState = ensureTodayJournalPage(state);
+  const availableDates = getAvailableJournalDates();
+  for (const availableDate of availableDates) {
+    const dateKey = getDateKey(availableDate);
+    const existing = nextState.pages.find((page) => page.kind === 'journal' && page.date === dateKey);
+    if (existing) {
+      return selectJournalPage(nextState, existing.id);
+    }
   }
 
-  const journalPage = createJournalPage();
+  const journalPage = createJournalPage(availableDates[0]);
   return {
-    ...state,
-    pages: [journalPage, ...state.pages],
+    ...nextState,
+    pages: [journalPage, ...nextState.pages],
     activePageId: journalPage.id,
     activeView: 'journals',
     focusedId: getSafeFocusedId(journalPage.nodes),
@@ -529,9 +540,14 @@ export function restoreSnapshot(state: OutlineState, snapshot: OutlineSnapshot):
 }
 
 export function hydratePages(state: OutlineState, pages: OutlinePage[]): OutlineState {
-  const nextPages = clonePages(pages);
-  const todayJournal = nextPages.find((page) => page.kind === 'journal' && page.date === getDateKey(getCurrentJournalDate()));
-  const activePage = todayJournal ?? nextPages[0] ?? null;
+  const nextPages = ensureTodayJournalPage({
+    ...state,
+    pages: clonePages(pages),
+  }).pages;
+  const activePage = getJournalPage({
+    ...state,
+    pages: nextPages,
+  }) ?? nextPages[0] ?? null;
 
   return {
     ...state,
@@ -693,7 +709,7 @@ function selectJournalBoundary(state: OutlineState, pageId: string, position: 's
 }
 
 export function selectJournal(state: OutlineState): OutlineState {
-  const nextState = commitEdit(state);
+  const nextState = ensureTodayJournalPage(commitEdit(state));
   const journalPage = getJournalPage(nextState);
   if (!journalPage) {
     return createTodayJournalPage(nextState);
@@ -823,6 +839,14 @@ export function openDirectoryView(state: OutlineState): OutlineState {
 	};
 }
 
+export function openPomodoroView(state: OutlineState): OutlineState {
+  return {
+    ...commitEdit(state),
+    activeView: 'pomodoro',
+    anchorId: null,
+  };
+}
+
 export function yankLine(state: OutlineState): OutlineState {
   const yankBuffer = buildSelectionYankBuffer(state);
   if (!yankBuffer) {
@@ -895,13 +919,14 @@ export function pasteBelow(state: OutlineState, text?: string, preferStructured 
   };
 }
 
-export function createNotePage(state: OutlineState, title = ''): OutlineState {
+export function createNotePage(state: OutlineState, title = '', directoryId: number | null = null): OutlineState {
   const committed = commitEdit(state);
   const page = createBlankNotePage();
   const nextTitle = title.trim();
   const nextPage = {
     ...page,
     title: nextTitle,
+    directoryId,
   };
 
   return {

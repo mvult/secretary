@@ -17,6 +17,9 @@ func (s *Server) SetAIRunner(r agent.Runner) {
 }
 
 func (s *Server) ConfigureAI(apiKey string, baseURL string, modelName string, skillsDir string, maxIterations int, maxTokens int64) error {
+	s.aiAPIKey = strings.TrimSpace(apiKey)
+	s.aiBaseURL = strings.TrimSpace(baseURL)
+	s.aiModel = strings.TrimSpace(modelName)
 	runner, err := agent.New(agentServices{server: s}, apiKey, baseURL, modelName, skillsDir, maxIterations, maxTokens)
 	if err != nil {
 		return err

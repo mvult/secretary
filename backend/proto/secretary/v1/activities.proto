@@ -1,0 +1,101 @@
+syntax = "proto3";
+
+package secretary.v1;
+
+option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1";
+
+import "google/protobuf/struct.proto";
+
+message ActivityType {
+  int64 id = 1;
+  string key = 2;
+  string name = 3;
+  string unit = 4;
+  string created_at = 5;
+}
+
+message ActivityEntry {
+  int64 id = 1;
+  int64 activity_type_id = 2;
+  string activity_type_key = 3;
+  string occurred_at = 4;
+  optional double value = 5;
+  string note = 6;
+  google.protobuf.Struct data = 7;
+  string created_at = 8;
+}
+
+message ListActivityTypesRequest {}
+
+message ListActivityTypesResponse {
+  repeated ActivityType activity_types = 1;
+}
+
+message CreateActivityTypeRequest {
+  string key = 1;
+  string name = 2;
+  string unit = 3;
+}
+
+message CreateActivityTypeResponse {
+  ActivityType activity_type = 1;
+}
+
+message DeleteActivityTypeRequest {
+  int64 id = 1;
+}
+
+message DeleteActivityTypeResponse {}
+
+message ListActivityEntriesRequest {
+  int64 activity_type_id = 1;
+  string activity_type_key = 2;
+  string start_at = 3;
+  string end_at = 4;
+  int32 limit = 5;
+}
+
+message ListActivityEntriesResponse {
+  repeated ActivityEntry activity_entries = 1;
+}
+
+message CreateActivityEntryRequest {
+  int64 activity_type_id = 1;
+  string activity_type_key = 2;
+  string occurred_at = 3;
+  optional double value = 4;
+  string note = 5;
+  google.protobuf.Struct data = 6;
+}
+
+message CreateActivityEntryResponse {
+  ActivityEntry activity_entry = 1;
+}
+
+message UpdateActivityEntryRequest {
+  int64 id = 1;
+  string occurred_at = 2;
+  optional double value = 3;
+  string note = 4;
+  google.protobuf.Struct data = 5;
+}
+
+message UpdateActivityEntryResponse {
+  ActivityEntry activity_entry = 1;
+}
+
+message DeleteActivityEntryRequest {
+  int64 id = 1;
+}
+
+message DeleteActivityEntryResponse {}
+
+service ActivitiesService {
+  rpc ListActivityTypes(ListActivityTypesRequest) returns (ListActivityTypesResponse);
+  rpc CreateActivityType(CreateActivityTypeRequest) returns (CreateActivityTypeResponse);
+  rpc DeleteActivityType(DeleteActivityTypeRequest) returns (DeleteActivityTypeResponse);
+  rpc ListActivityEntries(ListActivityEntriesRequest) returns (ListActivityEntriesResponse);
+  rpc CreateActivityEntry(CreateActivityEntryRequest) returns (CreateActivityEntryResponse);
+  rpc UpdateActivityEntry(UpdateActivityEntryRequest) returns (UpdateActivityEntryResponse);
+  rpc DeleteActivityEntry(DeleteActivityEntryRequest) returns (DeleteActivityEntryResponse);
+}

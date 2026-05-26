@@ -26,6 +26,7 @@ import {
   openSettingsView,
   openAIView,
   openDirectoryView,
+  openPomodoroView,
   openAbove,
   openBelow,
   outdentSelection,
@@ -74,7 +75,8 @@ export type OutlineAction =
   | { type: 'openSettings' }
   | { type: 'openAI' }
   | { type: 'openDirectory' }
-  | { type: 'createNote'; title?: string }
+  | { type: 'openPomodoro' }
+  | { type: 'createNote'; title?: string; directoryId?: number | null }
   | { type: 'createTodayJournal' }
   | { type: 'toggleNodeStatus'; nodeId: string }
   | { type: 'toggleVisualMode' }
@@ -181,8 +183,10 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return openAIView(currentState);
     case 'openDirectory':
       return openDirectoryView(currentState);
+    case 'openPomodoro':
+      return openPomodoroView(currentState);
     case 'createNote':
-      return withHistory(currentState, (active) => createNotePage(active, action.title));
+      return withHistory(currentState, (active) => createNotePage(active, action.title, action.directoryId ?? null));
     case 'createTodayJournal':
       return withHistory(currentState, createTodayJournalPage);
     case 'toggleNodeStatus':

@@ -204,6 +204,13 @@ export function useDirectoryBrowser({
     lastDirectoryDPressRef.current = null;
   }, []);
 
+  const createNoteHere = useCallback(() => {
+    clearPendingDirectoryMove();
+    setDirectoryPrompt(null);
+    setDirectoryPromptValue('');
+    dispatch({ type: 'createNote', directoryId: activeDirectoryId ?? null });
+  }, [activeDirectoryId, clearPendingDirectoryMove, dispatch]);
+
   const createDirectoryHere = useCallback(async () => {
     if (isSubmittingDirectoryPrompt) {
       return;
@@ -483,6 +490,7 @@ export function useDirectoryBrowser({
     lastDirectoryDPressRef,
     pendingDirectoryMoveTimerRef,
     enterDirectory,
+    createNoteHere,
     openCreateDirectoryPrompt,
     renameDirectoryEntry,
     clearPendingDirectoryMove,

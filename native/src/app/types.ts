@@ -10,6 +10,7 @@ export interface StoredSettings {
   userId?: number;
   workspaceId?: number;
   centerColumn?: boolean;
+  editorFontScale?: number;
 }
 
 export type PageSaveIndicator = {

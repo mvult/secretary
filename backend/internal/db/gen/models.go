@@ -186,6 +186,25 @@ func (ns NullRelationKind) Value() (driver.Value, error) {
 	return string(ns.RelationKind), nil
 }
 
+type ActivityEntry struct {
+	ID             int64
+	ActivityTypeID int32
+	OccurredAt     pgtype.Timestamptz
+	Value          pgtype.Float8
+	Note           pgtype.Text
+	Data           []byte
+	CreatedAt      pgtype.Timestamptz
+}
+
+type ActivityType struct {
+	ID        int32
+	UserID    int32
+	Key       string
+	Name      string
+	Unit      pgtype.Text
+	CreatedAt pgtype.Timestamptz
+}
+
 type AiArtifact struct {
 	ID                     int64
 	RunID                  int64
