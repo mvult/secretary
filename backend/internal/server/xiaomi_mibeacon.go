@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	xiaomiScaleBLEKey = "25ca8820c464cca2e0098da376b113bd"
+	xiaomiScaleBLEKey  = "25ca8820c464cca2e0098da376b113bd"
 	xiaomiScaleProduct = 0x3BD5
 )
 
@@ -21,6 +21,14 @@ type decodedXiaomiScaleAdvertisement struct {
 	ImpedanceOhms  int     `json:"impedance_ohms,omitempty"`
 	HeartRateBPM   int     `json:"heart_rate_bpm,omitempty"`
 	ProfileID      int     `json:"profile_id"`
+	PacketKind     string  `json:"packet_kind"`
+	PayloadHex     string  `json:"payload_hex"`
+	ObjectHex      string  `json:"object_hex"`
+	ObjectExtraHex string  `json:"object_extra_hex,omitempty"`
+	RawMeasurement uint32  `json:"raw_measurement"`
+	RawMass        int     `json:"raw_mass"`
+	RawHeartRate   int     `json:"raw_heart_rate"`
+	RawImpedance   int     `json:"raw_impedance"`
 	FrameCounter   int     `json:"frame_counter"`
 	FrameControl   string  `json:"frame_control"`
 	ProductID      string  `json:"product_id"`
@@ -91,6 +99,7 @@ func decodeXiaomiScaleAdvertisement(address string, serviceDataHex string) (*dec
 	if err != nil {
 		return nil, err
 	}
+	decoded.PayloadHex = strings.ToUpper(hex.EncodeToString(payload))
 	decoded.FrameCounter = int(data[4])
 	decoded.FrameControl = fmt.Sprintf("0x%04X", frameControl)
 	decoded.ProductID = fmt.Sprintf("0x%04X", productID)
@@ -108,7 +117,7 @@ func parseXiaomiScaleObjects(payload []byte) (*decodedXiaomiScaleAdvertisement, 
 		}
 		object := payload[offset+3 : nextOffset]
 		if objectType == 0x6E16 {
-			if len(object) != 9 {
+			if len(object) < 5 {
 				return nil, fmt.Errorf("unexpected scale object length %d", len(object))
 			}
 			profileID := object[0]
@@ -116,12 +125,21 @@ func parseXiaomiScaleObjects(payload []byte) (*decodedXiaomiScaleAdvertisement, 
 			mass := measurement & 0x7FF
 			heartRate := (measurement >> 11) & 0x7F
 			impedance := measurement >> 18
-			if mass == 0 {
-				return nil, errors.New("scale measurement has no weight")
-			}
 			decoded := &decodedXiaomiScaleAdvertisement{
-				WeightKG:  float64(mass) / 10,
-				ProfileID: int(profileID),
+				ProfileID:      int(profileID),
+				PacketKind:     "zero_weight_impedance_candidate",
+				ObjectHex:      strings.ToUpper(hex.EncodeToString(object)),
+				RawMeasurement: measurement,
+				RawMass:        int(mass),
+				RawHeartRate:   int(heartRate),
+				RawImpedance:   int(impedance),
+			}
+			if len(object) > 5 {
+				decoded.ObjectExtraHex = strings.ToUpper(hex.EncodeToString(object[5:]))
+			}
+			if mass > 0 {
+				decoded.WeightKG = float64(mass) / 10
+				decoded.PacketKind = "weight_impedance_candidate"
 			}
 			if heartRate > 0 && heartRate < 127 {
 				decoded.HeartRateBPM = int(heartRate) + 50

@@ -8,13 +8,18 @@
 
 const char *WIFI_SSID = "NairDragDown 2.4";
 const char *WIFI_PASSWORD = "There!Now!";
-const char *WEBHOOK_URL = "http://192.168.0.132:8080/api/activity-events";
+const char *WEBHOOK_URLS[] = {
+  "http://192.168.0.132:8080/api/activity-events",
+  "http://192.168.0.132:5000/api/nutrition/scale-readings/ble",
+};
+const size_t WEBHOOK_URL_COUNT = sizeof(WEBHOOK_URLS) / sizeof(WEBHOOK_URLS[0]);
 
 const uint32_t POST_INTERVAL_MS = 200;
 const uint32_t IDENTITY_POST_INTERVAL_MS = 60000;
 const uint32_t WIFI_RETRY_INTERVAL_MS = 30000;
 const uint32_t BLE_SCAN_DURATION_SECONDS = 30;
 const uint32_t BLE_SCAN_RETRY_INTERVAL_MS = 0;
+const uint32_t MEASUREMENT_BURST_MS = 4000;
 const size_t EVENT_QUEUE_SIZE = 8;
 uint32_t lastPostMs = 0;
 uint32_t lastIdentityPostMs = 0;
@@ -28,6 +33,7 @@ uint32_t droppedEventCount = 0;
 uint32_t postedEventCount = 0;
 uint32_t lastBleStatusMs = 0;
 uint32_t nextBleScanAttemptMs = 0;
+uint32_t measurementBurstUntilMs = 0;
 BLEScan *bleScan = nullptr;
 
 struct BleEvent {
@@ -103,7 +109,21 @@ String jsonEscape(const String &value) {
 }
 
 bool isConfigured() {
-  return strcmp(WIFI_SSID, "CHANGE_ME") != 0 && strcmp(WIFI_PASSWORD, "CHANGE_ME") != 0 && strstr(WEBHOOK_URL, "192.168.1.100") == nullptr;
+  return strcmp(WIFI_SSID, "CHANGE_ME") != 0 && strcmp(WIFI_PASSWORD, "CHANGE_ME") != 0 && WEBHOOK_URL_COUNT > 0 && strstr(WEBHOOK_URLS[0], "192.168.1.100") == nullptr;
+}
+
+String eventPayload(const BleEvent &event) {
+  String payload = "{";
+  payload += "\"source\":\"esp32_ble_scan\",";
+  payload += "\"address\":\"" + jsonEscape(event.address) + "\",";
+  payload += "\"rssi\":" + String(event.rssi) + ",";
+  payload += "\"name_hex\":\"" + event.nameHex + "\",";
+  payload += "\"manufacturer_data_hex\":\"" + event.manufacturerDataHex + "\",";
+  payload += "\"service_uuid\":\"" + jsonEscape(event.serviceUuid) + "\",";
+  payload += "\"service_data_len\":" + String(event.serviceDataLength) + ",";
+  payload += "\"service_data_hex\":\"" + event.serviceDataHex + "\"";
+  payload += "}";
+  return payload;
 }
 
 bool ensureWifi() {
@@ -148,6 +168,16 @@ bool enqueueEvent(const BleEvent &event) {
   eventQueueLength++;
   queuedEventCount++;
   return true;
+}
+
+bool hasQueuedMeasurement(const String &serviceDataHex) {
+  for (size_t i = 0; i < eventQueueLength; i++) {
+    size_t index = (eventQueueHead + i) % EVENT_QUEUE_SIZE;
+    if (!eventQueue[index].identity && eventQueue[index].serviceDataHex == serviceDataHex) {
+      return true;
+    }
+  }
+  return false;
 }
 
 void disableWifi() {
@@ -202,34 +232,33 @@ bool postEvent(const BleEvent &event) {
   }
 
   lastPostMs = now;
+  String payload = eventPayload(event);
+  bool allSucceeded = true;
 
-  HTTPClient http;
-  http.begin(WEBHOOK_URL);
-  http.addHeader("Content-Type", "application/json");
+  for (size_t i = 0; i < WEBHOOK_URL_COUNT; i++) {
+    HTTPClient http;
+    http.begin(WEBHOOK_URLS[i]);
+    http.addHeader("Content-Type", "application/json");
 
-  String payload = "{";
-  payload += "\"source\":\"esp32_ble_scan\",";
-  payload += "\"address\":\"" + jsonEscape(event.address) + "\",";
-  payload += "\"rssi\":" + String(event.rssi) + ",";
-  payload += "\"name_hex\":\"" + event.nameHex + "\",";
-  payload += "\"manufacturer_data_hex\":\"" + event.manufacturerDataHex + "\",";
-  payload += "\"service_uuid\":\"" + jsonEscape(event.serviceUuid) + "\",";
-  payload += "\"service_data_len\":" + String(event.serviceDataLength) + ",";
-  payload += "\"service_data_hex\":\"" + event.serviceDataHex + "\"";
-  payload += "}";
+    int status = http.POST(payload);
+    allSucceeded = allSucceeded && status >= 200 && status < 300;
+    Serial.print("POST ");
+    Serial.print(status);
+    Serial.print(" url=");
+    Serial.print(WEBHOOK_URLS[i]);
+    Serial.print(" address=");
+    Serial.print(event.address);
+    Serial.print(" rssi=");
+    Serial.print(event.rssi);
+    Serial.print(" type=");
+    Serial.println(event.identity ? "identity" : "measurement");
+    http.end();
+  }
 
-  int status = http.POST(payload);
-  postedEventCount++;
-  Serial.print("POST ");
-  Serial.print(status);
-  Serial.print(" address=");
-  Serial.print(event.address);
-  Serial.print(" rssi=");
-  Serial.print(event.rssi);
-  Serial.print(" type=");
-  Serial.println(event.identity ? "identity" : "measurement");
-  http.end();
-  return true;
+  if (allSucceeded) {
+    postedEventCount++;
+  }
+  return allSucceeded;
 }
 
 void handleBleDevice(BLEAdvertisedDevice &device) {
@@ -261,6 +290,13 @@ void handleBleDevice(BLEAdvertisedDevice &device) {
   }
 
   scaleMeasurementCount++;
+  uint32_t now = millis();
+  String serviceDataHex = stringToHex(serviceData);
+  if (measurementBurstUntilMs == 0) {
+    measurementBurstUntilMs = now + MEASUREMENT_BURST_MS;
+    Serial.print("BLE measurement burst start ms=");
+    Serial.println(MEASUREMENT_BURST_MS);
+  }
   Serial.print("BLE scale measurement address=");
   Serial.print(address);
   Serial.print(" rssi=");
@@ -270,15 +306,19 @@ void handleBleDevice(BLEAdvertisedDevice &device) {
   Serial.print("scale service_data_len=");
   Serial.print(serviceData.length());
   Serial.print(" service_data_hex=");
-  Serial.println(stringToHex(serviceData));
+  Serial.println(serviceDataHex);
   Serial.print("scale manufacturer_data_len=");
   Serial.print(manufacturerData.length());
   Serial.print(" manufacturer_data_hex=");
   Serial.println(stringToHex(manufacturerData));
-  if (!enqueueEvent(makeEvent(device, false))) {
+  if (hasQueuedMeasurement(serviceDataHex)) {
+    Serial.println("BLE duplicate measurement skipped");
+  } else if (!enqueueEvent(makeEvent(device, false))) {
     Serial.println("BLE event queue full; dropped measurement");
   }
-  if (bleScan != nullptr) {
+
+  if (bleScan != nullptr && static_cast<int32_t>(now - measurementBurstUntilMs) >= 0) {
+    Serial.println("BLE measurement burst complete");
     bleScan->stop();
   }
 }
@@ -299,6 +339,7 @@ bool startBleScan() {
 
   Serial.println("BLE scan start");
   BLEScanResults *results = bleScan->start(BLE_SCAN_DURATION_SECONDS, false);
+  measurementBurstUntilMs = 0;
   nextBleScanAttemptMs = millis() + BLE_SCAN_RETRY_INTERVAL_MS;
   Serial.print("BLE scan done results=");
   Serial.println(results == nullptr ? 0 : results->getCount());
@@ -310,7 +351,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   if (!isConfigured()) {
-    Serial.println("Set WIFI_SSID, WIFI_PASSWORD, and WEBHOOK_URL before flashing.");
+    Serial.println("Set WIFI_SSID, WIFI_PASSWORD, and WEBHOOK_URLS before flashing.");
   }
   disableWifi();
 

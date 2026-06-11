@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"connectrpc.com/connect"
@@ -41,14 +42,20 @@ type Server struct {
 	aiAPIKey  string
 	aiBaseURL string
 	aiModel   string
+
+	s400Mu       sync.Mutex
+	s400Sessions map[string]s400ScaleSession
+	s400Recent   map[string]s400RecentMeasurement
 }
 
 func New(pool *pgxpool.Pool, jwtSecret []byte, tokenTTL time.Duration) *Server {
 	return &Server{
-		db:        pool,
-		queries:   db.New(pool),
-		jwtSecret: jwtSecret,
-		tokenTTL:  tokenTTL,
+		db:           pool,
+		queries:      db.New(pool),
+		jwtSecret:    jwtSecret,
+		tokenTTL:     tokenTTL,
+		s400Sessions: map[string]s400ScaleSession{},
+		s400Recent:   map[string]s400RecentMeasurement{},
 	}
 }
 

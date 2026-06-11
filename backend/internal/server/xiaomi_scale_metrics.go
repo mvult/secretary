@@ -13,23 +13,38 @@ const (
 var xiaomiScaleDOB = time.Date(1989, time.July, 2, 0, 0, 0, 0, time.UTC)
 
 type xiaomiScaleMetrics struct {
-	WeightKG         float64 `json:"weight_kg"`
-	ImpedanceOhms    int     `json:"impedance_ohms"`
-	BMI              float64 `json:"bmi"`
-	BasalMetabolism  float64 `json:"basal_metabolism"`
-	VisceralFat      float64 `json:"visceral_fat"`
-	LeanBodyMass     float64 `json:"lean_body_mass"`
-	BodyFat          float64 `json:"body_fat"`
-	Water            float64 `json:"water"`
-	BoneMass         float64 `json:"bone_mass"`
-	MuscleMass       float64 `json:"muscle_mass"`
-	Protein          float64 `json:"protein"`
-	BodyType         string  `json:"body_type"`
-	MetabolicAge     float64 `json:"metabolic_age"`
-	Source           string  `json:"source"`
-	ProfileHeightCM  float64 `json:"profile_height_cm"`
-	ProfileSex       string  `json:"profile_sex"`
-	ProfileBirthDate string  `json:"profile_birth_date"`
+	WeightKG             float64  `json:"weight_kg"`
+	ImpedanceOhms        int      `json:"impedance_ohms"`
+	ImpedanceHighOhms    int      `json:"impedance_high_ohms,omitempty"`
+	ImpedanceLowOhms     *int     `json:"impedance_low_ohms,omitempty"`
+	BMI                  float64  `json:"bmi"`
+	BasalMetabolism      float64  `json:"basal_metabolism"`
+	VisceralFat          float64  `json:"visceral_fat"`
+	LeanBodyMass         float64  `json:"lean_body_mass"`
+	BodyFat              float64  `json:"body_fat"`
+	Water                float64  `json:"water"`
+	BoneMass             float64  `json:"bone_mass"`
+	MuscleMass           float64  `json:"muscle_mass"`
+	Protein              float64  `json:"protein"`
+	BodyType             string   `json:"body_type,omitempty"`
+	MetabolicAge         float64  `json:"metabolic_age,omitempty"`
+	TotalBodyWaterKG     *float64 `json:"total_body_water_kg,omitempty"`
+	ExtracellularWaterKG *float64 `json:"extracellular_water_kg,omitempty"`
+	IntracellularWaterKG *float64 `json:"intracellular_water_kg,omitempty"`
+	ECWToTBWRatio        *float64 `json:"ecw_tbw_ratio,omitempty"`
+	FatFreeMassKG        *float64 `json:"fat_free_mass_kg,omitempty"`
+	BodyFatKG            *float64 `json:"body_fat_kg,omitempty"`
+	SkeletalMuscleMassKG *float64 `json:"skeletal_muscle_mass_kg,omitempty"`
+	BodyCellMassKG       *float64 `json:"body_cell_mass_kg,omitempty"`
+	SoftLeanMassKG       *float64 `json:"soft_lean_mass_kg,omitempty"`
+	S400Reliability      string   `json:"s400_reliability,omitempty"`
+	S400LabelSwapApplied bool     `json:"s400_label_swap_applied,omitempty"`
+	S400FootCorrection   float64  `json:"s400_foot_to_foot_correction,omitempty"`
+	S400BodyCompositionV string   `json:"s400_body_composition_version,omitempty"`
+	Source               string   `json:"source"`
+	ProfileHeightCM      float64  `json:"profile_height_cm"`
+	ProfileSex           string   `json:"profile_sex"`
+	ProfileBirthDate     string   `json:"profile_birth_date"`
 }
 
 type xiaomiBodyCalculator struct {
@@ -41,7 +56,11 @@ type xiaomiBodyCalculator struct {
 	bodyType []string
 }
 
-func calculateXiaomiScaleMetrics(weightKG float64, impedanceOhms int, measuredAt time.Time) xiaomiScaleMetrics {
+func calculateXiaomiScaleMetrics(weightKG float64, impedanceOhms int, impedanceLowOhms *int, measuredAt time.Time) xiaomiScaleMetrics {
+	if impedanceLowOhms != nil && *impedanceLowOhms > 0 {
+		return calculateS400ScaleMetrics(weightKG, impedanceOhms, *impedanceLowOhms, measuredAt)
+	}
+
 	calc := xiaomiBodyCalculator{
 		weight: weightKG,
 		height: xiaomiScaleHeightCM,
@@ -54,28 +73,204 @@ func calculateXiaomiScaleMetrics(weightKG float64, impedanceOhms int, measuredAt
 	}
 	bodyTypeIndex := calc.bodyTypeIndex()
 	return xiaomiScaleMetrics{
-		WeightKG:         round2(weightKG),
-		ImpedanceOhms:    impedanceOhms,
-		BMI:              round2(calc.bmi()),
-		BasalMetabolism:  round2(calc.bmr()),
-		VisceralFat:      round2(calc.visceralFat()),
-		LeanBodyMass:     round2(calc.lbmCoefficient()),
-		BodyFat:          round2(calc.fatPercentage()),
-		Water:            round2(calc.waterPercentage()),
-		BoneMass:         round2(calc.boneMass()),
-		MuscleMass:       round2(calc.muscleMass()),
-		Protein:          round2(calc.proteinPercentage()),
-		BodyType:         calc.bodyType[bodyTypeIndex],
-		MetabolicAge:     math.Round(calc.metabolicAge()),
-		Source:           "xiaomi_scale_2",
-		ProfileHeightCM:  xiaomiScaleHeightCM,
-		ProfileSex:       xiaomiScaleSex,
-		ProfileBirthDate: xiaomiScaleDOB.Format("2006-01-02"),
+		WeightKG:          round2(weightKG),
+		ImpedanceOhms:     impedanceOhms,
+		ImpedanceHighOhms: impedanceOhms,
+		BMI:               round2(calc.bmi()),
+		BasalMetabolism:   round2(calc.bmr()),
+		VisceralFat:       round2(calc.visceralFat()),
+		LeanBodyMass:      round2(calc.lbmCoefficient()),
+		BodyFat:           round2(calc.fatPercentage()),
+		Water:             round2(calc.waterPercentage()),
+		BoneMass:          round2(calc.boneMass()),
+		MuscleMass:        round2(calc.muscleMass()),
+		Protein:           round2(calc.proteinPercentage()),
+		BodyType:          calc.bodyType[bodyTypeIndex],
+		MetabolicAge:      math.Round(calc.metabolicAge()),
+		Source:            "xiaomi_scale_2",
+		ProfileHeightCM:   xiaomiScaleHeightCM,
+		ProfileSex:        xiaomiScaleSex,
+		ProfileBirthDate:  xiaomiScaleDOB.Format("2006-01-02"),
 	}
+}
+
+func calculateS400ScaleMetrics(weightKG float64, impedanceHighOhms int, impedanceLowOhms int, measuredAt time.Time) xiaomiScaleMetrics {
+	age := int(math.Floor(ageAt(xiaomiScaleDOB, measuredAt)))
+	sexMale := xiaomiScaleSex == "male"
+	height := xiaomiScaleHeightCM
+	bmi := weightKG / math.Pow(height/100, 2)
+
+	result := xiaomiScaleMetrics{
+		WeightKG:             round2(weightKG),
+		ImpedanceOhms:        impedanceHighOhms,
+		ImpedanceHighOhms:    impedanceHighOhms,
+		ImpedanceLowOhms:     &impedanceLowOhms,
+		BMI:                  round2(clamp(bmi, 10, 90)),
+		Source:               "xiaomi_scale_2",
+		ProfileHeightCM:      xiaomiScaleHeightCM,
+		ProfileSex:           xiaomiScaleSex,
+		ProfileBirthDate:     xiaomiScaleDOB.Format("2006-01-02"),
+		S400FootCorrection:   1.10,
+		S400BodyCompositionV: "openscale_s400_2026_port",
+	}
+
+	if age < 18 || age > 120 || height < 100 || height > 230 || weightKG < 20 || weightKG > 250 || impedanceHighOhms < 200 || impedanceHighOhms > 1500 || impedanceLowOhms < 200 || impedanceLowOhms > 1500 || bmi < 12 || bmi > 60 {
+		result.S400Reliability = "not_available"
+		return result
+	}
+
+	rHighRaw := float64(impedanceHighOhms)
+	rLowRaw := float64(impedanceLowOhms)
+	labelSwap := rLowRaw < rHighRaw
+	if labelSwap {
+		rHighRaw, rLowRaw = rLowRaw, rHighRaw
+	}
+	rHighForBone := rHighRaw
+	unreliableContact := math.Abs(rLowRaw-rHighRaw)/rHighRaw < 0.01
+	rHigh := rHighRaw * result.S400FootCorrection
+	rLow := rLowRaw * result.S400FootCorrection
+	sexM := 0.0
+	if sexMale {
+		sexM = 1.0
+	}
+
+	var tbwRaw float64
+	if sexMale {
+		tbwRaw = 1.20 + 0.45*(height*height/rHigh) + 0.18*weightKG
+	} else {
+		tbwRaw = 3.75 + 0.45*(height*height/rHigh) + 0.11*weightKG
+	}
+	tbwOK := tbwRaw >= 0.30*weightKG && tbwRaw <= 0.75*weightKG
+
+	kECW := math.Cbrt(4.3*4.3*40.5*40.5/1.05) / 100
+	if !sexMale {
+		kECW = math.Cbrt(4.3*4.3*39.0*39.0/1.05) / 100
+	}
+	ecmInput := height * height * math.Sqrt(weightKG) / rLow
+	ecwRaw := kECW * math.Pow(ecmInput, 2.0/3.0)
+
+	var tbw, ecw, icw, ffm, bodyFatKG, bodyFatPct *float64
+	var ecwTbwRatio *float64
+	if tbwOK {
+		tbw = floatPtr(tbwRaw)
+		ratio := ecwRaw / tbwRaw
+		ecwTbwRatio = floatPtr(ratio)
+		if ratio >= 0.30 && ratio <= 0.55 {
+			ecw = floatPtr(ecwRaw)
+			icw = floatPtr(tbwRaw - ecwRaw)
+		}
+		ffmRaw := tbwRaw / 0.732
+		if ffmRaw/weightKG >= 0.30 && ffmRaw/weightKG <= 0.97 {
+			ffm = floatPtr(ffmRaw)
+			bfKg := weightKG - ffmRaw
+			bfPct := (bfKg / weightKG) * 100
+			if (sexMale && bfPct >= 3 && bfPct <= 60) || (!sexMale && bfPct >= 8 && bfPct <= 70) {
+				bodyFatKG = floatPtr(bfKg)
+				bodyFatPct = floatPtr(bfPct)
+			}
+		}
+	}
+
+	smm := clamp(0.401*(height*height/rHigh)+3.825*sexM-0.071*float64(age)+5.102, 8, 75)
+	bone := clamp(s400EmpiricalBone(height, weightKG, age, rHighForBone, sexMale), 1, 6)
+	vfi := clamp(s400EmpiricalVFI(height, weightKG, age, sexMale), 1, 30)
+	bmr := 10*weightKG + 6.25*height - 5*float64(age)
+	if sexMale {
+		bmr += 5
+	} else {
+		bmr -= 161
+	}
+	if ffm != nil {
+		bmr = 370 + 21.6*(*ffm)
+	}
+	bmr = clamp(bmr, 800, 4000)
+
+	reliability := "ok"
+	if unreliableContact {
+		reliability = "unreliable"
+	} else if !tbwOK || ffm == nil || bodyFatPct == nil {
+		reliability = "approximate"
+	}
+	suppress := reliability == "unreliable"
+
+	result.S400Reliability = reliability
+	result.S400LabelSwapApplied = labelSwap
+	result.BasalMetabolism = round2(bmr)
+	result.VisceralFat = round2(vfi)
+	result.BoneMass = round2(bone)
+	result.MuscleMass = round2(smm)
+	result.SkeletalMuscleMassKG = round2Ptr(smm)
+	if !suppress {
+		result.TotalBodyWaterKG = round2PtrValue(tbw)
+		result.ExtracellularWaterKG = round2PtrValue(ecw)
+		result.IntracellularWaterKG = round2PtrValue(icw)
+		result.ECWToTBWRatio = round2PtrValue(ecwTbwRatio)
+		result.FatFreeMassKG = round2PtrValue(ffm)
+		result.BodyFatKG = round2PtrValue(bodyFatKG)
+		if bodyFatPct != nil {
+			result.BodyFat = round2(*bodyFatPct)
+		}
+		if tbw != nil {
+			result.Water = round2((*tbw / weightKG) * 100)
+		}
+		if ffm != nil {
+			result.LeanBodyMass = round2(*ffm)
+			proteinKG := math.Max(0, 0.20*(*ffm)-bone)
+			result.Protein = round2((proteinKG / weightKG) * 100)
+			result.SoftLeanMassKG = round2Ptr(math.Max(0, *ffm-bone))
+		}
+		if icw != nil {
+			result.BodyCellMassKG = round2Ptr(clamp(*icw/0.70, 10, 60))
+		}
+	}
+	return result
 }
 
 func ageAt(dob time.Time, at time.Time) float64 {
 	return math.Abs(at.Sub(dob).Hours() / 24 / 365)
+}
+
+func floatPtr(value float64) *float64 {
+	return &value
+}
+
+func round2Ptr(value float64) *float64 {
+	rounded := round2(value)
+	return &rounded
+}
+
+func round2PtrValue(value *float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	return round2Ptr(*value)
+}
+
+func s400EmpiricalBone(height float64, weight float64, age int, impedanceHighRaw float64, sexMale bool) float64 {
+	lbm := (height*9.058/100)*(height/100) + 0.32*weight + 12.226 - 0.0068*impedanceHighRaw - 0.0542*float64(age)
+	base := 0.245691014
+	if sexMale {
+		base = 0.18016894
+	}
+	bone := -(base - 0.05158*lbm)
+	if bone > 2.2 {
+		return bone + 0.1
+	}
+	return bone - 0.1
+}
+
+func s400EmpiricalVFI(height float64, weight float64, age int, sexMale bool) float64 {
+	if sexMale {
+		if height < 1.6*weight {
+			return 305*weight/(-(0.4*height-0.0826*height*height)+48) - 2.9 + 0.15*float64(age)
+		}
+		return -(0.143*height - (0.765-0.0015*height)*weight) + 0.15*float64(age) - 5
+	}
+	threshold := -(13 - 0.5*height)
+	if weight > threshold {
+		return 500*weight/(1.45*height+0.1158*height*height-120) - 6 + 0.07*float64(age)
+	}
+	return -(0.027*height - (0.691-0.0048*height)*weight) + 0.07*float64(age) - float64(age)
 }
 
 func clamp(value float64, minimum float64, maximum float64) float64 {
