@@ -1,8 +1,8 @@
 import asyncio
 import logging
 import os
+import subprocess
 import time
-import wave
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
@@ -11,6 +11,7 @@ import numpy as np
 import pyaudio
 
 from db.service import RecordingService
+from services.audio_files import AAC_BITRATE, AudioConversionError, ffmpeg_path
 
 RATE = 48000
 CHUNK = 4096
@@ -39,7 +40,7 @@ class AudioRecorder:
         self.finalize_task: Optional[asyncio.Task] = None
 
     def generate_filename(self) -> str:
-        return f"recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}.wav"
+        return f"recording_{datetime.now().strftime('%Y%m%d_%H%M%S')}.m4a"
 
     def find_aggregate_device_index(self) -> int:
         p = pyaudio.PyAudio()
@@ -188,28 +189,31 @@ class AudioRecorder:
         record_id: Optional[int],
         duration_seconds: Optional[int],
     ) -> Dict[str, Optional[str]]:
-        wav_path = self.recordings_dir_path / filename
+        audio_path = self.recordings_dir_path / filename
 
         try:
-            await asyncio.to_thread(self._convert_pcm_to_wav, pcm_path, wav_path)
+            await asyncio.to_thread(self._convert_pcm_to_m4a, pcm_path, audio_path)
         except Exception as exc:
             logging.exception("Error saving recording %s: %s", filename, exc)
             result = {"local": False, "nas": False, "local_path": None, "nas_path": None}
         else:
-            result = {"local": True, "nas": False, "local_path": str(wav_path), "nas_path": None}
+            result = {"local": True, "nas": False, "local_path": str(audio_path), "nas_path": None}
             if record_id and duration_seconds is not None:
                 await RecordingService.update_recording(
                     record_id,
                     duration=duration_seconds,
-                    local_audio=str(wav_path),
+                    local_audio=str(audio_path),
                 )
 
-        try:
-            pcm_path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            logging.warning("Unable to delete temp file %s: %s", pcm_path, exc)
+        if result["local"]:
+            try:
+                pcm_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                logging.warning("Unable to delete temp file %s: %s", pcm_path, exc)
+        else:
+            logging.warning("Keeping recoverable PCM spool after encode failure: %s", pcm_path)
 
         if result["local_path"]:
             nas_path = await asyncio.to_thread(self._try_copy_to_nas, result["local_path"])
@@ -220,31 +224,74 @@ class AudioRecorder:
 
         return result
 
-    def _convert_pcm_to_wav(self, pcm_path: Path, wav_path: Path) -> None:
+    def _convert_pcm_to_m4a(self, pcm_path: Path, audio_path: Path) -> None:
         frame_stride = CHANNELS * SAMPLE_WIDTH
         buffer_size = CHUNK * frame_stride
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(pcm_path, "rb") as pcm_file, wave.open(str(wav_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(SAMPLE_WIDTH)
-            wav_file.setframerate(RATE)
+        command = [
+            ffmpeg_path(),
+            "-loglevel",
+            "error",
+            "-y",
+            "-f",
+            "s16le",
+            "-ar",
+            str(RATE),
+            "-ac",
+            "1",
+            "-i",
+            "pipe:0",
+            "-vn",
+            "-c:a",
+            "aac",
+            "-b:a",
+            AAC_BITRATE,
+            "-movflags",
+            "+faststart",
+            str(audio_path),
+        ]
 
-            while True:
-                raw = pcm_file.read(buffer_size)
-                if not raw:
-                    break
-                samples = np.frombuffer(raw, dtype=np.int16)
-                if CHANNELS > 1:
-                    usable = (samples.size // CHANNELS) * CHANNELS
-                    if usable == 0:
-                        continue
-                    samples = samples[:usable]
-                    samples = samples.reshape(-1, CHANNELS)
-                    mono = samples.mean(axis=1)
-                else:
-                    mono = samples
-                mono_clipped = np.clip(mono, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
-                wav_file.writeframes(mono_clipped.tobytes())
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        assert process.stdin is not None
+        try:
+            with open(pcm_path, "rb") as pcm_file:
+                while True:
+                    raw = pcm_file.read(buffer_size)
+                    if not raw:
+                        break
+                    samples = np.frombuffer(raw, dtype=np.int16)
+                    if CHANNELS > 1:
+                        usable = (samples.size // CHANNELS) * CHANNELS
+                        if usable == 0:
+                            continue
+                        samples = samples[:usable]
+                        samples = samples.reshape(-1, CHANNELS)
+                        mono = samples.mean(axis=1)
+                    else:
+                        mono = samples
+                    mono_clipped = np.clip(mono, np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype(np.int16)
+                    process.stdin.write(mono_clipped.tobytes())
+        except Exception:
+            process.kill()
+            process.wait()
+            raise
+        finally:
+            try:
+                process.stdin.close()
+                process.stdin = None
+            except Exception:
+                pass
+
+        _, stderr = process.communicate()
+        return_code = process.returncode
+        if return_code != 0:
+            raise AudioConversionError(stderr.decode(errors="ignore") or "ffmpeg failed")
 
     def _try_copy_to_nas(self, local_path: str) -> Optional[str]:
         if not self.nas_dir:

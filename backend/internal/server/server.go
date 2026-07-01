@@ -22,6 +22,7 @@ import (
 	"github.com/mvult/secretary/backend/gen/secretary/v1/secretaryv1connect"
 	"github.com/mvult/secretary/backend/internal/db/gen"
 	"github.com/mvult/secretary/backend/internal/server/agent"
+	whatsappsvc "github.com/mvult/secretary/backend/internal/whatsapp"
 	"github.com/rs/cors"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -42,6 +43,7 @@ type Server struct {
 	aiAPIKey  string
 	aiBaseURL string
 	aiModel   string
+	whatsapp  *whatsappsvc.Service
 
 	s400Mu       sync.Mutex
 	s400Sessions map[string]s400ScaleSession
@@ -64,6 +66,13 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/activity-events", s.handleActivityEvent)
+	mux.Handle("/api/whatsapp/status", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppStatus)))
+	mux.Handle("/api/whatsapp/qr", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppQR)))
+	mux.Handle("/api/whatsapp/reconnect", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppReconnect)))
+	mux.Handle("/api/whatsapp/logout", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppLogout)))
+	mux.Handle("/api/whatsapp/settings", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppSettings)))
+	mux.Handle("/api/whatsapp/notifications/pending", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppPendingNotifications)))
+	mux.Handle("/api/whatsapp/notifications/mark-notified", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppMarkNotified)))
 	mux.Handle("/api/pomodoro/approve", s.authMiddleware(http.HandlerFunc(s.handlePomodoroApprove)))
 
 	// Mount ConnectRPC handlers

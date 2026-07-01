@@ -18,6 +18,7 @@
         "height": 840,
         "minWidth": 900,
         "minHeight": 640,
+        "visible": true,
         "resizable": true
       }
     ],
@@ -26,6 +27,8 @@
     }
   },
   "bundle": {
+    "active": true,
+    "targets": "all",
     "macOS": {
       "infoPlist": "Info.plist"
     }

@@ -16,7 +16,6 @@ backend/internal/server/dist
 
 # Go
 go.sum
-backend/go.sum
 
 # Misc
 .DS_Store

@@ -59,6 +59,8 @@ RUN VITE_API_URL="/" bun run build
 FROM golang:1.25-alpine AS backend_builder
 WORKDIR /app/backend
 
+RUN apk add --no-cache gcc musl-dev
+
 # Copy go.mod and go.sum
 COPY backend/go.mod backend/go.sum ./
 RUN go mod download
@@ -75,9 +77,8 @@ COPY --from=generator /workspace/backend/internal/db/gen ./internal/db/gen
 RUN mkdir -p internal/server/dist
 COPY --from=frontend_builder /app/frontend/dist ./internal/server/dist
 
-# Build the static binary
-# CGO_ENABLED=0 is critical for alpine compatibility
-RUN CGO_ENABLED=0 GOOS=linux go build -o /server ./cmd/server/main.go
+# Build the server. CGO is required by github.com/mattn/go-sqlite3 for WhatsApp sessions.
+RUN CGO_ENABLED=1 GOOS=linux go build -o /server ./cmd/server/main.go
 
 # -----------------------------------------------------------------------------
 # Stage 4: Final Runner

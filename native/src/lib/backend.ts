@@ -143,6 +143,34 @@ export interface PomodoroUnlockApproval {
   reason: string;
 }
 
+export interface WhatsAppStatus {
+  connected: boolean;
+  logged_in: boolean;
+  jid: string;
+  pairing: boolean;
+  has_qr: boolean;
+  last_error: string;
+  session_db: string;
+  last_event: string;
+  last_event_at: string;
+}
+
+export interface WhatsAppSettings {
+  importanceInstructions: string;
+  defaultImportanceInstructions: string;
+}
+
+export interface WhatsAppMessageNotification {
+  id: number;
+  chatJid: string;
+  messageId: string;
+  senderJid: string;
+  senderName: string;
+  text: string;
+  classificationReason: string;
+  receivedAt: string;
+}
+
 export interface BackendBlock {
   id: number;
   clientKey: string;
@@ -425,6 +453,58 @@ async function postJson<TResponse>(baseUrl: string, path: string, body: unknown,
   return response.json() as Promise<TResponse>;
 }
 
+async function getJson<TResponse>(baseUrl: string, path: string, token?: string) {
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  return response.json() as Promise<TResponse>;
+}
+
+async function putJson<TResponse>(baseUrl: string, path: string, body: unknown, token?: string) {
+  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  return response.json() as Promise<TResponse>;
+}
+
+function normalizeWhatsAppStatus(value: any): WhatsAppStatus {
+  return {
+    connected: Boolean(value?.connected),
+    logged_in: Boolean(value?.logged_in),
+    jid: typeof value?.jid === 'string' ? value.jid : '',
+    pairing: Boolean(value?.pairing),
+    has_qr: Boolean(value?.has_qr),
+    last_error: typeof value?.last_error === 'string' ? value.last_error : '',
+    session_db: typeof value?.session_db === 'string' ? value.session_db : '',
+    last_event: typeof value?.last_event === 'string' ? value.last_event : '',
+    last_event_at: typeof value?.last_event_at === 'string' ? value.last_event_at : '',
+  };
+}
+
+function normalizeWhatsAppNotification(value: any): WhatsAppMessageNotification {
+  return {
+    id: toNumber(value?.id),
+    chatJid: typeof value?.chat_jid === 'string' ? value.chat_jid : '',
+    messageId: typeof value?.message_id === 'string' ? value.message_id : '',
+    senderJid: typeof value?.sender_jid === 'string' ? value.sender_jid : '',
+    senderName: typeof value?.sender_name === 'string' ? value.sender_name : '',
+    text: typeof value?.text === 'string' ? value.text : '',
+    classificationReason: typeof value?.classification_reason === 'string' ? value.classification_reason : '',
+    receivedAt: typeof value?.received_at === 'string' ? value.received_at : '',
+  };
+}
+
 export function login(baseUrl: string, email: string, password: string) {
   return postJson<LoginResponse>(baseUrl, '/api/login', { email, password });
 }
@@ -700,4 +780,64 @@ export async function approvePomodoroUnlock(baseUrl: string, token: string, alia
     time: typeof payload.time === 'number' ? payload.time : 0,
     reason: typeof payload.reason === 'string' ? payload.reason : '',
   } satisfies PomodoroUnlockApproval;
+}
+
+export async function getWhatsAppStatus(baseUrl: string, token: string) {
+  const payload = await getJson<{ enabled?: boolean; status?: unknown }>(baseUrl, '/api/whatsapp/status', token);
+  return {
+    enabled: Boolean(payload.enabled),
+    status: normalizeWhatsAppStatus(payload.status),
+  };
+}
+
+export async function getWhatsAppQR(baseUrl: string, token: string) {
+  const payload = await getJson<{ qr?: string; status?: unknown }>(baseUrl, '/api/whatsapp/qr', token);
+  return {
+    qr: typeof payload.qr === 'string' ? payload.qr : '',
+    status: normalizeWhatsAppStatus(payload.status),
+  };
+}
+
+export async function reconnectWhatsApp(baseUrl: string, token: string) {
+  const payload = await postJson<{ status?: unknown }>(baseUrl, '/api/whatsapp/reconnect', {}, token);
+  return normalizeWhatsAppStatus(payload.status);
+}
+
+export async function logoutWhatsApp(baseUrl: string, token: string) {
+  const payload = await postJson<{ status?: unknown }>(baseUrl, '/api/whatsapp/logout', {}, token);
+  return normalizeWhatsAppStatus(payload.status);
+}
+
+export async function getWhatsAppSettings(baseUrl: string, token: string): Promise<WhatsAppSettings> {
+  const payload = await getJson<{ importance_instructions?: string; default_importance_instructions?: string }>(baseUrl, '/api/whatsapp/settings', token);
+  return {
+    importanceInstructions: typeof payload.importance_instructions === 'string' ? payload.importance_instructions : '',
+    defaultImportanceInstructions: typeof payload.default_importance_instructions === 'string' ? payload.default_importance_instructions : '',
+  };
+}
+
+export async function saveWhatsAppSettings(baseUrl: string, token: string, importanceInstructions: string): Promise<WhatsAppSettings> {
+  const payload = await putJson<{ importance_instructions?: string; default_importance_instructions?: string }>(
+    baseUrl,
+    '/api/whatsapp/settings',
+    { importance_instructions: importanceInstructions },
+    token,
+  );
+  return {
+    importanceInstructions: typeof payload.importance_instructions === 'string' ? payload.importance_instructions : '',
+    defaultImportanceInstructions: typeof payload.default_importance_instructions === 'string' ? payload.default_importance_instructions : '',
+  };
+}
+
+export async function listPendingWhatsAppNotifications(baseUrl: string, token: string) {
+  const payload = await getJson<{ messages?: unknown[] }>(baseUrl, '/api/whatsapp/notifications/pending', token);
+  return Array.isArray(payload.messages) ? payload.messages.map(normalizeWhatsAppNotification) : [];
+}
+
+export async function markWhatsAppNotificationsNotified(baseUrl: string, token: string, ids: number[]) {
+  if (ids.length === 0) {
+    return [];
+  }
+  const payload = await postJson<{ messages?: unknown[] }>(baseUrl, '/api/whatsapp/notifications/mark-notified', { ids }, token);
+  return Array.isArray(payload.messages) ? payload.messages.map(normalizeWhatsAppNotification) : [];
 }

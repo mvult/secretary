@@ -25,7 +25,7 @@ import { SettingsView } from './features/settings/SettingsView';
 import { NoteHistoryDialog } from './features/history/NoteHistoryDialog';
 import { PomodoroView } from './features/pomodoro/PomodoroView';
 import { usePomodoro } from './features/pomodoro/usePomodoro';
-import { getDocumentHistoryEntry, listDocumentHistory, type BackendDocumentHistoryEntry, type BackendTodo } from './lib/backend';
+import { getDocumentHistoryEntry, listDocumentHistory, listPendingWhatsAppNotifications, markWhatsAppNotificationsNotified, type BackendDocumentHistoryEntry, type BackendTodo, type WhatsAppMessageNotification } from './lib/backend';
 
 function App() {
   const [state, dispatch] = useOutlineState();
@@ -123,6 +123,65 @@ function App() {
     backendUrl: session.backendUrl,
     authToken: session.authToken,
   });
+
+  useEffect(() => {
+    if (!session.authToken || !session.backendUrl.trim()) {
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+
+    async function notify(message: WhatsAppMessageNotification) {
+      if (!('Notification' in window)) {
+        return false;
+      }
+      let permission = Notification.permission;
+      if (permission === 'default') {
+        permission = await Notification.requestPermission();
+      }
+      if (permission !== 'granted') {
+        return false;
+      }
+      const title = message.senderName || message.senderJid || message.chatJid || 'WhatsApp';
+      const preview = message.text.length > 160 ? `${message.text.slice(0, 157)}...` : message.text;
+      const body = message.classificationReason ? `${preview}\n${message.classificationReason}` : preview;
+      new Notification(title, { body, tag: `whatsapp-${message.id}` });
+      return true;
+    }
+
+    async function poll() {
+      if (inFlight || cancelled) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const pending = await listPendingWhatsAppNotifications(session.backendUrl, session.authToken);
+        const notifiedIds: number[] = [];
+        for (const message of pending) {
+          if (cancelled) {
+            break;
+          }
+          if (await notify(message)) {
+            notifiedIds.push(message.id);
+          }
+        }
+        if (notifiedIds.length > 0 && !cancelled) {
+          await markWhatsAppNotificationsNotified(session.backendUrl, session.authToken, notifiedIds);
+        }
+      } catch (error) {
+        console.warn('WhatsApp notification poll failed', error);
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    void poll();
+    const interval = window.setInterval(() => void poll(), 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [session.authToken, session.backendUrl]);
 
   const handleLogout = useCallback(() => {
     todos.clearTodos();

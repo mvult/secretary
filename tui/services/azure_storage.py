@@ -8,6 +8,7 @@ from typing import Dict, Optional
 from urllib.parse import quote
 
 import requests
+from services.audio_files import content_type_for_audio
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -105,7 +106,7 @@ class AzureBlobStorage:
             "x-ms-version": "2020-04-08",
             "x-ms-blob-type": "BlockBlob",
             "Content-Length": str(file_size),
-            "Content-Type": "audio/wav",
+            "Content-Type": content_type_for_audio(file_path),
         }
 
         auth_header = self._get_authorization_header("PUT", url_path, headers)

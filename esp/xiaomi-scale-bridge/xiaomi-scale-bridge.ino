@@ -9,8 +9,8 @@
 const char *WIFI_SSID = "NairDragDown 2.4";
 const char *WIFI_PASSWORD = "There!Now!";
 const char *WEBHOOK_URLS[] = {
-  "http://192.168.0.132:8080/api/activity-events",
-  "http://192.168.0.132:5000/api/nutrition/scale-readings/ble",
+  "http://192.168.0.194:8080/api/activity-events",
+  "http://192.168.0.194:5000/api/nutrition/scale-readings/ble",
 };
 const size_t WEBHOOK_URL_COUNT = sizeof(WEBHOOK_URLS) / sizeof(WEBHOOK_URLS[0]);
 

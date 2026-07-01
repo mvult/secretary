@@ -5,6 +5,7 @@ from typing import Any, Dict
 
 import requests
 from dotenv import load_dotenv
+from services.audio_files import content_type_for_audio
 
 load_dotenv()
 
@@ -50,7 +51,7 @@ def _transcribe_from_url_sync(audio_url: str) -> Dict[str, Any]:
 def _transcribe_from_file_sync(file_path: str) -> Dict[str, Any]:
     headers = {
         "Authorization": f"Token {DEEPGRAM_API_KEY}",
-        "Content-Type": "audio/wav",
+        "Content-Type": content_type_for_audio(file_path),
     }
 
     params = {

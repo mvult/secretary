@@ -49,7 +49,7 @@ class ImportRecordingModal(ModalScreen):
         with Container(classes="import-dialog"):
             yield Static("Import an existing recording", classes="dialog-title")
             yield Static(
-                "Provide the local file path (wav or m4a).",
+                "Provide the local file path (wav, m4a, or mp4).",
                 classes="dialog-subtitle",
             )
             yield Input(placeholder="/path/to/audio.m4a", id="file-path-input")

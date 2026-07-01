@@ -1,4 +1,4 @@
-h1:9FHKlSlLnxvUdfBOVr1lgnV6MHkvJcAwNOVyy2m1C2I=
+h1:/JjfgQqFQB3yyDdMugB/4MH7JlU/qvPoMsP8avTh8W0=
 001_baseline.sql h1:NpRqek3jkdlw0PqgobS3KI+Bjv6ABCSS2gi6MuY+9Hc=
 002_add_todo_history.sql h1:/ZUkDcKj7AEHv7znBs19CzFP2U+OUIlO0TCGKwMvbJ8=
 20260126052726_test_change.sql h1:1TzEPbEbkfUe7tIxkMR2yN9IvECpxoq/bpNYZ+mNqcY=
@@ -14,3 +14,4 @@ h1:9FHKlSlLnxvUdfBOVr1lgnV6MHkvJcAwNOVyy2m1C2I=
 20260328110000_add_document_history.sql h1:roRzL6hqt6kUS6HaqxZge4vLImxJQxpTUoqDGHbxyDo=
 20260512120000_add_activity_tracking.sql h1:h9mcOrU5fLb18qRteQMzRIo9nTfHYKm7ox8Bg9roPxQ=
 20260512120500_drop_redundant_activity_type_index.sql h1:sCOavWlOp2Ywt1spyol7xvaK0Cq6QGiGgwDclzxF19Q=
+20260615120000_add_whatsapp_ingest.sql h1:hrKFdupYhUaW7eQNh6mFeKevPKsC18FD1kgRAkIx6bc=

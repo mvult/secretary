@@ -1,3 +1,14 @@
+import { useCallback, useEffect, useState } from 'react';
+import {
+  getWhatsAppQR,
+  getWhatsAppSettings,
+  getWhatsAppStatus,
+  logoutWhatsApp,
+  reconnectWhatsApp,
+  saveWhatsAppSettings,
+  type WhatsAppStatus,
+} from '../../lib/backend';
+
 interface SettingsViewProps {
   backendUrl: string;
   email: string;
@@ -41,6 +52,95 @@ export function SettingsView({
   onSync,
   onLogout,
 }: SettingsViewProps) {
+  const [whatsAppStatus, setWhatsAppStatus] = useState<WhatsAppStatus | null>(null);
+  const [whatsAppQR, setWhatsAppQR] = useState('');
+  const [importanceInstructions, setImportanceInstructions] = useState('');
+  const [whatsAppMessage, setWhatsAppMessage] = useState('');
+  const [isWhatsAppLoading, setIsWhatsAppLoading] = useState(false);
+
+  const loadWhatsApp = useCallback(async () => {
+    if (!authToken || !backendUrl.trim()) {
+      setWhatsAppStatus(null);
+      setWhatsAppQR('');
+      return;
+    }
+    setIsWhatsAppLoading(true);
+    try {
+      const [statusPayload, settingsPayload] = await Promise.all([
+        getWhatsAppStatus(backendUrl, authToken),
+        getWhatsAppSettings(backendUrl, authToken),
+      ]);
+      setWhatsAppStatus(statusPayload.status);
+      setImportanceInstructions(settingsPayload.importanceInstructions || settingsPayload.defaultImportanceInstructions);
+      if (statusPayload.status.has_qr || statusPayload.status.pairing || !statusPayload.status.logged_in) {
+        const qrPayload = await getWhatsAppQR(backendUrl, authToken);
+        setWhatsAppQR(qrPayload.qr);
+        setWhatsAppStatus(qrPayload.status);
+      } else {
+        setWhatsAppQR('');
+      }
+      setWhatsAppMessage('');
+    } catch (error) {
+      setWhatsAppMessage(error instanceof Error ? error.message : 'WhatsApp status failed.');
+    } finally {
+      setIsWhatsAppLoading(false);
+    }
+  }, [authToken, backendUrl]);
+
+  useEffect(() => {
+    void loadWhatsApp();
+  }, [loadWhatsApp]);
+
+  async function handleSaveWhatsAppSettings() {
+    if (!authToken) {
+      return;
+    }
+    setIsWhatsAppLoading(true);
+    try {
+      const saved = await saveWhatsAppSettings(backendUrl, authToken, importanceInstructions);
+      setImportanceInstructions(saved.importanceInstructions || saved.defaultImportanceInstructions);
+      setWhatsAppMessage('WhatsApp importance instructions saved.');
+    } catch (error) {
+      setWhatsAppMessage(error instanceof Error ? error.message : 'Failed to save WhatsApp settings.');
+    } finally {
+      setIsWhatsAppLoading(false);
+    }
+  }
+
+  async function handleWhatsAppReconnect() {
+    if (!authToken) {
+      return;
+    }
+    setIsWhatsAppLoading(true);
+    try {
+      const status = await reconnectWhatsApp(backendUrl, authToken);
+      setWhatsAppStatus(status);
+      setWhatsAppMessage('WhatsApp reconnect requested.');
+      await loadWhatsApp();
+    } catch (error) {
+      setWhatsAppMessage(error instanceof Error ? error.message : 'WhatsApp reconnect failed.');
+    } finally {
+      setIsWhatsAppLoading(false);
+    }
+  }
+
+  async function handleWhatsAppLogout() {
+    if (!authToken) {
+      return;
+    }
+    setIsWhatsAppLoading(true);
+    try {
+      const status = await logoutWhatsApp(backendUrl, authToken);
+      setWhatsAppStatus(status);
+      setWhatsAppQR('');
+      setWhatsAppMessage('WhatsApp logged out.');
+    } catch (error) {
+      setWhatsAppMessage(error instanceof Error ? error.message : 'WhatsApp logout failed.');
+    } finally {
+      setIsWhatsAppLoading(false);
+    }
+  }
+
   return (
     <section className="settings-shell">
       <header className="page-header">
@@ -111,6 +211,48 @@ export function SettingsView({
           </p>
           {syncMessage ? <p className="settings-message">{syncMessage}</p> : null}
         </div>
+      </div>
+
+      <div className="settings-card">
+        <div className="settings-hotkeys">
+          <span className="settings-label">WhatsApp</span>
+          <p className="settings-message">
+            {!authToken ? 'Log in to configure WhatsApp.' : whatsAppStatus?.logged_in ? `Paired${whatsAppStatus.jid ? ` as ${whatsAppStatus.jid}` : ''}.` : whatsAppStatus?.pairing || whatsAppStatus?.has_qr ? 'Waiting for WhatsApp pairing.' : 'Not paired.'}
+          </p>
+          {whatsAppStatus?.connected ? <p className="settings-message">Connected to WhatsApp.</p> : null}
+          {whatsAppStatus?.last_error ? <p className="settings-message">Error: {whatsAppStatus.last_error}</p> : null}
+          {whatsAppQR ? (
+            <p className="settings-message">
+              Pairing payload: <code>{whatsAppQR}</code>
+            </p>
+          ) : null}
+        </div>
+
+        <label className="settings-label" htmlFor="whatsapp-importance">Importance classifier instructions</label>
+        <textarea
+          id="whatsapp-importance"
+          className="settings-input"
+          rows={8}
+          value={importanceInstructions}
+          onChange={(event) => setImportanceInstructions(event.target.value)}
+          disabled={!authToken || isWhatsAppLoading}
+        />
+
+        <div className="settings-actions">
+          <button type="button" className="sync-button" onClick={() => void loadWhatsApp()} disabled={!authToken || isWhatsAppLoading}>
+            Refresh WhatsApp
+          </button>
+          <button type="button" className="sync-button" onClick={() => void handleSaveWhatsAppSettings()} disabled={!authToken || isWhatsAppLoading}>
+            Save instructions
+          </button>
+          <button type="button" className="sync-button" onClick={() => void handleWhatsAppReconnect()} disabled={!authToken || isWhatsAppLoading}>
+            Reconnect
+          </button>
+          <button type="button" className="sync-button" onClick={() => void handleWhatsAppLogout()} disabled={!authToken || isWhatsAppLoading}>
+            Logout WhatsApp
+          </button>
+        </div>
+        {whatsAppMessage ? <p className="settings-message">{whatsAppMessage}</p> : null}
       </div>
     </section>
   );

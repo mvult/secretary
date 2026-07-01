@@ -60,6 +60,9 @@ func main() {
 	); err != nil {
 		log.Printf("ai disabled: %v", err)
 	}
+	if err := srv.StartWhatsApp(ctx, os.Getenv("WHATSAPP_SESSION_DB")); err != nil {
+		log.Printf("whatsapp disabled: %v", err)
+	}
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           srv,

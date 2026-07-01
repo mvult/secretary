@@ -40,7 +40,7 @@ export interface JumpLocation {
   focusedId: string;
 }
 
-export const TODO_STATUS_ORDER: BackendTodo['status'][] = ['todo', 'doing', 'done', 'blocked', 'skipped'];
+export const TODO_STATUS_ORDER: BackendTodo['status'][] = ['todo', 'done', 'blocked', 'skipped'];
 
 export const SETTINGS_STORAGE_KEY = 'secretary-native-settings';
 

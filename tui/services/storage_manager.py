@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import requests
 
 from services.azure_storage import AzureBlobStorage
+from services.audio_files import CANONICAL_AUDIO_SUFFIX, storage_name
 from db.service import RecordingService
 import logging
 
@@ -133,7 +134,7 @@ class StorageManager:
                 local_dir = "recordings"
                 os.makedirs(local_dir, exist_ok=True)
                 
-                local_path = os.path.join(local_dir, f"{recording.id}_{recording.name}.wav")
+                local_path = os.path.join(local_dir, storage_name(recording, source_info["path"]))
                 
                 if await self.copy_from_source(source_info, local_path):
                     await RecordingService.update_recording(recording.id, local_audio=local_path)
@@ -169,7 +170,7 @@ class StorageManager:
                 return {"success": False, "error": f"NAS directory not available: {self.nas_dir}"}
             
             try:
-                nas_path = os.path.join(self.nas_dir, f"{recording.id}_{recording.name}.wav")
+                nas_path = os.path.join(self.nas_dir, storage_name(recording, source_info["path"]))
                 
                 if await self.copy_from_source(source_info, nas_path):
                     await RecordingService.update_recording(recording.id, nas_audio=nas_path)
@@ -193,7 +194,7 @@ class StorageManager:
             
             # Delete cloud file
             try:
-                blob_name = f"{recording.id}_{recording.name}.wav"
+                blob_name = storage_name(recording, recording.audio_url or CANONICAL_AUDIO_SUFFIX)
                 result = await self.azure_storage.delete_file(blob_name)
                 
                 if result['success']:
@@ -216,7 +217,7 @@ class StorageManager:
                 
                 result = await self.azure_storage.upload_file(
                     source_info["path"],
-                    blob_name=f"{recording.id}_{recording.name}.wav"
+                    blob_name=storage_name(recording, source_info["path"])
                 )
                 
                 if result['success']:
@@ -252,7 +253,7 @@ class StorageManager:
         if recording.audio_url and recording.audio_url.startswith('https://'):
             if self.azure_storage:
                 try:
-                    blob_name = f"{recording.id}_{recording.name}.wav"
+                    blob_name = storage_name(recording, recording.audio_url or CANONICAL_AUDIO_SUFFIX)
                     result = await self.azure_storage.delete_file(blob_name)
                     if result['success']:
                         deleted_locations.append("cloud")
