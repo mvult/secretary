@@ -50,8 +50,6 @@ const TARGETS: [PomodoroTarget; 10] = [
             "youtube-nocookie.com",
             "youtube.googleapis.com",
             "youtubei.googleapis.com",
-            "ytimg.com",
-            "ytimg.l.google.com",
         ],
         process_match: None,
     },
