@@ -16,9 +16,20 @@ import (
 )
 
 func main() {
-	if err := godotenv.Load(); err != nil {
+	loadedEnv := false
+	for _, envPath := range []string{".env", "../.env"} {
+		if _, err := os.Stat(envPath); err != nil {
+			continue
+		}
+		if err := godotenv.Load(envPath); err != nil {
+			log.Printf("failed to load %s: %v", envPath, err)
+			continue
+		}
+		loadedEnv = true
+		log.Printf("loaded environment from %s", envPath)
+	}
+	if !loadedEnv {
 		// It's not an error if .env doesn't exist, we might be in production using real env vars.
-		// But let's log it just in case.
 		log.Println("No .env file found, using system environment variables")
 	}
 

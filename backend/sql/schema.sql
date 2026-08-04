@@ -275,6 +275,17 @@ CREATE TABLE "public"."block_document_link" (
   CONSTRAINT "block_document_link_target_document_fk" FOREIGN KEY ("target_document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE
 );
 -- Create "todo" table
+CREATE TABLE "public"."todo_goal" (
+  "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  "user_id" integer NOT NULL,
+  "name" text NOT NULL,
+  "description" text NOT NULL DEFAULT '',
+  "created_at" timestamptz NOT NULL DEFAULT now(),
+  "updated_at" timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY ("id"),
+  CONSTRAINT "todo_goal_user_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT "todo_goal_name_check" CHECK (btrim("name") <> ''::text)
+);
 CREATE TABLE "public"."todo" (
   "id" integer NOT NULL GENERATED ALWAYS AS IDENTITY,
   "name" text NOT NULL,
@@ -282,18 +293,33 @@ CREATE TABLE "public"."todo" (
   "status" text NULL,
   "user_id" integer NULL,
   "workspace_id" integer NULL,
+  "bucket" text NULL,
+  "priority_rank" integer NULL,
+  "deadline_date" date NULL,
+  "goal_id" integer NULL,
   "source_kind" text NOT NULL DEFAULT 'manual',
   "source_document_id" integer NULL,
   "source_block_id" integer NULL,
+  "current_document_id" integer NULL,
+  "current_block_id" integer NULL,
+  "completed_at" timestamptz NULL,
+  "completed_document_id" integer NULL,
+  "completed_block_id" integer NULL,
   "created_at_recording_id" integer NULL,
   "updated_at_recording_id" integer NULL,
   "created_at" timestamptz NOT NULL DEFAULT now(),
   "updated_at" timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY ("id"),
+  CONSTRAINT "todo_completed_block_fk" FOREIGN KEY ("completed_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT "todo_completed_document_fk" FOREIGN KEY ("completed_document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
   CONSTRAINT "created_session_fk" FOREIGN KEY ("created_at_recording_id") REFERENCES "public"."recording" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT "todo_current_block_fk" FOREIGN KEY ("current_block_id") REFERENCES "public"."block" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT "todo_current_document_fk" FOREIGN KEY ("current_document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT "todo_goal_fk" FOREIGN KEY ("goal_id") REFERENCES "public"."todo_goal" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
   CONSTRAINT "todo_source_document_fk" FOREIGN KEY ("source_document_id") REFERENCES "public"."document" ("id") ON UPDATE NO ACTION ON DELETE CASCADE,
   CONSTRAINT "todo_user" FOREIGN KEY ("user_id") REFERENCES "public"."user" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION,
   CONSTRAINT "todo_workspace_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspace" ("id") ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT "todo_bucket_check" CHECK ("bucket" IS NULL OR "bucket" = ANY (ARRAY['inbox'::text, 'on_deck'::text, 'blocked'::text, 'done'::text])),
   CONSTRAINT "todo_source_kind_check" CHECK (source_kind = ANY (ARRAY['manual'::text, 'block'::text, 'recording'::text, 'llm'::text])),
   CONSTRAINT "updated_at_recording_id" FOREIGN KEY ("updated_at_recording_id") REFERENCES "public"."recording" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION
 );
@@ -327,6 +353,14 @@ CREATE TABLE "public"."document_history" (
 );
 -- Create index "todo_source_block_idx" to table: "todo"
 CREATE UNIQUE INDEX "todo_source_block_idx" ON "public"."todo" ("source_block_id") WHERE (source_block_id IS NOT NULL);
+-- Create index "todo_goal_user_idx" to table: "todo_goal"
+CREATE INDEX "todo_goal_user_idx" ON "public"."todo_goal" ("user_id", "name");
+-- Create index "todo_current_block_idx" to table: "todo"
+CREATE UNIQUE INDEX "todo_current_block_idx" ON "public"."todo" ("current_block_id") WHERE (current_block_id IS NOT NULL);
+-- Create index "todo_goal_idx" to table: "todo"
+CREATE INDEX "todo_goal_idx" ON "public"."todo" ("goal_id");
+-- Create index "todo_user_bucket_priority_idx" to table: "todo"
+CREATE INDEX "todo_user_bucket_priority_idx" ON "public"."todo" ("user_id", "bucket", "priority_rank", "deadline_date", "id");
 -- Create index "todo_workspace_idx" to table: "todo"
 CREATE INDEX "todo_workspace_idx" ON "public"."todo" ("workspace_id");
 -- Create index "document_history_document_captured_idx" to table: "document_history"

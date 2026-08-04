@@ -218,6 +218,14 @@ SET
 WHERE id = $1
 RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
 
+-- name: ClearBlockTodo :one
+UPDATE block
+SET
+  todo_id = NULL,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
+
 -- name: DeleteBlockDocumentLinksByBlock :exec
 DELETE FROM block_document_link
 WHERE block_id = $1;
@@ -243,9 +251,11 @@ INSERT INTO todo (
   workspace_id,
   source_kind,
   source_document_id,
-  source_block_id
-) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7)
-RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
+  source_block_id,
+  current_document_id,
+  current_block_id
+) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7, $6, $7)
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
 
 -- name: UpdateCanonicalTodoForBlock :one
 UPDATE todo
@@ -255,9 +265,11 @@ SET
   status = $4,
   user_id = $5,
   workspace_id = $6,
-  source_kind = 'block',
-  source_document_id = $7,
-  source_block_id = $8,
+  current_document_id = $7,
+  current_block_id = $8,
+  completed_at = CASE WHEN $4 = 'done' AND completed_at IS NULL THEN now() WHEN $4 <> 'done' THEN NULL ELSE completed_at END,
+  completed_document_id = CASE WHEN $4 = 'done' THEN $7 WHEN $4 <> 'done' THEN NULL ELSE completed_document_id END,
+  completed_block_id = CASE WHEN $4 = 'done' THEN $8 WHEN $4 <> 'done' THEN NULL ELSE completed_block_id END,
   updated_at = now()
 WHERE id = $1
-RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;

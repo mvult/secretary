@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { updateTodo, listTodos, type BackendTodo } from '../../lib/backend';
+import { updateTodo, listTodoGoals, listTodos, type BackendTodo, type BackendTodoGoal } from '../../lib/backend';
 import type { TodoFilter } from '../../app/types';
 import { matchesTodoFilter } from '../../app/format';
 
@@ -13,7 +13,9 @@ interface UseTodosOptions {
 
 export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syncTodoIntoPages }: UseTodosOptions) {
   const [todos, setTodos] = useState<BackendTodo[]>([]);
+  const [todoGoals, setTodoGoals] = useState<BackendTodoGoal[]>([]);
   const [todoFilter, setTodoFilter] = useState<TodoFilter>('all');
+  const [todoGoalFilter, setTodoGoalFilter] = useState('all');
   const [activeTodoId, setActiveTodoId] = useState<number | null>(null);
   const [updatingTodoId, setUpdatingTodoId] = useState<number | null>(null);
   const [isLoadingTodos, setIsLoadingTodos] = useState(false);
@@ -23,12 +25,18 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
     const nextUserId = userIdOverride ?? userId;
     if (!backendUrl.trim() || !nextToken || !nextUserId) {
       setTodos([]);
+      setTodoGoals([]);
       return;
     }
 
     setIsLoadingTodos(true);
     try {
-      setTodos(await listTodos(backendUrl, nextToken, nextUserId));
+      const [nextTodos, nextGoals] = await Promise.all([
+        listTodos(backendUrl, nextToken, nextUserId),
+        listTodoGoals(backendUrl, nextToken, nextUserId),
+      ]);
+      setTodos(nextTodos);
+      setTodoGoals(nextGoals);
     } catch (error) {
       syncMessageSetter(error instanceof Error ? error.message : 'Todo refresh failed.');
     } finally {
@@ -36,7 +44,18 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
     }
   }, [authToken, backendUrl, syncMessageSetter, userId]);
 
-  const filteredTodos = useMemo(() => todos.filter((todo) => matchesTodoFilter(todo, todoFilter)), [todoFilter, todos]);
+  const filteredTodos = useMemo(() => todos.filter((todo) => {
+    if (!matchesTodoFilter(todo, todoFilter)) {
+      return false;
+    }
+    if (todoGoalFilter === 'all') {
+      return true;
+    }
+    if (todoGoalFilter === 'none') {
+      return !todo.goalId;
+    }
+    return todo.goalId === Number(todoGoalFilter);
+  }), [todoFilter, todoGoalFilter, todos]);
   const activeTodo = useMemo(() => {
     if (filteredTodos.length === 0) {
       return null;
@@ -66,7 +85,25 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
     }
     setUpdatingTodoId(todo.id);
     try {
-      const savedTodo = await updateTodo(backendUrl, authToken, { ...todo, status: nextStatus, userId });
+      const nextBucket = nextStatus === 'done' ? 'done' : nextStatus === 'blocked' ? 'blocked' : (todo.bucket === 'done' || todo.bucket === 'blocked' ? '' : todo.bucket);
+      const savedTodo = await updateTodo(backendUrl, authToken, { ...todo, status: nextStatus, bucket: nextBucket, userId });
+      setTodos((current) => current.map((entry) => (entry.id === savedTodo.id ? savedTodo : entry)));
+      syncTodoIntoPages(savedTodo);
+    } catch (error) {
+      syncMessageSetter(error instanceof Error ? error.message : 'Todo update failed.');
+    } finally {
+      setUpdatingTodoId(null);
+    }
+  }, [authToken, backendUrl, syncMessageSetter, syncTodoIntoPages, userId]);
+
+  const handleTodoChange = useCallback(async (todo: BackendTodo, patch: Partial<BackendTodo>) => {
+    if (!authToken || !userId) {
+      return;
+    }
+    const nextTodo = { ...todo, ...patch, userId };
+    setUpdatingTodoId(todo.id);
+    try {
+      const savedTodo = await updateTodo(backendUrl, authToken, nextTodo);
       setTodos((current) => current.map((entry) => (entry.id === savedTodo.id ? savedTodo : entry)));
       syncTodoIntoPages(savedTodo);
     } catch (error) {
@@ -78,14 +115,18 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
 
   const clearTodos = useCallback(() => {
     setTodos([]);
+    setTodoGoals([]);
     setActiveTodoId(null);
   }, []);
 
   return {
     todos,
     setTodos,
+    todoGoals,
     todoFilter,
     setTodoFilter,
+    todoGoalFilter,
+    setTodoGoalFilter,
     activeTodoId,
     setActiveTodoId,
     updatingTodoId,
@@ -94,6 +135,7 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
     activeTodo,
     loadTodoList,
     handleTodoStatusChange,
+    handleTodoChange,
     clearTodos,
   };
 }

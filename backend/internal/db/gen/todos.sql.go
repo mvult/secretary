@@ -17,10 +17,14 @@ INSERT INTO todo (
   "desc",
   status,
   user_id,
+  bucket,
+  priority_rank,
+  deadline_date,
+  goal_id,
   created_at_recording_id,
   updated_at_recording_id
-) VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
 type CreateTodoParams struct {
@@ -28,6 +32,10 @@ type CreateTodoParams struct {
 	Desc                 pgtype.Text
 	Status               pgtype.Text
 	UserID               pgtype.Int4
+	Bucket               pgtype.Text
+	PriorityRank         pgtype.Int4
+	DeadlineDate         pgtype.Date
+	GoalID               pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
 }
@@ -38,6 +46,10 @@ func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, e
 		arg.Desc,
 		arg.Status,
 		arg.UserID,
+		arg.Bucket,
+		arg.PriorityRank,
+		arg.DeadlineDate,
+		arg.GoalID,
 		arg.CreatedAtRecordingID,
 		arg.UpdatedAtRecordingID,
 	)
@@ -49,11 +61,46 @@ func (q *Queries) CreateTodo(ctx context.Context, arg CreateTodoParams) (Todo, e
 		&i.Status,
 		&i.UserID,
 		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
 		&i.SourceKind,
 		&i.SourceDocumentID,
 		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createTodoGoal = `-- name: CreateTodoGoal :one
+INSERT INTO todo_goal (user_id, name, description)
+VALUES ($1, $2, $3)
+RETURNING id, user_id, name, description, created_at, updated_at
+`
+
+type CreateTodoGoalParams struct {
+	UserID      int32
+	Name        string
+	Description string
+}
+
+func (q *Queries) CreateTodoGoal(ctx context.Context, arg CreateTodoGoalParams) (TodoGoal, error) {
+	row := q.db.QueryRow(ctx, createTodoGoal, arg.UserID, arg.Name, arg.Description)
+	var i TodoGoal
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Description,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -110,6 +157,21 @@ func (q *Queries) DeleteTodo(ctx context.Context, id int32) error {
 	return err
 }
 
+const deleteTodoGoal = `-- name: DeleteTodoGoal :exec
+DELETE FROM todo_goal
+WHERE id = $1 AND user_id = $2
+`
+
+type DeleteTodoGoalParams struct {
+	ID     int32
+	UserID int32
+}
+
+func (q *Queries) DeleteTodoGoal(ctx context.Context, arg DeleteTodoGoalParams) error {
+	_, err := q.db.Exec(ctx, deleteTodoGoal, arg.ID, arg.UserID)
+	return err
+}
+
 const getTodo = `-- name: GetTodo :one
 SELECT
   t.id,
@@ -118,9 +180,19 @@ SELECT
   t.status,
   t.user_id,
   t.workspace_id,
+  t.bucket,
+  t.priority_rank,
+  t.deadline_date,
+  t.goal_id,
+  g.name as goal_name,
   t.source_kind,
   t.source_document_id,
   t.source_block_id,
+  t.current_document_id,
+  t.current_block_id,
+  t.completed_at,
+  t.completed_document_id,
+  t.completed_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
   t.created_at,
@@ -129,6 +201,7 @@ SELECT
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
+LEFT JOIN todo_goal g ON t.goal_id = g.id
 WHERE t.id = $1
 `
 
@@ -139,9 +212,19 @@ type GetTodoRow struct {
 	Status               pgtype.Text
 	UserID               pgtype.Int4
 	WorkspaceID          pgtype.Int4
+	Bucket               pgtype.Text
+	PriorityRank         pgtype.Int4
+	DeadlineDate         pgtype.Date
+	GoalID               pgtype.Int4
+	GoalName             pgtype.Text
 	SourceKind           string
 	SourceDocumentID     pgtype.Int4
 	SourceBlockID        pgtype.Int4
+	CurrentDocumentID    pgtype.Int4
+	CurrentBlockID       pgtype.Int4
+	CompletedAt          pgtype.Timestamptz
+	CompletedDocumentID  pgtype.Int4
+	CompletedBlockID     pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
 	CreatedAt            pgtype.Timestamptz
@@ -160,9 +243,19 @@ func (q *Queries) GetTodo(ctx context.Context, id int32) (GetTodoRow, error) {
 		&i.Status,
 		&i.UserID,
 		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
+		&i.GoalName,
 		&i.SourceKind,
 		&i.SourceDocumentID,
 		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
 		&i.CreatedAt,
@@ -171,6 +264,99 @@ func (q *Queries) GetTodo(ctx context.Context, id int32) (GetTodoRow, error) {
 		&i.RecordingDate,
 	)
 	return i, err
+}
+
+const listOnDeckTodosForPull = `-- name: ListOnDeckTodosForPull :many
+SELECT id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+FROM todo
+WHERE user_id = $1
+  AND workspace_id = $2
+  AND bucket = 'on_deck'
+  AND current_block_id IS NULL
+  AND COALESCE(status, 'todo') <> 'done'
+ORDER BY priority_rank ASC NULLS LAST, deadline_date ASC NULLS LAST, created_at DESC, id DESC
+`
+
+type ListOnDeckTodosForPullParams struct {
+	UserID      pgtype.Int4
+	WorkspaceID pgtype.Int4
+}
+
+func (q *Queries) ListOnDeckTodosForPull(ctx context.Context, arg ListOnDeckTodosForPullParams) ([]Todo, error) {
+	rows, err := q.db.Query(ctx, listOnDeckTodosForPull, arg.UserID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Todo
+	for rows.Next() {
+		var i Todo
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Desc,
+			&i.Status,
+			&i.UserID,
+			&i.WorkspaceID,
+			&i.Bucket,
+			&i.PriorityRank,
+			&i.DeadlineDate,
+			&i.GoalID,
+			&i.SourceKind,
+			&i.SourceDocumentID,
+			&i.SourceBlockID,
+			&i.CurrentDocumentID,
+			&i.CurrentBlockID,
+			&i.CompletedAt,
+			&i.CompletedDocumentID,
+			&i.CompletedBlockID,
+			&i.CreatedAtRecordingID,
+			&i.UpdatedAtRecordingID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTodoGoalsByUser = `-- name: ListTodoGoalsByUser :many
+SELECT id, user_id, name, description, created_at, updated_at
+FROM todo_goal
+WHERE user_id = $1
+ORDER BY name ASC, id ASC
+`
+
+func (q *Queries) ListTodoGoalsByUser(ctx context.Context, userID int32) ([]TodoGoal, error) {
+	rows, err := q.db.Query(ctx, listTodoGoalsByUser, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TodoGoal
+	for rows.Next() {
+		var i TodoGoal
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listTodoHistory = `-- name: ListTodoHistory :many
@@ -231,9 +417,19 @@ SELECT
   t.status,
   t.user_id,
   t.workspace_id,
+  t.bucket,
+  t.priority_rank,
+  t.deadline_date,
+  t.goal_id,
+  g.name as goal_name,
   t.source_kind,
   t.source_document_id,
   t.source_block_id,
+  t.current_document_id,
+  t.current_block_id,
+  t.completed_at,
+  t.completed_document_id,
+  t.completed_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
   t.created_at,
@@ -242,8 +438,9 @@ SELECT
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
+LEFT JOIN todo_goal g ON t.goal_id = g.id
 WHERE t.created_at_recording_id = $1
-ORDER BY t.created_at DESC, t.id DESC
+ORDER BY t.priority_rank ASC NULLS LAST, t.deadline_date ASC NULLS LAST, t.created_at DESC, t.id DESC
 `
 
 type ListTodosByRecordingRow struct {
@@ -253,9 +450,19 @@ type ListTodosByRecordingRow struct {
 	Status               pgtype.Text
 	UserID               pgtype.Int4
 	WorkspaceID          pgtype.Int4
+	Bucket               pgtype.Text
+	PriorityRank         pgtype.Int4
+	DeadlineDate         pgtype.Date
+	GoalID               pgtype.Int4
+	GoalName             pgtype.Text
 	SourceKind           string
 	SourceDocumentID     pgtype.Int4
 	SourceBlockID        pgtype.Int4
+	CurrentDocumentID    pgtype.Int4
+	CurrentBlockID       pgtype.Int4
+	CompletedAt          pgtype.Timestamptz
+	CompletedDocumentID  pgtype.Int4
+	CompletedBlockID     pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
 	CreatedAt            pgtype.Timestamptz
@@ -280,9 +487,19 @@ func (q *Queries) ListTodosByRecording(ctx context.Context, createdAtRecordingID
 			&i.Status,
 			&i.UserID,
 			&i.WorkspaceID,
+			&i.Bucket,
+			&i.PriorityRank,
+			&i.DeadlineDate,
+			&i.GoalID,
+			&i.GoalName,
 			&i.SourceKind,
 			&i.SourceDocumentID,
 			&i.SourceBlockID,
+			&i.CurrentDocumentID,
+			&i.CurrentBlockID,
+			&i.CompletedAt,
+			&i.CompletedDocumentID,
+			&i.CompletedBlockID,
 			&i.CreatedAtRecordingID,
 			&i.UpdatedAtRecordingID,
 			&i.CreatedAt,
@@ -308,9 +525,19 @@ SELECT
   t.status,
   t.user_id,
   t.workspace_id,
+  t.bucket,
+  t.priority_rank,
+  t.deadline_date,
+  t.goal_id,
+  g.name as goal_name,
   t.source_kind,
   t.source_document_id,
   t.source_block_id,
+  t.current_document_id,
+  t.current_block_id,
+  t.completed_at,
+  t.completed_document_id,
+  t.completed_block_id,
   t.created_at_recording_id,
   t.updated_at_recording_id,
   t.created_at,
@@ -319,8 +546,9 @@ SELECT
   r.created_at as recording_date
 FROM todo t
 LEFT JOIN recording r ON t.created_at_recording_id = r.id
+LEFT JOIN todo_goal g ON t.goal_id = g.id
 WHERE t.user_id = $1
-ORDER BY t.created_at DESC, t.id DESC
+ORDER BY t.priority_rank ASC NULLS LAST, t.deadline_date ASC NULLS LAST, t.created_at DESC, t.id DESC
 `
 
 type ListTodosByUserRow struct {
@@ -330,9 +558,19 @@ type ListTodosByUserRow struct {
 	Status               pgtype.Text
 	UserID               pgtype.Int4
 	WorkspaceID          pgtype.Int4
+	Bucket               pgtype.Text
+	PriorityRank         pgtype.Int4
+	DeadlineDate         pgtype.Date
+	GoalID               pgtype.Int4
+	GoalName             pgtype.Text
 	SourceKind           string
 	SourceDocumentID     pgtype.Int4
 	SourceBlockID        pgtype.Int4
+	CurrentDocumentID    pgtype.Int4
+	CurrentBlockID       pgtype.Int4
+	CompletedAt          pgtype.Timestamptz
+	CompletedDocumentID  pgtype.Int4
+	CompletedBlockID     pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
 	CreatedAt            pgtype.Timestamptz
@@ -357,9 +595,19 @@ func (q *Queries) ListTodosByUser(ctx context.Context, userID pgtype.Int4) ([]Li
 			&i.Status,
 			&i.UserID,
 			&i.WorkspaceID,
+			&i.Bucket,
+			&i.PriorityRank,
+			&i.DeadlineDate,
+			&i.GoalID,
+			&i.GoalName,
 			&i.SourceKind,
 			&i.SourceDocumentID,
 			&i.SourceBlockID,
+			&i.CurrentDocumentID,
+			&i.CurrentBlockID,
+			&i.CompletedAt,
+			&i.CompletedDocumentID,
+			&i.CompletedBlockID,
 			&i.CreatedAtRecordingID,
 			&i.UpdatedAtRecordingID,
 			&i.CreatedAt,
@@ -377,6 +625,97 @@ func (q *Queries) ListTodosByUser(ctx context.Context, userID pgtype.Int4) ([]Li
 	return items, nil
 }
 
+const moveTodoToDocumentBlock = `-- name: MoveTodoToDocumentBlock :one
+UPDATE todo
+SET
+  current_document_id = $2,
+  current_block_id = $3,
+  bucket = NULL,
+  updated_at = now()
+WHERE id = $1
+  AND bucket = 'on_deck'
+  AND current_block_id IS NULL
+  AND COALESCE(status, 'todo') <> 'done'
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+`
+
+type MoveTodoToDocumentBlockParams struct {
+	ID                int32
+	CurrentDocumentID pgtype.Int4
+	CurrentBlockID    pgtype.Int4
+}
+
+func (q *Queries) MoveTodoToDocumentBlock(ctx context.Context, arg MoveTodoToDocumentBlockParams) (Todo, error) {
+	row := q.db.QueryRow(ctx, moveTodoToDocumentBlock, arg.ID, arg.CurrentDocumentID, arg.CurrentBlockID)
+	var i Todo
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Desc,
+		&i.Status,
+		&i.UserID,
+		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
+		&i.CreatedAtRecordingID,
+		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const moveTodoToRepository = `-- name: MoveTodoToRepository :one
+UPDATE todo
+SET
+  current_document_id = NULL,
+  current_block_id = NULL,
+  updated_at = now()
+WHERE id = $1
+  AND COALESCE(status, 'todo') <> 'done'
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+`
+
+func (q *Queries) MoveTodoToRepository(ctx context.Context, id int32) (Todo, error) {
+	row := q.db.QueryRow(ctx, moveTodoToRepository, id)
+	var i Todo
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Desc,
+		&i.Status,
+		&i.UserID,
+		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
+		&i.CreatedAtRecordingID,
+		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateTodo = `-- name: UpdateTodo :one
 UPDATE todo
 SET
@@ -384,10 +723,17 @@ SET
   "desc" = $3,
   status = $4,
   user_id = $5,
-  updated_at_recording_id = $6,
+  bucket = $6,
+  priority_rank = $7,
+  deadline_date = $8,
+  goal_id = $9,
+  updated_at_recording_id = $10,
+  completed_at = CASE WHEN $4 = 'done' AND completed_at IS NULL THEN now() WHEN $4 <> 'done' THEN NULL ELSE completed_at END,
+  completed_document_id = CASE WHEN $4 = 'done' THEN current_document_id WHEN $4 <> 'done' THEN NULL ELSE completed_document_id END,
+  completed_block_id = CASE WHEN $4 = 'done' THEN current_block_id WHEN $4 <> 'done' THEN NULL ELSE completed_block_id END,
   updated_at = now()
 WHERE id = $1
-RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
 type UpdateTodoParams struct {
@@ -396,6 +742,10 @@ type UpdateTodoParams struct {
 	Desc                 pgtype.Text
 	Status               pgtype.Text
 	UserID               pgtype.Int4
+	Bucket               pgtype.Text
+	PriorityRank         pgtype.Int4
+	DeadlineDate         pgtype.Date
+	GoalID               pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
 }
 
@@ -406,6 +756,10 @@ func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) (Todo, e
 		arg.Desc,
 		arg.Status,
 		arg.UserID,
+		arg.Bucket,
+		arg.PriorityRank,
+		arg.DeadlineDate,
+		arg.GoalID,
 		arg.UpdatedAtRecordingID,
 	)
 	var i Todo
@@ -416,11 +770,53 @@ func (q *Queries) UpdateTodo(ctx context.Context, arg UpdateTodoParams) (Todo, e
 		&i.Status,
 		&i.UserID,
 		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
 		&i.SourceKind,
 		&i.SourceDocumentID,
 		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const updateTodoGoal = `-- name: UpdateTodoGoal :one
+UPDATE todo_goal
+SET name = $2, description = $3, updated_at = now()
+WHERE id = $1 AND user_id = $4
+RETURNING id, user_id, name, description, created_at, updated_at
+`
+
+type UpdateTodoGoalParams struct {
+	ID          int32
+	Name        string
+	Description string
+	UserID      int32
+}
+
+func (q *Queries) UpdateTodoGoal(ctx context.Context, arg UpdateTodoGoalParams) (TodoGoal, error) {
+	row := q.db.QueryRow(ctx, updateTodoGoal,
+		arg.ID,
+		arg.Name,
+		arg.Description,
+		arg.UserID,
+	)
+	var i TodoGoal
+	err := row.Scan(
+		&i.ID,
+		&i.UserID,
+		&i.Name,
+		&i.Description,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)

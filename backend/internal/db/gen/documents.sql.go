@@ -11,6 +11,31 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const clearBlockTodo = `-- name: ClearBlockTodo :one
+UPDATE block
+SET
+  todo_id = NULL,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
+`
+
+func (q *Queries) ClearBlockTodo(ctx context.Context, id int32) (Block, error) {
+	row := q.db.QueryRow(ctx, clearBlockTodo, id)
+	var i Block
+	err := row.Scan(
+		&i.ID,
+		&i.DocumentID,
+		&i.ParentBlockID,
+		&i.SortOrder,
+		&i.Text,
+		&i.TodoID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const countBlockDocumentLinksByTarget = `-- name: CountBlockDocumentLinksByTarget :one
 SELECT COUNT(*)
 FROM block_document_link
@@ -118,9 +143,11 @@ INSERT INTO todo (
   workspace_id,
   source_kind,
   source_document_id,
-  source_block_id
-) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7)
-RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+  source_block_id,
+  current_document_id,
+  current_block_id
+) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7, $6, $7)
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
 type CreateCanonicalTodoForBlockParams struct {
@@ -151,9 +178,18 @@ func (q *Queries) CreateCanonicalTodoForBlock(ctx context.Context, arg CreateCan
 		&i.Status,
 		&i.UserID,
 		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
 		&i.SourceKind,
 		&i.SourceDocumentID,
 		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
 		&i.CreatedAt,
@@ -699,23 +735,25 @@ SET
   status = $4,
   user_id = $5,
   workspace_id = $6,
-  source_kind = 'block',
-  source_document_id = $7,
-  source_block_id = $8,
+  current_document_id = $7,
+  current_block_id = $8,
+  completed_at = CASE WHEN $4 = 'done' AND completed_at IS NULL THEN now() WHEN $4 <> 'done' THEN NULL ELSE completed_at END,
+  completed_document_id = CASE WHEN $4 = 'done' THEN $7 WHEN $4 <> 'done' THEN NULL ELSE completed_document_id END,
+  completed_block_id = CASE WHEN $4 = 'done' THEN $8 WHEN $4 <> 'done' THEN NULL ELSE completed_block_id END,
   updated_at = now()
 WHERE id = $1
-RETURNING id, name, "desc", status, user_id, workspace_id, source_kind, source_document_id, source_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
 type UpdateCanonicalTodoForBlockParams struct {
-	ID               int32
-	Name             string
-	Desc             pgtype.Text
-	Status           pgtype.Text
-	UserID           pgtype.Int4
-	WorkspaceID      pgtype.Int4
-	SourceDocumentID pgtype.Int4
-	SourceBlockID    pgtype.Int4
+	ID                int32
+	Name              string
+	Desc              pgtype.Text
+	Status            pgtype.Text
+	UserID            pgtype.Int4
+	WorkspaceID       pgtype.Int4
+	CurrentDocumentID pgtype.Int4
+	CurrentBlockID    pgtype.Int4
 }
 
 func (q *Queries) UpdateCanonicalTodoForBlock(ctx context.Context, arg UpdateCanonicalTodoForBlockParams) (Todo, error) {
@@ -726,8 +764,8 @@ func (q *Queries) UpdateCanonicalTodoForBlock(ctx context.Context, arg UpdateCan
 		arg.Status,
 		arg.UserID,
 		arg.WorkspaceID,
-		arg.SourceDocumentID,
-		arg.SourceBlockID,
+		arg.CurrentDocumentID,
+		arg.CurrentBlockID,
 	)
 	var i Todo
 	err := row.Scan(
@@ -737,9 +775,18 @@ func (q *Queries) UpdateCanonicalTodoForBlock(ctx context.Context, arg UpdateCan
 		&i.Status,
 		&i.UserID,
 		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
 		&i.SourceKind,
 		&i.SourceDocumentID,
 		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
 		&i.CreatedAtRecordingID,
 		&i.UpdatedAtRecordingID,
 		&i.CreatedAt,

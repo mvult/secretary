@@ -11,6 +11,7 @@ export interface LoginResponse {
 }
 
 export type BackendTodoStatus = 'todo' | 'doing' | 'done' | 'blocked' | 'skipped';
+export type BackendTodoBucket = 'inbox' | 'on_deck' | 'blocked' | 'done' | '';
 
 export interface BackendTodo {
   id: number;
@@ -27,6 +28,25 @@ export interface BackendTodo {
   sourceKind: string;
   sourceDocumentId: number;
   sourceBlockId: number;
+  bucket: BackendTodoBucket;
+  priorityRank: number;
+  deadlineDate: string;
+  goalId: number;
+  goalName: string;
+  currentDocumentId: number;
+  currentBlockId: number;
+  completedAt: string;
+  completedDocumentId: number;
+  completedBlockId: number;
+}
+
+export interface BackendTodoGoal {
+  id: number;
+  userId: number;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 function todoStatusToProto(status: BackendTodoStatus) {
@@ -371,6 +391,7 @@ function normalizeBlockTodoStatus(value: unknown): BackendTodoStatus | null {
 }
 
 function normalizeTodo(value: any): BackendTodo {
+  const bucket = value?.bucket === 'inbox' || value?.bucket === 'on_deck' || value?.bucket === 'blocked' || value?.bucket === 'done' ? value.bucket : '';
   return {
     id: toNumber(value?.id),
     name: typeof value?.name === 'string' ? value.name : '',
@@ -386,6 +407,27 @@ function normalizeTodo(value: any): BackendTodo {
     sourceKind: typeof value?.sourceKind === 'string' ? value.sourceKind : '',
     sourceDocumentId: toNumber(value?.sourceDocumentId),
     sourceBlockId: toNumber(value?.sourceBlockId),
+    bucket,
+    priorityRank: toNumber(value?.priorityRank),
+    deadlineDate: typeof value?.deadlineDate === 'string' ? value.deadlineDate : '',
+    goalId: toNumber(value?.goalId),
+    goalName: typeof value?.goalName === 'string' ? value.goalName : '',
+    currentDocumentId: toNumber(value?.currentDocumentId),
+    currentBlockId: toNumber(value?.currentBlockId),
+    completedAt: typeof value?.completedAt === 'string' ? value.completedAt : '',
+    completedDocumentId: toNumber(value?.completedDocumentId),
+    completedBlockId: toNumber(value?.completedBlockId),
+  };
+}
+
+function normalizeTodoGoal(value: any): BackendTodoGoal {
+  return {
+    id: toNumber(value?.id),
+    userId: toNumber(value?.userId),
+    name: typeof value?.name === 'string' ? value.name : '',
+    description: typeof value?.description === 'string' ? value.description : '',
+    createdAt: typeof value?.createdAt === 'string' ? value.createdAt : '',
+    updatedAt: typeof value?.updatedAt === 'string' ? value.updatedAt : '',
   };
 }
 
@@ -530,6 +572,10 @@ export async function updateTodo(baseUrl: string, token: string, todo: BackendTo
       status: todoStatusToProto(todo.status),
       userId: todo.userId,
       updatedAtRecordingId: todo.updatedAtRecordingId,
+      bucket: todo.bucket,
+      priorityRank: todo.priorityRank,
+      deadlineDate: todo.deadlineDate,
+      goalId: todo.goalId,
     },
     token,
   );
@@ -537,6 +583,39 @@ export async function updateTodo(baseUrl: string, token: string, todo: BackendTo
     throw new Error('Todo was not returned by the server.');
   }
   return normalizeTodo(payload.todo);
+}
+
+export async function listTodoGoals(baseUrl: string, token: string, userId: number) {
+  const payload = await postJson<{ goals?: BackendTodoGoal[] }>(
+    baseUrl,
+    '/secretary.v1.TodosService/ListTodoGoals',
+    { userId },
+    token,
+  );
+  return Array.isArray(payload.goals) ? payload.goals.map(normalizeTodoGoal) : [];
+}
+
+export async function moveDocumentTodosToRepository(baseUrl: string, token: string, documentId: number) {
+  const payload = await postJson<{ movedCount?: number }>(
+    baseUrl,
+    '/secretary.v1.TodosService/MoveDocumentTodosToRepository',
+    { documentId },
+    token,
+  );
+  return toNumber(payload.movedCount);
+}
+
+export async function pullOnDeckTodosToToday(baseUrl: string, token: string, workspaceId: number) {
+  const payload = await postJson<{ pulledCount?: number; documentId?: number }>(
+    baseUrl,
+    '/secretary.v1.TodosService/PullOnDeckTodosToToday',
+    { workspaceId },
+    token,
+  );
+  return {
+    pulledCount: toNumber(payload.pulledCount),
+    documentId: toNumber(payload.documentId),
+  };
 }
 
 export async function listWorkspaces(baseUrl: string, token: string) {

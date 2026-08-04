@@ -51,13 +51,15 @@ function App() {
   const documentLinks = useDocumentLinkPicker(state);
 
   const syncTodoIntoPages = useCallback((todo: BackendTodo) => {
-    if (!todo.sourceDocumentId || !todo.sourceBlockId) {
+    const documentId = todo.currentDocumentId || todo.sourceDocumentId;
+    const blockId = todo.currentBlockId || todo.sourceBlockId;
+    if (!documentId || !blockId) {
       return;
     }
     dispatch({
       type: 'syncRemoteTodo',
-      sourceDocumentId: todo.sourceDocumentId,
-      sourceBlockId: todo.sourceBlockId,
+      sourceDocumentId: documentId,
+      sourceBlockId: blockId,
       todoId: todo.id,
       status: todo.status,
       updatedAt: todo.updatedAt || undefined,
@@ -105,8 +107,11 @@ function App() {
     flushDirtyPages: () => session.flushDirtyPages(),
     backendUrl: session.backendUrl,
     authToken: session.authToken,
+    workspaceId: session.workspaceId,
     syncEnabled: session.syncEnabled,
     setSyncMessage: session.setSyncMessage,
+    runSync: session.runSync,
+    refreshTodos: () => todos.loadTodoList(),
     resetSearch: search.resetSearch,
     searchQuery: search.searchQuery,
     activeSearchMatch: search.activeSearchMatch,
@@ -348,6 +353,9 @@ function App() {
     lastTodoGPressRef,
     openTodoSource: commands.openTodoSource,
     handleTodoStatusChange: todos.handleTodoStatusChange,
+    handleTodoChange: todos.handleTodoChange,
+    moveCurrentDocumentTodosToRepository: commands.moveCurrentDocumentTodosToRepository,
+    pullOnDeckTodosIntoToday: commands.pullOnDeckTodosIntoToday,
     updatingTodoId: todos.updatingTodoId,
     aiThreads: ai.aiThreads,
     activeAIThread: ai.activeAIThread,
@@ -621,13 +629,19 @@ function App() {
               userId={session.userId}
               isLoadingTodos={todos.isLoadingTodos}
               filteredTodos={todos.filteredTodos}
+              todoGoals={todos.todoGoals}
               activeTodo={todos.activeTodo}
               todoFilter={todos.todoFilter}
+              todoGoalFilter={todos.todoGoalFilter}
               updatingTodoId={todos.updatingTodoId}
               onSetTodoFilter={todos.setTodoFilter}
+              onSetTodoGoalFilter={todos.setTodoGoalFilter}
               onSetActiveTodoId={todos.setActiveTodoId}
               onOpenTodoSource={commands.openTodoSource}
               onHandleTodoStatusChange={(todo, status) => void todos.handleTodoStatusChange(todo, status)}
+              onHandleTodoChange={(todo, patch) => void todos.handleTodoChange(todo, patch)}
+              onMoveCurrentDocumentTodosToRepository={commands.moveCurrentDocumentTodosToRepository}
+              onPullOnDeckTodosIntoToday={commands.pullOnDeckTodosIntoToday}
             />
           ) : null}
 

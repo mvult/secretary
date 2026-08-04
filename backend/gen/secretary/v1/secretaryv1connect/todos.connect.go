@@ -46,6 +46,24 @@ const (
 	// TodosServiceListTodoHistoryProcedure is the fully-qualified name of the TodosService's
 	// ListTodoHistory RPC.
 	TodosServiceListTodoHistoryProcedure = "/secretary.v1.TodosService/ListTodoHistory"
+	// TodosServiceListTodoGoalsProcedure is the fully-qualified name of the TodosService's
+	// ListTodoGoals RPC.
+	TodosServiceListTodoGoalsProcedure = "/secretary.v1.TodosService/ListTodoGoals"
+	// TodosServiceCreateTodoGoalProcedure is the fully-qualified name of the TodosService's
+	// CreateTodoGoal RPC.
+	TodosServiceCreateTodoGoalProcedure = "/secretary.v1.TodosService/CreateTodoGoal"
+	// TodosServiceUpdateTodoGoalProcedure is the fully-qualified name of the TodosService's
+	// UpdateTodoGoal RPC.
+	TodosServiceUpdateTodoGoalProcedure = "/secretary.v1.TodosService/UpdateTodoGoal"
+	// TodosServiceDeleteTodoGoalProcedure is the fully-qualified name of the TodosService's
+	// DeleteTodoGoal RPC.
+	TodosServiceDeleteTodoGoalProcedure = "/secretary.v1.TodosService/DeleteTodoGoal"
+	// TodosServiceMoveDocumentTodosToRepositoryProcedure is the fully-qualified name of the
+	// TodosService's MoveDocumentTodosToRepository RPC.
+	TodosServiceMoveDocumentTodosToRepositoryProcedure = "/secretary.v1.TodosService/MoveDocumentTodosToRepository"
+	// TodosServicePullOnDeckTodosToTodayProcedure is the fully-qualified name of the TodosService's
+	// PullOnDeckTodosToToday RPC.
+	TodosServicePullOnDeckTodosToTodayProcedure = "/secretary.v1.TodosService/PullOnDeckTodosToToday"
 )
 
 // TodosServiceClient is a client for the secretary.v1.TodosService service.
@@ -56,6 +74,12 @@ type TodosServiceClient interface {
 	UpdateTodo(context.Context, *connect.Request[v1.UpdateTodoRequest]) (*connect.Response[v1.UpdateTodoResponse], error)
 	DeleteTodo(context.Context, *connect.Request[v1.DeleteTodoRequest]) (*connect.Response[v1.DeleteTodoResponse], error)
 	ListTodoHistory(context.Context, *connect.Request[v1.ListTodoHistoryRequest]) (*connect.Response[v1.ListTodoHistoryResponse], error)
+	ListTodoGoals(context.Context, *connect.Request[v1.ListTodoGoalsRequest]) (*connect.Response[v1.ListTodoGoalsResponse], error)
+	CreateTodoGoal(context.Context, *connect.Request[v1.CreateTodoGoalRequest]) (*connect.Response[v1.CreateTodoGoalResponse], error)
+	UpdateTodoGoal(context.Context, *connect.Request[v1.UpdateTodoGoalRequest]) (*connect.Response[v1.UpdateTodoGoalResponse], error)
+	DeleteTodoGoal(context.Context, *connect.Request[v1.DeleteTodoGoalRequest]) (*connect.Response[v1.DeleteTodoGoalResponse], error)
+	MoveDocumentTodosToRepository(context.Context, *connect.Request[v1.MoveDocumentTodosToRepositoryRequest]) (*connect.Response[v1.MoveDocumentTodosToRepositoryResponse], error)
+	PullOnDeckTodosToToday(context.Context, *connect.Request[v1.PullOnDeckTodosToTodayRequest]) (*connect.Response[v1.PullOnDeckTodosToTodayResponse], error)
 }
 
 // NewTodosServiceClient constructs a client for the secretary.v1.TodosService service. By default,
@@ -105,17 +129,59 @@ func NewTodosServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(todosServiceMethods.ByName("ListTodoHistory")),
 			connect.WithClientOptions(opts...),
 		),
+		listTodoGoals: connect.NewClient[v1.ListTodoGoalsRequest, v1.ListTodoGoalsResponse](
+			httpClient,
+			baseURL+TodosServiceListTodoGoalsProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("ListTodoGoals")),
+			connect.WithClientOptions(opts...),
+		),
+		createTodoGoal: connect.NewClient[v1.CreateTodoGoalRequest, v1.CreateTodoGoalResponse](
+			httpClient,
+			baseURL+TodosServiceCreateTodoGoalProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("CreateTodoGoal")),
+			connect.WithClientOptions(opts...),
+		),
+		updateTodoGoal: connect.NewClient[v1.UpdateTodoGoalRequest, v1.UpdateTodoGoalResponse](
+			httpClient,
+			baseURL+TodosServiceUpdateTodoGoalProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("UpdateTodoGoal")),
+			connect.WithClientOptions(opts...),
+		),
+		deleteTodoGoal: connect.NewClient[v1.DeleteTodoGoalRequest, v1.DeleteTodoGoalResponse](
+			httpClient,
+			baseURL+TodosServiceDeleteTodoGoalProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("DeleteTodoGoal")),
+			connect.WithClientOptions(opts...),
+		),
+		moveDocumentTodosToRepository: connect.NewClient[v1.MoveDocumentTodosToRepositoryRequest, v1.MoveDocumentTodosToRepositoryResponse](
+			httpClient,
+			baseURL+TodosServiceMoveDocumentTodosToRepositoryProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("MoveDocumentTodosToRepository")),
+			connect.WithClientOptions(opts...),
+		),
+		pullOnDeckTodosToToday: connect.NewClient[v1.PullOnDeckTodosToTodayRequest, v1.PullOnDeckTodosToTodayResponse](
+			httpClient,
+			baseURL+TodosServicePullOnDeckTodosToTodayProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("PullOnDeckTodosToToday")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // todosServiceClient implements TodosServiceClient.
 type todosServiceClient struct {
-	listTodos       *connect.Client[v1.ListTodosRequest, v1.ListTodosResponse]
-	getTodo         *connect.Client[v1.GetTodoRequest, v1.GetTodoResponse]
-	createTodo      *connect.Client[v1.CreateTodoRequest, v1.CreateTodoResponse]
-	updateTodo      *connect.Client[v1.UpdateTodoRequest, v1.UpdateTodoResponse]
-	deleteTodo      *connect.Client[v1.DeleteTodoRequest, v1.DeleteTodoResponse]
-	listTodoHistory *connect.Client[v1.ListTodoHistoryRequest, v1.ListTodoHistoryResponse]
+	listTodos                     *connect.Client[v1.ListTodosRequest, v1.ListTodosResponse]
+	getTodo                       *connect.Client[v1.GetTodoRequest, v1.GetTodoResponse]
+	createTodo                    *connect.Client[v1.CreateTodoRequest, v1.CreateTodoResponse]
+	updateTodo                    *connect.Client[v1.UpdateTodoRequest, v1.UpdateTodoResponse]
+	deleteTodo                    *connect.Client[v1.DeleteTodoRequest, v1.DeleteTodoResponse]
+	listTodoHistory               *connect.Client[v1.ListTodoHistoryRequest, v1.ListTodoHistoryResponse]
+	listTodoGoals                 *connect.Client[v1.ListTodoGoalsRequest, v1.ListTodoGoalsResponse]
+	createTodoGoal                *connect.Client[v1.CreateTodoGoalRequest, v1.CreateTodoGoalResponse]
+	updateTodoGoal                *connect.Client[v1.UpdateTodoGoalRequest, v1.UpdateTodoGoalResponse]
+	deleteTodoGoal                *connect.Client[v1.DeleteTodoGoalRequest, v1.DeleteTodoGoalResponse]
+	moveDocumentTodosToRepository *connect.Client[v1.MoveDocumentTodosToRepositoryRequest, v1.MoveDocumentTodosToRepositoryResponse]
+	pullOnDeckTodosToToday        *connect.Client[v1.PullOnDeckTodosToTodayRequest, v1.PullOnDeckTodosToTodayResponse]
 }
 
 // ListTodos calls secretary.v1.TodosService.ListTodos.
@@ -148,6 +214,36 @@ func (c *todosServiceClient) ListTodoHistory(ctx context.Context, req *connect.R
 	return c.listTodoHistory.CallUnary(ctx, req)
 }
 
+// ListTodoGoals calls secretary.v1.TodosService.ListTodoGoals.
+func (c *todosServiceClient) ListTodoGoals(ctx context.Context, req *connect.Request[v1.ListTodoGoalsRequest]) (*connect.Response[v1.ListTodoGoalsResponse], error) {
+	return c.listTodoGoals.CallUnary(ctx, req)
+}
+
+// CreateTodoGoal calls secretary.v1.TodosService.CreateTodoGoal.
+func (c *todosServiceClient) CreateTodoGoal(ctx context.Context, req *connect.Request[v1.CreateTodoGoalRequest]) (*connect.Response[v1.CreateTodoGoalResponse], error) {
+	return c.createTodoGoal.CallUnary(ctx, req)
+}
+
+// UpdateTodoGoal calls secretary.v1.TodosService.UpdateTodoGoal.
+func (c *todosServiceClient) UpdateTodoGoal(ctx context.Context, req *connect.Request[v1.UpdateTodoGoalRequest]) (*connect.Response[v1.UpdateTodoGoalResponse], error) {
+	return c.updateTodoGoal.CallUnary(ctx, req)
+}
+
+// DeleteTodoGoal calls secretary.v1.TodosService.DeleteTodoGoal.
+func (c *todosServiceClient) DeleteTodoGoal(ctx context.Context, req *connect.Request[v1.DeleteTodoGoalRequest]) (*connect.Response[v1.DeleteTodoGoalResponse], error) {
+	return c.deleteTodoGoal.CallUnary(ctx, req)
+}
+
+// MoveDocumentTodosToRepository calls secretary.v1.TodosService.MoveDocumentTodosToRepository.
+func (c *todosServiceClient) MoveDocumentTodosToRepository(ctx context.Context, req *connect.Request[v1.MoveDocumentTodosToRepositoryRequest]) (*connect.Response[v1.MoveDocumentTodosToRepositoryResponse], error) {
+	return c.moveDocumentTodosToRepository.CallUnary(ctx, req)
+}
+
+// PullOnDeckTodosToToday calls secretary.v1.TodosService.PullOnDeckTodosToToday.
+func (c *todosServiceClient) PullOnDeckTodosToToday(ctx context.Context, req *connect.Request[v1.PullOnDeckTodosToTodayRequest]) (*connect.Response[v1.PullOnDeckTodosToTodayResponse], error) {
+	return c.pullOnDeckTodosToToday.CallUnary(ctx, req)
+}
+
 // TodosServiceHandler is an implementation of the secretary.v1.TodosService service.
 type TodosServiceHandler interface {
 	ListTodos(context.Context, *connect.Request[v1.ListTodosRequest]) (*connect.Response[v1.ListTodosResponse], error)
@@ -156,6 +252,12 @@ type TodosServiceHandler interface {
 	UpdateTodo(context.Context, *connect.Request[v1.UpdateTodoRequest]) (*connect.Response[v1.UpdateTodoResponse], error)
 	DeleteTodo(context.Context, *connect.Request[v1.DeleteTodoRequest]) (*connect.Response[v1.DeleteTodoResponse], error)
 	ListTodoHistory(context.Context, *connect.Request[v1.ListTodoHistoryRequest]) (*connect.Response[v1.ListTodoHistoryResponse], error)
+	ListTodoGoals(context.Context, *connect.Request[v1.ListTodoGoalsRequest]) (*connect.Response[v1.ListTodoGoalsResponse], error)
+	CreateTodoGoal(context.Context, *connect.Request[v1.CreateTodoGoalRequest]) (*connect.Response[v1.CreateTodoGoalResponse], error)
+	UpdateTodoGoal(context.Context, *connect.Request[v1.UpdateTodoGoalRequest]) (*connect.Response[v1.UpdateTodoGoalResponse], error)
+	DeleteTodoGoal(context.Context, *connect.Request[v1.DeleteTodoGoalRequest]) (*connect.Response[v1.DeleteTodoGoalResponse], error)
+	MoveDocumentTodosToRepository(context.Context, *connect.Request[v1.MoveDocumentTodosToRepositoryRequest]) (*connect.Response[v1.MoveDocumentTodosToRepositoryResponse], error)
+	PullOnDeckTodosToToday(context.Context, *connect.Request[v1.PullOnDeckTodosToTodayRequest]) (*connect.Response[v1.PullOnDeckTodosToTodayResponse], error)
 }
 
 // NewTodosServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -201,6 +303,42 @@ func NewTodosServiceHandler(svc TodosServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(todosServiceMethods.ByName("ListTodoHistory")),
 		connect.WithHandlerOptions(opts...),
 	)
+	todosServiceListTodoGoalsHandler := connect.NewUnaryHandler(
+		TodosServiceListTodoGoalsProcedure,
+		svc.ListTodoGoals,
+		connect.WithSchema(todosServiceMethods.ByName("ListTodoGoals")),
+		connect.WithHandlerOptions(opts...),
+	)
+	todosServiceCreateTodoGoalHandler := connect.NewUnaryHandler(
+		TodosServiceCreateTodoGoalProcedure,
+		svc.CreateTodoGoal,
+		connect.WithSchema(todosServiceMethods.ByName("CreateTodoGoal")),
+		connect.WithHandlerOptions(opts...),
+	)
+	todosServiceUpdateTodoGoalHandler := connect.NewUnaryHandler(
+		TodosServiceUpdateTodoGoalProcedure,
+		svc.UpdateTodoGoal,
+		connect.WithSchema(todosServiceMethods.ByName("UpdateTodoGoal")),
+		connect.WithHandlerOptions(opts...),
+	)
+	todosServiceDeleteTodoGoalHandler := connect.NewUnaryHandler(
+		TodosServiceDeleteTodoGoalProcedure,
+		svc.DeleteTodoGoal,
+		connect.WithSchema(todosServiceMethods.ByName("DeleteTodoGoal")),
+		connect.WithHandlerOptions(opts...),
+	)
+	todosServiceMoveDocumentTodosToRepositoryHandler := connect.NewUnaryHandler(
+		TodosServiceMoveDocumentTodosToRepositoryProcedure,
+		svc.MoveDocumentTodosToRepository,
+		connect.WithSchema(todosServiceMethods.ByName("MoveDocumentTodosToRepository")),
+		connect.WithHandlerOptions(opts...),
+	)
+	todosServicePullOnDeckTodosToTodayHandler := connect.NewUnaryHandler(
+		TodosServicePullOnDeckTodosToTodayProcedure,
+		svc.PullOnDeckTodosToToday,
+		connect.WithSchema(todosServiceMethods.ByName("PullOnDeckTodosToToday")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/secretary.v1.TodosService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case TodosServiceListTodosProcedure:
@@ -215,6 +353,18 @@ func NewTodosServiceHandler(svc TodosServiceHandler, opts ...connect.HandlerOpti
 			todosServiceDeleteTodoHandler.ServeHTTP(w, r)
 		case TodosServiceListTodoHistoryProcedure:
 			todosServiceListTodoHistoryHandler.ServeHTTP(w, r)
+		case TodosServiceListTodoGoalsProcedure:
+			todosServiceListTodoGoalsHandler.ServeHTTP(w, r)
+		case TodosServiceCreateTodoGoalProcedure:
+			todosServiceCreateTodoGoalHandler.ServeHTTP(w, r)
+		case TodosServiceUpdateTodoGoalProcedure:
+			todosServiceUpdateTodoGoalHandler.ServeHTTP(w, r)
+		case TodosServiceDeleteTodoGoalProcedure:
+			todosServiceDeleteTodoGoalHandler.ServeHTTP(w, r)
+		case TodosServiceMoveDocumentTodosToRepositoryProcedure:
+			todosServiceMoveDocumentTodosToRepositoryHandler.ServeHTTP(w, r)
+		case TodosServicePullOnDeckTodosToTodayProcedure:
+			todosServicePullOnDeckTodosToTodayHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -246,4 +396,28 @@ func (UnimplementedTodosServiceHandler) DeleteTodo(context.Context, *connect.Req
 
 func (UnimplementedTodosServiceHandler) ListTodoHistory(context.Context, *connect.Request[v1.ListTodoHistoryRequest]) (*connect.Response[v1.ListTodoHistoryResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.ListTodoHistory is not implemented"))
+}
+
+func (UnimplementedTodosServiceHandler) ListTodoGoals(context.Context, *connect.Request[v1.ListTodoGoalsRequest]) (*connect.Response[v1.ListTodoGoalsResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.ListTodoGoals is not implemented"))
+}
+
+func (UnimplementedTodosServiceHandler) CreateTodoGoal(context.Context, *connect.Request[v1.CreateTodoGoalRequest]) (*connect.Response[v1.CreateTodoGoalResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.CreateTodoGoal is not implemented"))
+}
+
+func (UnimplementedTodosServiceHandler) UpdateTodoGoal(context.Context, *connect.Request[v1.UpdateTodoGoalRequest]) (*connect.Response[v1.UpdateTodoGoalResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.UpdateTodoGoal is not implemented"))
+}
+
+func (UnimplementedTodosServiceHandler) DeleteTodoGoal(context.Context, *connect.Request[v1.DeleteTodoGoalRequest]) (*connect.Response[v1.DeleteTodoGoalResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.DeleteTodoGoal is not implemented"))
+}
+
+func (UnimplementedTodosServiceHandler) MoveDocumentTodosToRepository(context.Context, *connect.Request[v1.MoveDocumentTodosToRepositoryRequest]) (*connect.Response[v1.MoveDocumentTodosToRepositoryResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.MoveDocumentTodosToRepository is not implemented"))
+}
+
+func (UnimplementedTodosServiceHandler) PullOnDeckTodosToToday(context.Context, *connect.Request[v1.PullOnDeckTodosToTodayRequest]) (*connect.Response[v1.PullOnDeckTodosToTodayResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.PullOnDeckTodosToToday is not implemented"))
 }

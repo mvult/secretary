@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type Dispatch } from 'react';
-import { deleteDocument, type BackendTodo } from '../lib/backend';
+import { deleteDocument, moveDocumentTodosToRepository, pullOnDeckTodosToToday, type BackendTodo } from '../lib/backend';
 import { findDocumentLinkAtCursor } from '../features/outline/documentLinks';
 import type { OutlineAction } from '../features/outline/state';
 import type { OutlinePage, OutlineState } from '../features/outline/types';
@@ -14,8 +14,11 @@ interface UseAppCommandsOptions {
   flushDirtyPages: () => Promise<void>;
   backendUrl: string;
   authToken: string;
+  workspaceId: number | null;
   syncEnabled: boolean;
   setSyncMessage: Dispatch<React.SetStateAction<string>>;
+  runSync: () => Promise<void>;
+  refreshTodos: () => Promise<void>;
   resetSearch: () => void;
   searchQuery: string;
   activeSearchMatch: OutlinePage | null;
@@ -36,8 +39,11 @@ export function useAppCommands({
   flushDirtyPages,
   backendUrl,
   authToken,
+  workspaceId,
   syncEnabled,
   setSyncMessage,
+  runSync,
+  refreshTodos,
   resetSearch,
   searchQuery,
   activeSearchMatch,
@@ -262,24 +268,26 @@ export function useAppCommands({
   }, [openDocumentLinkTarget, setSyncMessage, stateRef]);
 
   const openTodoSource = useCallback((todo: BackendTodo) => {
-    if (!todo.sourceDocumentId) {
+    const documentId = todo.currentDocumentId || todo.sourceDocumentId;
+    const blockId = todo.currentBlockId || todo.sourceBlockId;
+    if (!documentId) {
       if (todo.createdAtRecordingName) {
         setSyncMessage('Opening recording sources is not available yet in the native app.');
       }
       return;
     }
-    const sourcePage = state.pages.find((entry) => entry.backendId === todo.sourceDocumentId);
+    const sourcePage = state.pages.find((entry) => entry.backendId === documentId);
     if (!sourcePage) {
       setSyncMessage('Source page is not loaded locally yet. Sync to refresh documents.');
       return;
     }
 
-    if (!todo.sourceBlockId) {
+    if (!blockId) {
       navigateToPage(sourcePage, { recordJump: true });
       return;
     }
 
-    const node = sourcePage.nodes.find((entry) => entry.backendId === todo.sourceBlockId || entry.todoId === todo.id);
+    const node = sourcePage.nodes.find((entry) => entry.backendId === blockId || entry.todoId === todo.id);
     navigateToPage(sourcePage, { focusNodeId: node?.id, recordJump: true });
   }, [navigateToPage, setSyncMessage, state.pages]);
 
@@ -317,6 +325,49 @@ export function useAppCommands({
     setSyncMessage(`Deleted ${pendingDeleteNote.title}.`);
   }, [authToken, backendUrl, dispatch, flushDirtyPages, pendingDeleteNote, setSyncMessage, syncEnabled]);
 
+  const moveCurrentDocumentTodosToRepository = useCallback(() => {
+    const page = currentPage;
+    if (!syncEnabled || !authToken || !page?.backendId) {
+      setSyncMessage('Sync this document before moving todos to the repository.');
+      return;
+    }
+
+    void (async () => {
+      try {
+        await flushDirtyPages();
+        const movedCount = await moveDocumentTodosToRepository(backendUrl, authToken, page.backendId!);
+        await runSync();
+        await refreshTodos();
+        setSyncMessage(`Moved ${movedCount} todo${movedCount === 1 ? '' : 's'} to the repository.`);
+      } catch (error) {
+        setSyncMessage(error instanceof Error ? error.message : 'Move todos failed.');
+      }
+    })();
+  }, [authToken, backendUrl, currentPage, flushDirtyPages, refreshTodos, runSync, setSyncMessage, syncEnabled]);
+
+  const pullOnDeckTodosIntoToday = useCallback(() => {
+    if (!syncEnabled || !authToken || !workspaceId) {
+      setSyncMessage('Sync a workspace before pulling on-deck todos.');
+      return;
+    }
+
+    void (async () => {
+      try {
+        await flushDirtyPages();
+        const result = await pullOnDeckTodosToToday(backendUrl, authToken, workspaceId);
+        await runSync();
+        await refreshTodos();
+        const todayPage = stateRef.current.pages.find((entry) => entry.backendId === result.documentId) ?? null;
+        if (todayPage) {
+          navigateToPage(todayPage, { recordJump: true });
+        }
+        setSyncMessage(`Pulled ${result.pulledCount} on-deck todo${result.pulledCount === 1 ? '' : 's'} into today's journal.`);
+      } catch (error) {
+        setSyncMessage(error instanceof Error ? error.message : 'Pull on-deck todos failed.');
+      }
+    })();
+  }, [authToken, backendUrl, flushDirtyPages, navigateToPage, refreshTodos, runSync, setSyncMessage, stateRef, syncEnabled, workspaceId]);
+
   const resetSearchView = useCallback(() => {
     resetSearch();
     setSearchMode('insert');
@@ -340,6 +391,8 @@ export function useAppCommands({
     openTodoSource,
     handleDeleteNote,
     confirmDeleteNote,
+    moveCurrentDocumentTodosToRepository,
+    pullOnDeckTodosIntoToday,
     pendingDeleteNote,
     pendingDeleteNoteId,
     setPendingDeleteNoteId,

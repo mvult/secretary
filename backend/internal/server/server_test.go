@@ -605,6 +605,287 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	}
 }
 
+func TestMoveDocumentTodosToRepositoryIsIdempotent(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	userID, email, password := insertUser(t, ctx, pool)
+	defer cleanupUser(t, ctx, pool, userID)
+
+	srv := New(pool, []byte("test-secret"), 24*time.Hour)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	token := login(t, ts.URL, email, password)
+	workspaceResp, err := authPost(ts.URL+secretaryv1connect.WorkspacesServiceCreateWorkspaceProcedure, token, secretaryv1.CreateWorkspaceRequest{Name: "Todo Repository Move"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if workspaceResp.StatusCode != http.StatusOK {
+		t.Fatalf("create workspace status: %d", workspaceResp.StatusCode)
+	}
+	var workspacePayload secretaryv1.CreateWorkspaceResponse
+	if err := decodeProtoBody(workspaceResp.Body, &workspacePayload); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	workspaceResp.Body.Close()
+	workspaceID := workspacePayload.Workspace.Id
+	defer cleanupWorkspace(t, ctx, pool, workspaceID)
+
+	saveResp, err := authPost(ts.URL+secretaryv1connect.DocumentsServiceSaveDocumentProcedure, token, &secretaryv1.SaveDocumentRequest{Document: &secretaryv1.Document{
+		WorkspaceId: workspaceID,
+		Kind:        "note",
+		Title:       "Move todos",
+		Blocks: []*secretaryv1.Block{
+			{ClientKey: "open-task", SortOrder: 1, Text: "Move me", TodoStatus: "todo"},
+			{ClientKey: "done-task", SortOrder: 2, Text: "Keep completed here", TodoStatus: "done"},
+			{ClientKey: "plain-note", SortOrder: 3, Text: "Plain context"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("save document: %v", err)
+	}
+	if saveResp.StatusCode != http.StatusOK {
+		t.Fatalf("save document status: %d", saveResp.StatusCode)
+	}
+	var savePayload secretaryv1.SaveDocumentResponse
+	if err := decodeProtoBody(saveResp.Body, &savePayload); err != nil {
+		t.Fatalf("decode save document: %v", err)
+	}
+	saveResp.Body.Close()
+	if len(savePayload.Document.Blocks) != 3 {
+		t.Fatalf("expected 3 saved blocks, got %d", len(savePayload.Document.Blocks))
+	}
+	openBlock := savePayload.Document.Blocks[0]
+	doneBlock := savePayload.Document.Blocks[1]
+	if openBlock.TodoId == 0 || doneBlock.TodoId == 0 {
+		t.Fatalf("expected open and done blocks to have canonical todos")
+	}
+
+	moveResp, err := authPost(ts.URL+secretaryv1connect.TodosServiceMoveDocumentTodosToRepositoryProcedure, token, &secretaryv1.MoveDocumentTodosToRepositoryRequest{DocumentId: savePayload.Document.Id})
+	if err != nil {
+		t.Fatalf("move todos to repository: %v", err)
+	}
+	if moveResp.StatusCode != http.StatusOK {
+		t.Fatalf("move todos status: %d", moveResp.StatusCode)
+	}
+	var movePayload secretaryv1.MoveDocumentTodosToRepositoryResponse
+	if err := decodeProtoBody(moveResp.Body, &movePayload); err != nil {
+		t.Fatalf("decode move response: %v", err)
+	}
+	moveResp.Body.Close()
+	if movePayload.MovedCount != 1 {
+		t.Fatalf("expected 1 moved todo, got %d", movePayload.MovedCount)
+	}
+
+	getResp, err := authPost(ts.URL+secretaryv1connect.DocumentsServiceGetDocumentProcedure, token, &secretaryv1.GetDocumentRequest{Id: savePayload.Document.Id})
+	if err != nil {
+		t.Fatalf("get document: %v", err)
+	}
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("get document status: %d", getResp.StatusCode)
+	}
+	var getPayload secretaryv1.GetDocumentResponse
+	if err := decodeProtoBody(getResp.Body, &getPayload); err != nil {
+		t.Fatalf("decode document: %v", err)
+	}
+	getResp.Body.Close()
+	if getPayload.Document.Blocks[0].TodoId != 0 || getPayload.Document.Blocks[0].TodoStatus != "" {
+		t.Fatalf("expected moved block to become plain text, got todo_id=%d status=%q", getPayload.Document.Blocks[0].TodoId, getPayload.Document.Blocks[0].TodoStatus)
+	}
+	if getPayload.Document.Blocks[0].Text != openBlock.Text {
+		t.Fatalf("expected moved block text to remain, got %q", getPayload.Document.Blocks[0].Text)
+	}
+	if getPayload.Document.Blocks[1].TodoId != doneBlock.TodoId || getPayload.Document.Blocks[1].TodoStatus != "done" {
+		t.Fatalf("expected completed todo to remain inline")
+	}
+
+	var sourceDocumentID, sourceBlockID int64
+	var currentDocumentID, currentBlockID *int64
+	err = pool.QueryRow(ctx, `
+		SELECT source_document_id, source_block_id, current_document_id, current_block_id
+		FROM todo
+		WHERE id = $1
+	`, openBlock.TodoId).Scan(&sourceDocumentID, &sourceBlockID, &currentDocumentID, &currentBlockID)
+	if err != nil {
+		t.Fatalf("load moved todo: %v", err)
+	}
+	if sourceDocumentID != savePayload.Document.Id || sourceBlockID != openBlock.Id {
+		t.Fatalf("expected source to stay at document/block, got document=%d block=%d", sourceDocumentID, sourceBlockID)
+	}
+	if currentDocumentID != nil || currentBlockID != nil {
+		t.Fatalf("expected moved todo current location to be null")
+	}
+
+	moveResp, err = authPost(ts.URL+secretaryv1connect.TodosServiceMoveDocumentTodosToRepositoryProcedure, token, &secretaryv1.MoveDocumentTodosToRepositoryRequest{DocumentId: savePayload.Document.Id})
+	if err != nil {
+		t.Fatalf("repeat move todos to repository: %v", err)
+	}
+	if moveResp.StatusCode != http.StatusOK {
+		t.Fatalf("repeat move todos status: %d", moveResp.StatusCode)
+	}
+	if err := decodeProtoBody(moveResp.Body, &movePayload); err != nil {
+		t.Fatalf("decode repeat move response: %v", err)
+	}
+	moveResp.Body.Close()
+	if movePayload.MovedCount != 0 {
+		t.Fatalf("expected repeated move to be idempotent, got %d", movePayload.MovedCount)
+	}
+}
+
+func TestPullOnDeckTodosToTodayIsIdempotent(t *testing.T) {
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dbURL)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	userID, email, password := insertUser(t, ctx, pool)
+	defer cleanupUser(t, ctx, pool, userID)
+
+	srv := New(pool, []byte("test-secret"), 24*time.Hour)
+	ts := httptest.NewServer(srv.Routes())
+	defer ts.Close()
+
+	token := login(t, ts.URL, email, password)
+	workspaceResp, err := authPost(ts.URL+secretaryv1connect.WorkspacesServiceCreateWorkspaceProcedure, token, secretaryv1.CreateWorkspaceRequest{Name: "Todo Pull"})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if workspaceResp.StatusCode != http.StatusOK {
+		t.Fatalf("create workspace status: %d", workspaceResp.StatusCode)
+	}
+	var workspacePayload secretaryv1.CreateWorkspaceResponse
+	if err := decodeProtoBody(workspaceResp.Body, &workspacePayload); err != nil {
+		t.Fatalf("decode workspace: %v", err)
+	}
+	workspaceResp.Body.Close()
+	workspaceID := workspacePayload.Workspace.Id
+	defer cleanupWorkspace(t, ctx, pool, workspaceID)
+
+	var todoID int64
+	err = pool.QueryRow(ctx, `
+		INSERT INTO todo (name, status, user_id, workspace_id, bucket)
+		VALUES ($1, 'todo', $2, $3, 'on_deck')
+		RETURNING id
+	`, "Pull me today", userID, workspaceID).Scan(&todoID)
+	if err != nil {
+		t.Fatalf("insert on-deck todo: %v", err)
+	}
+	defer pool.Exec(ctx, `DELETE FROM todo WHERE id = $1`, todoID)
+
+	pullResp, err := authPost(ts.URL+secretaryv1connect.TodosServicePullOnDeckTodosToTodayProcedure, token, &secretaryv1.PullOnDeckTodosToTodayRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("pull on-deck todos: %v", err)
+	}
+	if pullResp.StatusCode != http.StatusOK {
+		t.Fatalf("pull on-deck todos status: %d", pullResp.StatusCode)
+	}
+	var pullPayload secretaryv1.PullOnDeckTodosToTodayResponse
+	if err := decodeProtoBody(pullResp.Body, &pullPayload); err != nil {
+		t.Fatalf("decode pull response: %v", err)
+	}
+	pullResp.Body.Close()
+	if pullPayload.PulledCount != 1 || pullPayload.DocumentId == 0 {
+		t.Fatalf("expected 1 pulled todo and journal id, got count=%d document=%d", pullPayload.PulledCount, pullPayload.DocumentId)
+	}
+
+	var journalKind, journalTitle string
+	var journalDate time.Time
+	err = pool.QueryRow(ctx, `SELECT kind, title, journal_date FROM document WHERE id = $1`, pullPayload.DocumentId).Scan(&journalKind, &journalTitle, &journalDate)
+	if err != nil {
+		t.Fatalf("load created journal: %v", err)
+	}
+	if journalKind != "journal" || journalTitle == "" || journalDate.IsZero() {
+		t.Fatalf("expected today's journal, got kind=%q title=%q date=%v", journalKind, journalTitle, journalDate)
+	}
+
+	var blockID int64
+	var blockText string
+	err = pool.QueryRow(ctx, `SELECT id, text FROM block WHERE document_id = $1 AND todo_id = $2`, pullPayload.DocumentId, todoID).Scan(&blockID, &blockText)
+	if err != nil {
+		t.Fatalf("load pulled todo block: %v", err)
+	}
+	if blockText != "Pull me today" {
+		t.Fatalf("expected pulled block text, got %q", blockText)
+	}
+
+	var currentDocumentID, currentBlockID int64
+	var bucket *string
+	err = pool.QueryRow(ctx, `SELECT current_document_id, current_block_id, bucket FROM todo WHERE id = $1`, todoID).Scan(&currentDocumentID, &currentBlockID, &bucket)
+	if err != nil {
+		t.Fatalf("load pulled todo: %v", err)
+	}
+	if currentDocumentID != pullPayload.DocumentId || currentBlockID != blockID || bucket != nil {
+		t.Fatalf("expected todo moved to journal block and bucket cleared, got document=%d block=%d bucket=%v", currentDocumentID, currentBlockID, bucket)
+	}
+
+	completeResp, err := authPost(ts.URL+secretaryv1connect.DocumentsServiceSaveDocumentProcedure, token, &secretaryv1.SaveDocumentRequest{Document: &secretaryv1.Document{
+		Id:          pullPayload.DocumentId,
+		WorkspaceId: workspaceID,
+		Kind:        "journal",
+		Title:       journalTitle,
+		JournalDate: journalDate.Format(time.DateOnly),
+		Blocks: []*secretaryv1.Block{
+			{Id: blockID, SortOrder: 1, Text: blockText, TodoStatus: "done"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("complete pulled todo: %v", err)
+	}
+	if completeResp.StatusCode != http.StatusOK {
+		t.Fatalf("complete pulled todo status: %d", completeResp.StatusCode)
+	}
+	completeResp.Body.Close()
+
+	var completedDocumentID, completedBlockID int64
+	var completedStatus string
+	err = pool.QueryRow(ctx, `SELECT status, completed_document_id, completed_block_id FROM todo WHERE id = $1`, todoID).Scan(&completedStatus, &completedDocumentID, &completedBlockID)
+	if err != nil {
+		t.Fatalf("load completed pulled todo: %v", err)
+	}
+	if completedStatus != "done" || completedDocumentID != pullPayload.DocumentId || completedBlockID != blockID {
+		t.Fatalf("expected completion context in journal, got status=%q document=%d block=%d", completedStatus, completedDocumentID, completedBlockID)
+	}
+
+	pullResp, err = authPost(ts.URL+secretaryv1connect.TodosServicePullOnDeckTodosToTodayProcedure, token, &secretaryv1.PullOnDeckTodosToTodayRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("repeat pull on-deck todos: %v", err)
+	}
+	if pullResp.StatusCode != http.StatusOK {
+		t.Fatalf("repeat pull on-deck todos status: %d", pullResp.StatusCode)
+	}
+	if err := decodeProtoBody(pullResp.Body, &pullPayload); err != nil {
+		t.Fatalf("decode repeat pull response: %v", err)
+	}
+	pullResp.Body.Close()
+	if pullPayload.PulledCount != 0 {
+		t.Fatalf("expected repeated pull to be idempotent, got %d", pullPayload.PulledCount)
+	}
+
+	var blockCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM block WHERE todo_id = $1`, todoID).Scan(&blockCount)
+	if err != nil {
+		t.Fatalf("count pulled todo blocks: %v", err)
+	}
+	if blockCount != 1 {
+		t.Fatalf("expected one pulled block after repeated pull, got %d", blockCount)
+	}
+}
+
 func TestDirectoryLifecycle(t *testing.T) {
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

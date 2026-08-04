@@ -115,13 +115,13 @@ button {
 }
 
 .page-shell[data-center-column='true'] .workspace-content {
-  width: min(40vw, 100%);
+  width: min(48vw, 100%);
   min-width: 0;
   margin: 0 auto;
 }
 
 .page-shell[data-center-column='true'][data-active-view='ai'] .workspace-content {
-  width: min(56vw, 100%);
+  width: min(67.2vw, 100%);
 }
 
 .settings-trigger {
@@ -1059,10 +1059,27 @@ button {
   transform: translateY(-1px);
 }
 
+.todo-card[data-due-state='today'] {
+  border-color: rgba(101, 158, 255, 0.36);
+  background: linear-gradient(135deg, rgba(54, 92, 151, 0.16), rgba(255, 255, 255, 0.02));
+}
+
+.todo-card[data-due-state='overdue'] {
+  border-color: rgba(255, 115, 94, 0.44);
+  background: linear-gradient(135deg, rgba(139, 47, 38, 0.19), rgba(255, 255, 255, 0.02));
+}
+
 .todo-filter-row {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.todo-command-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
 }
 
 .todo-list-panel {
@@ -1077,6 +1094,96 @@ button {
   max-height: calc(100vh - 260px);
   overflow-y: auto;
   padding-right: 4px;
+}
+
+.todo-planning-layout {
+  display: grid;
+  gap: 18px;
+}
+
+.todo-kanban-board {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.todo-kanban-column,
+.todo-backlog-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.todo-kanban-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: rgba(228, 236, 249, 0.82);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.todo-kanban-cards {
+  display: grid;
+  gap: 10px;
+}
+
+.todo-planning-row {
+  display: grid;
+  grid-template-columns: 80px minmax(130px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  gap: 8px;
+}
+
+.todo-planning-field {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: rgba(203, 215, 238, 0.64);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.todo-planning-field input,
+.todo-planning-field select,
+.todo-goal-filter,
+.todo-backlog-search {
+  min-width: 0;
+  width: 100%;
+  color: rgba(237, 242, 255, 0.92);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 8px 9px;
+  font: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.todo-planning-field option,
+.todo-goal-filter option {
+  color: #edf2ff;
+  background: #131720;
+}
+
+.todo-goal-filter {
+  width: auto;
+  min-width: 150px;
+  border-radius: 999px;
+  padding: 8px 12px;
+}
+
+.todo-backlog-search {
+  font-size: 0.95rem;
 }
 
 .todo-filter-button,
@@ -1214,8 +1321,35 @@ button {
 }
 
 .todo-card-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
   color: rgba(203, 215, 238, 0.64);
   font-size: 0.88rem;
+}
+
+.todo-due-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.todo-due-badge[data-due-state='today'] {
+  color: #c9dcff;
+  background: rgba(83, 128, 207, 0.22);
+  border: 1px solid rgba(108, 157, 245, 0.25);
+}
+
+.todo-due-badge[data-due-state='overdue'] {
+  color: #ffd0c9;
+  background: rgba(173, 61, 47, 0.24);
+  border: 1px solid rgba(255, 115, 94, 0.28);
 }
 
 .todo-card-footer {
@@ -1652,8 +1786,12 @@ button {
     grid-template-columns: 1fr;
   }
 
+  .todo-kanban-board {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .page-shell[data-center-column='true'] .workspace-content {
-    width: min(680px, 100%);
+    width: min(816px, 100%);
   }
 }
 
@@ -1703,6 +1841,11 @@ button {
   .todo-card-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .todo-kanban-board,
+  .todo-planning-row {
+    grid-template-columns: 1fr;
   }
 
   .todo-status-control {

@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
 import { cycleTodoStatus } from './format';
 import { TODO_STATUS_ORDER, type DirectoryEntry } from './types';
-import type { BackendAIThread, BackendTodo } from '../lib/backend';
+import type { BackendAIThread, BackendTodo, BackendTodoBucket } from '../lib/backend';
 import type { OutlineState } from '../features/outline/types';
+
+const TODO_BUCKET_ORDER: BackendTodoBucket[] = ['', 'inbox', 'on_deck', 'blocked', 'done'];
 
 interface UseGlobalHotkeysOptions {
   state: OutlineState;
@@ -40,6 +42,9 @@ interface UseGlobalHotkeysOptions {
   lastTodoGPressRef: React.MutableRefObject<number | null>;
   openTodoSource: (todo: BackendTodo) => void;
   handleTodoStatusChange: (todo: BackendTodo, nextStatus: BackendTodo['status']) => Promise<void>;
+  handleTodoChange: (todo: BackendTodo, patch: Partial<BackendTodo>) => Promise<void>;
+  moveCurrentDocumentTodosToRepository: () => void;
+  pullOnDeckTodosIntoToday: () => void;
   updatingTodoId: number | null;
   aiThreads: BackendAIThread[];
   activeAIThread: BackendAIThread | null;
@@ -87,6 +92,9 @@ export function useGlobalHotkeys({
   lastTodoGPressRef,
   openTodoSource,
   handleTodoStatusChange,
+  handleTodoChange,
+  moveCurrentDocumentTodosToRepository,
+  pullOnDeckTodosIntoToday,
   updatingTodoId,
   aiThreads,
   activeAIThread,
@@ -272,6 +280,35 @@ export function useGlobalHotkeys({
           return;
         }
         lastTodoGPressRef.current = null;
+        if (key === 'm') {
+          event.preventDefault();
+          moveCurrentDocumentTodosToRepository();
+          return;
+        }
+        if (key === 'p') {
+          event.preventDefault();
+          pullOnDeckTodosIntoToday();
+          return;
+        }
+        if ((key === 'h' || key === 'l') && activeTodo && updatingTodoId !== activeTodo.id) {
+          event.preventDefault();
+          const currentBucketIndex = Math.max(0, TODO_BUCKET_ORDER.indexOf(activeTodo.bucket));
+          const direction = key === 'h' ? -1 : 1;
+          const nextBucket = TODO_BUCKET_ORDER[Math.max(0, Math.min(TODO_BUCKET_ORDER.length - 1, currentBucketIndex + direction))];
+          if (nextBucket !== activeTodo.bucket) {
+            void handleTodoChange(activeTodo, { bucket: nextBucket });
+          }
+          return;
+        }
+        if ((event.key === '[' || event.key === ']') && activeTodo && updatingTodoId !== activeTodo.id) {
+          event.preventDefault();
+          const currentRank = activeTodo.priorityRank || 1;
+          const nextRank = event.key === '[' ? Math.max(1, currentRank - 1) : currentRank + 1;
+          if (nextRank !== activeTodo.priorityRank) {
+            void handleTodoChange(activeTodo, { priorityRank: nextRank });
+          }
+          return;
+        }
         if (event.key === 'j' || event.key === 'ArrowDown') {
           if (filteredTodos.length === 0) {
             return;
@@ -410,6 +447,7 @@ export function useGlobalHotkeys({
     directoryPrompt,
     dispatchAfterFlush,
     filteredTodos,
+    handleTodoChange,
     handleTodoStatusChange,
     isDocumentLinkPickerOpen,
     isToolbarMenuOpen,
@@ -418,12 +456,14 @@ export function useGlobalHotkeys({
     lastDirectoryDPressRef,
     lastTodoGPressRef,
     moveSelectedDirectoryToClipboard,
+    moveCurrentDocumentTodosToRepository,
     openTodayJournal,
     openCreateDirectoryPrompt,
     openDirectoryBrowser,
     openDirectoryEntry,
     openTodoSource,
     pasteClipboardHere,
+    pullOnDeckTodosIntoToday,
     pendingDeleteNoteId,
     pendingDirectoryMoveTimerRef,
     renameDirectoryEntry,

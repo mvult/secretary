@@ -1,9 +1,13 @@
-from tortoise import Tortoise
 import logging
+import os
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlunparse
 
-# Database configuration - leave connection string blank as requested
-DB_CONNECTION_STRING = "postgresql://neondb_owner:npg_PeyF4Zchz8Ij@ep-dark-heart-aas802qy-pooler.westus3.azure.neon.tech/neondb?sslmode=require&channel_binding=require"
+from dotenv import load_dotenv
+from tortoise import Tortoise
+
+ROOT_ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+load_dotenv(ROOT_ENV_PATH)
 
 
 def convert_postgres_url_for_tortoise(url: str) -> str:
@@ -39,14 +43,16 @@ def convert_postgres_url_for_tortoise(url: str) -> str:
 
 async def init_database():
     """Initialize Tortoise ORM with database connection"""
-    if not DB_CONNECTION_STRING:
+    db_connection_string = os.getenv("DATABASE_URL", "")
+    if not db_connection_string:
         logging.warning("Database connection string is empty")
         return False
 
     try:
         # Convert URL for Tortoise ORM compatibility
-        db_url = convert_postgres_url_for_tortoise(DB_CONNECTION_STRING)
-        logging.info(f"Connecting to database with URL: {db_url}")
+        db_url = convert_postgres_url_for_tortoise(db_connection_string)
+        parsed = urlparse(db_url)
+        logging.info("Connecting to database at %s/%s", parsed.hostname, parsed.path.lstrip("/"))
         
         await Tortoise.init(
             db_url=db_url, modules={"models": ["db.models"]}
@@ -60,4 +66,3 @@ async def init_database():
 async def close_database():
     """Close database connections"""
     await Tortoise.close_connections()
-

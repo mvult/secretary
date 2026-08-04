@@ -1139,14 +1139,14 @@ func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db
 
 	if block.TodoID.Valid {
 		todo, err := qtx.UpdateCanonicalTodoForBlock(ctx, db.UpdateCanonicalTodoForBlockParams{
-			ID:               block.TodoID.Int32,
-			Name:             name,
-			Desc:             desc,
-			Status:           statusValue,
-			UserID:           userIDValue,
-			WorkspaceID:      workspaceID,
-			SourceDocumentID: sourceDocumentID,
-			SourceBlockID:    sourceBlockID,
+			ID:                block.TodoID.Int32,
+			Name:              name,
+			Desc:              desc,
+			Status:            statusValue,
+			UserID:            userIDValue,
+			WorkspaceID:       workspaceID,
+			CurrentDocumentID: sourceDocumentID,
+			CurrentBlockID:    sourceBlockID,
 		})
 		if err == nil {
 			if err := createTodoHistoryEntry(ctx, qtx, todo.ID, userID, "update", todo.Name, todo.Desc, todo.Status, todo.UserID, todo.CreatedAtRecordingID, todo.UpdatedAtRecordingID); err != nil {

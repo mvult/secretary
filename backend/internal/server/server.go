@@ -341,7 +341,7 @@ func (s *Server) ListTodos(ctx context.Context, req *connect.Request[secretaryv1
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todos by recording"))
 		}
 		for _, row := range rows {
-			todos = append(todos, todoRowToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID))
+			todos = append(todos, listTodoByRecordingRowToProto(row))
 		}
 	} else {
 		userID := req.Msg.UserId
@@ -354,7 +354,7 @@ func (s *Server) ListTodos(ctx context.Context, req *connect.Request[secretaryv1
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todos"))
 		}
 		for _, row := range rows {
-			todos = append(todos, todoRowToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID))
+			todos = append(todos, listTodoByUserRowToProto(row))
 		}
 	}
 
@@ -371,7 +371,7 @@ func (s *Server) GetTodo(ctx context.Context, req *connect.Request[secretaryv1.G
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch todo"))
 	}
 
-	todo := todoRowToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID)
+	todo := getTodoRowToProto(row)
 	return connect.NewResponse(&secretaryv1.GetTodoResponse{Todo: todo}), nil
 }
 
@@ -379,6 +379,14 @@ func (s *Server) CreateTodo(ctx context.Context, req *connect.Request[secretaryv
 	msg := req.Msg
 	statusStr := mapStatusToString(msg.Status)
 	if err := validateTodoInput(msg.Name, statusStr); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	bucket, err := normalizeTodoBucket(msg.Bucket, statusStr)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	deadline, err := parseDateOnly(msg.DeadlineDate)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if msg.UserId == 0 {
@@ -395,10 +403,14 @@ func (s *Server) CreateTodo(ctx context.Context, req *connect.Request[secretaryv
 
 	// Create Todo
 	arg := db.CreateTodoParams{
-		Name:   msg.Name,
-		Desc:   pgtype.Text{String: msg.Desc, Valid: msg.Desc != ""},
-		Status: pgtype.Text{String: statusStr, Valid: true},
-		UserID: pgtype.Int4{Int32: int32(msg.UserId), Valid: true},
+		Name:         msg.Name,
+		Desc:         pgtype.Text{String: msg.Desc, Valid: msg.Desc != ""},
+		Status:       pgtype.Text{String: statusStr, Valid: true},
+		UserID:       pgtype.Int4{Int32: int32(msg.UserId), Valid: true},
+		Bucket:       pgtype.Text{String: bucket, Valid: bucket != ""},
+		PriorityRank: pgtype.Int4{Int32: int32(msg.PriorityRank), Valid: msg.PriorityRank != 0},
+		DeadlineDate: deadline,
+		GoalID:       pgtype.Int4{Int32: int32(msg.GoalId), Valid: msg.GoalId != 0},
 	}
 	if msg.CreatedAtRecordingId != 0 {
 		arg.CreatedAtRecordingID = pgtype.Int4{Int32: int32(msg.CreatedAtRecordingId), Valid: true}
@@ -435,7 +447,7 @@ func (s *Server) CreateTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
 
-	todo := todoRowToProto(todoRow.ID, todoRow.Name, todoRow.Desc, todoRow.Status, todoRow.UserID, todoRow.CreatedAtRecordingID, todoRow.UpdatedAtRecordingID, pgtype.Text{}, pgtype.Timestamptz{}, todoRow.CreatedAt, todoRow.UpdatedAt, todoRow.SourceKind, todoRow.SourceDocumentID, todoRow.SourceBlockID)
+	todo := todoTableRowToProto(todoRow, pgtype.Text{}, pgtype.Text{})
 
 	return connect.NewResponse(&secretaryv1.CreateTodoResponse{Todo: todo}), nil
 }
@@ -444,6 +456,14 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 	msg := req.Msg
 	statusStr := mapStatusToString(msg.Status)
 	if err := validateTodoInput(msg.Name, statusStr); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	bucket, err := normalizeTodoBucket(msg.Bucket, statusStr)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+	deadline, err := parseDateOnly(msg.DeadlineDate)
+	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if msg.UserId == 0 {
@@ -459,11 +479,15 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 	qtx := s.queries.WithTx(tx)
 
 	arg := db.UpdateTodoParams{
-		ID:     int32(msg.Id),
-		Name:   msg.Name,
-		Desc:   pgtype.Text{String: msg.Desc, Valid: msg.Desc != ""},
-		Status: pgtype.Text{String: statusStr, Valid: true},
-		UserID: pgtype.Int4{Int32: int32(msg.UserId), Valid: true},
+		ID:           int32(msg.Id),
+		Name:         msg.Name,
+		Desc:         pgtype.Text{String: msg.Desc, Valid: msg.Desc != ""},
+		Status:       pgtype.Text{String: statusStr, Valid: true},
+		UserID:       pgtype.Int4{Int32: int32(msg.UserId), Valid: true},
+		Bucket:       pgtype.Text{String: bucket, Valid: bucket != ""},
+		PriorityRank: pgtype.Int4{Int32: int32(msg.PriorityRank), Valid: msg.PriorityRank != 0},
+		DeadlineDate: deadline,
+		GoalID:       pgtype.Int4{Int32: int32(msg.GoalId), Valid: msg.GoalId != 0},
 	}
 	if msg.UpdatedAtRecordingId != 0 {
 		arg.UpdatedAtRecordingID = pgtype.Int4{Int32: int32(msg.UpdatedAtRecordingId), Valid: true}
@@ -499,7 +523,7 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
 
-	todo := todoRowToProto(todoRow.ID, todoRow.Name, todoRow.Desc, todoRow.Status, todoRow.UserID, todoRow.CreatedAtRecordingID, todoRow.UpdatedAtRecordingID, pgtype.Text{}, pgtype.Timestamptz{}, todoRow.CreatedAt, todoRow.UpdatedAt, todoRow.SourceKind, todoRow.SourceDocumentID, todoRow.SourceBlockID)
+	todo := todoTableRowToProto(todoRow, pgtype.Text{}, pgtype.Text{})
 
 	return connect.NewResponse(&secretaryv1.UpdateTodoResponse{Todo: todo}), nil
 }
@@ -598,6 +622,266 @@ func (s *Server) ListTodoHistory(ctx context.Context, req *connect.Request[secre
 	return connect.NewResponse(&secretaryv1.ListTodoHistoryResponse{History: history}), nil
 }
 
+func (s *Server) ListTodoGoals(ctx context.Context, req *connect.Request[secretaryv1.ListTodoGoalsRequest]) (*connect.Response[secretaryv1.ListTodoGoalsResponse], error) {
+	if req.Msg.UserId == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
+	}
+	rows, err := s.queries.ListTodoGoalsByUser(ctx, int32(req.Msg.UserId))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list todo goals"))
+	}
+	goals := make([]*secretaryv1.TodoGoal, 0, len(rows))
+	for _, row := range rows {
+		goals = append(goals, todoGoalRowToProto(row.ID, row.UserID, row.Name, row.Description, row.CreatedAt, row.UpdatedAt))
+	}
+	return connect.NewResponse(&secretaryv1.ListTodoGoalsResponse{Goals: goals}), nil
+}
+
+func (s *Server) CreateTodoGoal(ctx context.Context, req *connect.Request[secretaryv1.CreateTodoGoalRequest]) (*connect.Response[secretaryv1.CreateTodoGoalResponse], error) {
+	if req.Msg.UserId == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("user_id is required"))
+	}
+	if strings.TrimSpace(req.Msg.Name) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
+	}
+	row, err := s.queries.CreateTodoGoal(ctx, db.CreateTodoGoalParams{
+		UserID:      int32(req.Msg.UserId),
+		Name:        strings.TrimSpace(req.Msg.Name),
+		Description: req.Msg.Description,
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create todo goal"))
+	}
+	return connect.NewResponse(&secretaryv1.CreateTodoGoalResponse{Goal: todoGoalRowToProto(row.ID, row.UserID, row.Name, row.Description, row.CreatedAt, row.UpdatedAt)}), nil
+}
+
+func (s *Server) UpdateTodoGoal(ctx context.Context, req *connect.Request[secretaryv1.UpdateTodoGoalRequest]) (*connect.Response[secretaryv1.UpdateTodoGoalResponse], error) {
+	if req.Msg.Id == 0 || req.Msg.UserId == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id and user_id are required"))
+	}
+	if strings.TrimSpace(req.Msg.Name) == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name is required"))
+	}
+	row, err := s.queries.UpdateTodoGoal(ctx, db.UpdateTodoGoalParams{
+		ID:          int32(req.Msg.Id),
+		UserID:      int32(req.Msg.UserId),
+		Name:        strings.TrimSpace(req.Msg.Name),
+		Description: req.Msg.Description,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("todo goal not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update todo goal"))
+	}
+	return connect.NewResponse(&secretaryv1.UpdateTodoGoalResponse{Goal: todoGoalRowToProto(row.ID, row.UserID, row.Name, row.Description, row.CreatedAt, row.UpdatedAt)}), nil
+}
+
+func (s *Server) DeleteTodoGoal(ctx context.Context, req *connect.Request[secretaryv1.DeleteTodoGoalRequest]) (*connect.Response[secretaryv1.DeleteTodoGoalResponse], error) {
+	if req.Msg.Id == 0 || req.Msg.UserId == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id and user_id are required"))
+	}
+	if err := s.queries.DeleteTodoGoal(ctx, db.DeleteTodoGoalParams{ID: int32(req.Msg.Id), UserID: int32(req.Msg.UserId)}); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo goal"))
+	}
+	return connect.NewResponse(&secretaryv1.DeleteTodoGoalResponse{}), nil
+}
+
+func (s *Server) MoveDocumentTodosToRepository(ctx context.Context, req *connect.Request[secretaryv1.MoveDocumentTodosToRepositoryRequest]) (*connect.Response[secretaryv1.MoveDocumentTodosToRepositoryResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if req.Msg.DocumentId <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("document_id is required"))
+	}
+
+	doc, blocks, err := s.loadAuthorizedDocument(ctx, int32(req.Msg.DocumentId), int32(userID))
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to begin todo move transaction"))
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
+
+	var movedCount int64
+	for _, block := range blocks {
+		if !block.TodoID.Valid {
+			continue
+		}
+		todo, err := qtx.GetTodo(ctx, block.TodoID.Int32)
+		if errors.Is(err, pgx.ErrNoRows) {
+			_, clearErr := qtx.ClearBlockTodo(ctx, block.ID)
+			if clearErr != nil {
+				return nil, connect.NewError(connect.CodeInternal, errors.New("failed to clear stale block todo"))
+			}
+			continue
+		}
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to load block todo"))
+		}
+		if todo.Status.String == "done" {
+			continue
+		}
+		if todo.UserID.Valid && todo.UserID.Int32 != int32(userID) {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("todo belongs to another user"))
+		}
+
+		movedTodo, err := qtx.MoveTodoToRepository(ctx, todo.ID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to move todo to repository"))
+		}
+		if _, err := qtx.ClearBlockTodo(ctx, block.ID); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to detach todo block"))
+		}
+		if err := createTodoHistoryEntry(ctx, qtx, movedTodo.ID, userID, "move_to_repository", movedTodo.Name, movedTodo.Desc, movedTodo.Status, movedTodo.UserID, movedTodo.CreatedAtRecordingID, movedTodo.UpdatedAtRecordingID); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create todo history"))
+		}
+		movedCount++
+	}
+
+	if movedCount > 0 {
+		finalBlocks, err := qtx.ListBlocksByDocument(ctx, doc.ID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reload document blocks"))
+		}
+		blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, qtx, finalBlocks)
+		if err != nil {
+			return nil, err
+		}
+		if err := maybeCreateDocumentHistorySnapshot(ctx, qtx, doc, finalBlocks, blockTodoStatuses); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo move"))
+	}
+
+	return connect.NewResponse(&secretaryv1.MoveDocumentTodosToRepositoryResponse{MovedCount: movedCount}), nil
+}
+
+func (s *Server) PullOnDeckTodosToToday(ctx context.Context, req *connect.Request[secretaryv1.PullOnDeckTodosToTodayRequest]) (*connect.Response[secretaryv1.PullOnDeckTodosToTodayResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	workspaceID := int32(req.Msg.WorkspaceId)
+	if workspaceID <= 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workspace_id is required"))
+	}
+
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to begin todo pull transaction"))
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
+
+	if err := s.ensureWorkspaceAccessWithQueries(ctx, qtx, workspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	journalDate := pgtype.Date{Time: today, Valid: true}
+	journal, err := findWorkspaceJournalByDate(ctx, qtx, workspaceID, journalDate)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up today's journal"))
+	}
+	if journal == nil {
+		dateTitle := today.Format(time.DateOnly)
+		createdJournal, err := qtx.CreateDocument(ctx, db.CreateDocumentParams{
+			WorkspaceID: workspaceID,
+			DirectoryID: pgtype.Int4{},
+			Kind:        "journal",
+			Title:       dateTitle,
+			JournalDate: journalDate,
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create today's journal"))
+		}
+		journal = &createdJournal
+	}
+
+	onDeckTodos, err := qtx.ListOnDeckTodosForPull(ctx, db.ListOnDeckTodosForPullParams{
+		UserID:      pgtype.Int4{Int32: int32(userID), Valid: true},
+		WorkspaceID: pgtype.Int4{Int32: workspaceID, Valid: true},
+	})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list on-deck todos"))
+	}
+
+	blocks, err := qtx.ListBlocksByDocument(ctx, journal.ID)
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list journal blocks"))
+	}
+	nextSortOrder := int32(1)
+	for _, block := range blocks {
+		if !block.ParentBlockID.Valid && block.SortOrder >= nextSortOrder {
+			nextSortOrder = block.SortOrder + 1
+		}
+	}
+
+	var pulledCount int64
+	for _, todo := range onDeckTodos {
+		block, err := qtx.CreateBlock(ctx, db.CreateBlockParams{
+			DocumentID:    journal.ID,
+			ParentBlockID: pgtype.Int4{},
+			SortOrder:     nextSortOrder,
+			Text:          todo.Name,
+			TodoID:        pgtype.Int4{Int32: todo.ID, Valid: true},
+		})
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create journal todo block"))
+		}
+		nextSortOrder++
+
+		movedTodo, err := qtx.MoveTodoToDocumentBlock(ctx, db.MoveTodoToDocumentBlockParams{
+			ID:                todo.ID,
+			CurrentDocumentID: pgtype.Int4{Int32: journal.ID, Valid: true},
+			CurrentBlockID:    pgtype.Int4{Int32: block.ID, Valid: true},
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to move todo into journal"))
+		}
+		if err := createTodoHistoryEntry(ctx, qtx, movedTodo.ID, userID, "pull_on_deck_to_today", movedTodo.Name, movedTodo.Desc, movedTodo.Status, movedTodo.UserID, movedTodo.CreatedAtRecordingID, movedTodo.UpdatedAtRecordingID); err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create todo history"))
+		}
+		pulledCount++
+	}
+
+	if pulledCount > 0 {
+		finalBlocks, err := qtx.ListBlocksByDocument(ctx, journal.ID)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to reload journal blocks"))
+		}
+		blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, qtx, finalBlocks)
+		if err != nil {
+			return nil, err
+		}
+		if err := maybeCreateDocumentHistorySnapshot(ctx, qtx, *journal, finalBlocks, blockTodoStatuses); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo pull"))
+	}
+
+	return connect.NewResponse(&secretaryv1.PullOnDeckTodosToTodayResponse{PulledCount: pulledCount, DocumentId: int64(journal.ID)}), nil
+}
+
 // --- Helpers ---
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
@@ -668,6 +952,38 @@ func formatTime(ts pgtype.Timestamptz) string {
 	return ts.Time.UTC().Format(time.RFC3339)
 }
 
+func parseDateOnly(value string) (pgtype.Date, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return pgtype.Date{}, nil
+	}
+	parsed, err := time.Parse(time.DateOnly, value)
+	if err != nil {
+		return pgtype.Date{}, errors.New("deadline_date must be YYYY-MM-DD")
+	}
+	return pgtype.Date{Time: parsed, Valid: true}, nil
+}
+
+func normalizeTodoBucket(bucket string, status string) (string, error) {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		switch status {
+		case "done":
+			return "done", nil
+		case "blocked":
+			return "blocked", nil
+		default:
+			return "", nil
+		}
+	}
+	switch bucket {
+	case "inbox", "on_deck", "blocked", "done":
+		return bucket, nil
+	default:
+		return "", errors.New("invalid bucket")
+	}
+}
+
 func validateTodoInput(name, status string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("name is required")
@@ -690,21 +1006,30 @@ func validStatus(status string) bool {
 	}
 }
 
-func todoRowToProto(
-	id int32,
-	name string,
-	desc pgtype.Text,
-	status pgtype.Text,
-	userID pgtype.Int4,
-	createdAtRecordingID pgtype.Int4,
-	updatedAtRecordingID pgtype.Int4,
-	recordingName pgtype.Text,
-	recordingDate pgtype.Timestamptz,
-	createdAt pgtype.Timestamptz,
-	updatedAt pgtype.Timestamptz,
-	sourceKind string,
-	sourceDocumentID pgtype.Int4,
-	sourceBlockID pgtype.Int4,
+func listTodoByUserRowToProto(row db.ListTodosByUserRow) *secretaryv1.Todo {
+	return todoFieldsToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID, row.Bucket, row.PriorityRank, row.DeadlineDate, row.GoalID, row.GoalName, row.CurrentDocumentID, row.CurrentBlockID, row.CompletedAt, row.CompletedDocumentID, row.CompletedBlockID)
+}
+
+func listTodoByRecordingRowToProto(row db.ListTodosByRecordingRow) *secretaryv1.Todo {
+	return todoFieldsToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID, row.Bucket, row.PriorityRank, row.DeadlineDate, row.GoalID, row.GoalName, row.CurrentDocumentID, row.CurrentBlockID, row.CompletedAt, row.CompletedDocumentID, row.CompletedBlockID)
+}
+
+func getTodoRowToProto(row db.GetTodoRow) *secretaryv1.Todo {
+	return todoFieldsToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, row.RecordingName, row.RecordingDate, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID, row.Bucket, row.PriorityRank, row.DeadlineDate, row.GoalID, row.GoalName, row.CurrentDocumentID, row.CurrentBlockID, row.CompletedAt, row.CompletedDocumentID, row.CompletedBlockID)
+}
+
+func todoTableRowToProto(row db.Todo, recordingName pgtype.Text, goalName pgtype.Text) *secretaryv1.Todo {
+	return todoFieldsToProto(row.ID, row.Name, row.Desc, row.Status, row.UserID, row.CreatedAtRecordingID, row.UpdatedAtRecordingID, recordingName, pgtype.Timestamptz{}, row.CreatedAt, row.UpdatedAt, row.SourceKind, row.SourceDocumentID, row.SourceBlockID, row.Bucket, row.PriorityRank, row.DeadlineDate, row.GoalID, goalName, row.CurrentDocumentID, row.CurrentBlockID, row.CompletedAt, row.CompletedDocumentID, row.CompletedBlockID)
+}
+
+func todoFieldsToProto(
+	id int32, name string, desc pgtype.Text, status pgtype.Text, userID pgtype.Int4,
+	createdAtRecordingID pgtype.Int4, updatedAtRecordingID pgtype.Int4, recordingName pgtype.Text,
+	recordingDate pgtype.Timestamptz, createdAt pgtype.Timestamptz, updatedAt pgtype.Timestamptz,
+	sourceKind string, sourceDocumentID pgtype.Int4, sourceBlockID pgtype.Int4,
+	bucket pgtype.Text, priorityRank pgtype.Int4, deadlineDate pgtype.Date, goalID pgtype.Int4, goalName pgtype.Text,
+	currentDocumentID pgtype.Int4, currentBlockID pgtype.Int4, completedAt pgtype.Timestamptz,
+	completedDocumentID pgtype.Int4, completedBlockID pgtype.Int4,
 ) *secretaryv1.Todo {
 	todo := &secretaryv1.Todo{
 		Id:                     int64(id),
@@ -717,6 +1042,16 @@ func todoRowToProto(
 		CreatedAt:              formatTime(createdAt),
 		UpdatedAt:              formatTime(updatedAt),
 		SourceKind:             sourceKind,
+		Bucket:                 bucket.String,
+		DeadlineDate:           formatDate(deadlineDate),
+		GoalName:               goalName.String,
+		CompletedAt:            formatTime(completedAt),
+	}
+	if priorityRank.Valid {
+		todo.PriorityRank = int64(priorityRank.Int32)
+	}
+	if goalID.Valid {
+		todo.GoalId = int64(goalID.Int32)
 	}
 	if createdAtRecordingID.Valid {
 		todo.CreatedAtRecordingId = int64(createdAtRecordingID.Int32)
@@ -730,7 +1065,30 @@ func todoRowToProto(
 	if sourceBlockID.Valid {
 		todo.SourceBlockId = int64(sourceBlockID.Int32)
 	}
+	if currentDocumentID.Valid {
+		todo.CurrentDocumentId = int64(currentDocumentID.Int32)
+	}
+	if currentBlockID.Valid {
+		todo.CurrentBlockId = int64(currentBlockID.Int32)
+	}
+	if completedDocumentID.Valid {
+		todo.CompletedDocumentId = int64(completedDocumentID.Int32)
+	}
+	if completedBlockID.Valid {
+		todo.CompletedBlockId = int64(completedBlockID.Int32)
+	}
 	return todo
+}
+
+func todoGoalRowToProto(id int32, userID int32, name string, description string, createdAt pgtype.Timestamptz, updatedAt pgtype.Timestamptz) *secretaryv1.TodoGoal {
+	return &secretaryv1.TodoGoal{
+		Id:          int64(id),
+		UserId:      int64(userID),
+		Name:        name,
+		Description: description,
+		CreatedAt:   formatTime(createdAt),
+		UpdatedAt:   formatTime(updatedAt),
+	}
 }
 
 func mapStatus(status string) secretaryv1.TodoStatus {

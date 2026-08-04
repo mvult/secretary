@@ -269,6 +269,40 @@ Open implementation question:
 
 ## Checkpoints
 
+## Implementation Task List
+
+Work this list from top to bottom. Mark tasks complete only after code is implemented and the relevant build/test command passes.
+
+1. Confirm existing TODO persistence model. `[done]`
+2. Update PRD semantics for one current TODO location, date-only deadlines, user-scoped goals, and no multi-note active references. `[done]`
+3. Extend backend schema with planning metadata, current/completion location fields, and user-scoped goals. `[done]`
+4. Add backend SQL queries for TODO planning fields and goal CRUD. `[done]`
+5. Extend TODO protobuf API for planning fields and goal CRUD. `[done]`
+6. Regenerate sqlc and protobuf code. `[done]`
+7. Implement backend TODO mapping, validation, date-only parsing, bucket normalization, and goal RPC handlers. `[done]`
+8. Verify backend compiles/tests after metadata and goal changes. `[done]`
+9. Extend native backend client models and API helpers for TODO planning fields and goals. `[done]`
+10. Add native kanban/backlog TODO planning view with bucket, priority, and deadline editing. `[done]`
+11. Add native goal loading, goal filtering, goal display, and per-card goal editing. `[done]`
+12. Verify native build after planning view changes. `[done]`
+13. Apply backend migration to the target database. `[done]`
+14. Runtime-test TODO list/update/goal RPCs against the migrated database. `[done]`
+15. Add backend RPC for moving incomplete TODOs from the current document to the central repository. `[done]`
+16. Ensure repository move preserves source document/block, clears current document/block, and does not delete canonical TODOs. `[done]`
+17. Ensure repository move removes visible inline TODO blocks from the document without deleting completed TODOs. `[done]`
+18. Add backend tests for idempotent repository move and repeated runs. `[done]`
+19. Add backend RPC for pulling `on_deck` TODOs into today's journal. `[done]`
+20. Ensure on-deck pull creates today's journal if needed using existing journal behavior. `[done]`
+21. Ensure on-deck pull preserves TODO identity, creates visible journal blocks, updates current document/block, and avoids duplicates. `[done]`
+22. Add backend tests for idempotent on-deck pull and completion-context behavior. `[done]`
+23. Add native commands for repository move and on-deck pull. `[done]`
+24. Add native keyboard shortcuts or command-palette entries for repository move and on-deck pull. `[done]`
+25. Add keyboard movement for TODO priority and bucket movement in the planning view. `[done]`
+26. Add overdue and due-today visual states. `[done]`
+27. Verify full native daily workflow with real data. `[next]`
+28. Re-run backend tests and native build after all TODO flow work. `[todo]`
+29. Update docs/agent migration instructions once Goose replaces Atlas. `[todo: separate Goose migration PRD]`
+
 ### Checkpoint 1: Model And API
 
 - Confirm current TODO persistence model.

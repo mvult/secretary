@@ -28,6 +28,25 @@ message Todo {
   string source_kind = 12;
   int64 source_document_id = 13;
   int64 source_block_id = 14;
+  string bucket = 15;
+  int64 priority_rank = 16;
+  string deadline_date = 17;
+  int64 goal_id = 18;
+  string goal_name = 19;
+  int64 current_document_id = 20;
+  int64 current_block_id = 21;
+  string completed_at = 22;
+  int64 completed_document_id = 23;
+  int64 completed_block_id = 24;
+}
+
+message TodoGoal {
+  int64 id = 1;
+  int64 user_id = 2;
+  string name = 3;
+  string description = 4;
+  string created_at = 5;
+  string updated_at = 6;
 }
 
 message TodoHistory {
@@ -68,6 +87,10 @@ message CreateTodoRequest {
   int64 user_id = 4;
   int64 created_at_recording_id = 5;
   int64 updated_at_recording_id = 6;
+  string bucket = 7;
+  int64 priority_rank = 8;
+  string deadline_date = 9;
+  int64 goal_id = 10;
 }
 
 message CreateTodoResponse {
@@ -81,6 +104,10 @@ message UpdateTodoRequest {
   TodoStatus status = 4;
   int64 user_id = 5;
   int64 updated_at_recording_id = 6;
+  string bucket = 7;
+  int64 priority_rank = 8;
+  string deadline_date = 9;
+  int64 goal_id = 10;
 }
 
 message UpdateTodoResponse {
@@ -101,6 +128,59 @@ message ListTodoHistoryResponse {
   repeated TodoHistory history = 1;
 }
 
+message ListTodoGoalsRequest {
+  int64 user_id = 1;
+}
+
+message ListTodoGoalsResponse {
+  repeated TodoGoal goals = 1;
+}
+
+message CreateTodoGoalRequest {
+  int64 user_id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message CreateTodoGoalResponse {
+  TodoGoal goal = 1;
+}
+
+message UpdateTodoGoalRequest {
+  int64 id = 1;
+  int64 user_id = 2;
+  string name = 3;
+  string description = 4;
+}
+
+message UpdateTodoGoalResponse {
+  TodoGoal goal = 1;
+}
+
+message DeleteTodoGoalRequest {
+  int64 id = 1;
+  int64 user_id = 2;
+}
+
+message DeleteTodoGoalResponse {}
+
+message MoveDocumentTodosToRepositoryRequest {
+  int64 document_id = 1;
+}
+
+message MoveDocumentTodosToRepositoryResponse {
+  int64 moved_count = 1;
+}
+
+message PullOnDeckTodosToTodayRequest {
+  int64 workspace_id = 1;
+}
+
+message PullOnDeckTodosToTodayResponse {
+  int64 pulled_count = 1;
+  int64 document_id = 2;
+}
+
 service TodosService {
   rpc ListTodos(ListTodosRequest) returns (ListTodosResponse);
   rpc GetTodo(GetTodoRequest) returns (GetTodoResponse);
@@ -108,4 +188,10 @@ service TodosService {
   rpc UpdateTodo(UpdateTodoRequest) returns (UpdateTodoResponse);
   rpc DeleteTodo(DeleteTodoRequest) returns (DeleteTodoResponse);
   rpc ListTodoHistory(ListTodoHistoryRequest) returns (ListTodoHistoryResponse);
+  rpc ListTodoGoals(ListTodoGoalsRequest) returns (ListTodoGoalsResponse);
+  rpc CreateTodoGoal(CreateTodoGoalRequest) returns (CreateTodoGoalResponse);
+  rpc UpdateTodoGoal(UpdateTodoGoalRequest) returns (UpdateTodoGoalResponse);
+  rpc DeleteTodoGoal(DeleteTodoGoalRequest) returns (DeleteTodoGoalResponse);
+  rpc MoveDocumentTodosToRepository(MoveDocumentTodosToRepositoryRequest) returns (MoveDocumentTodosToRepositoryResponse);
+  rpc PullOnDeckTodosToToday(PullOnDeckTodosToTodayRequest) returns (PullOnDeckTodosToTodayResponse);
 }

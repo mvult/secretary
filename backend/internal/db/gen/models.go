@@ -388,13 +388,31 @@ type Todo struct {
 	Status               pgtype.Text
 	UserID               pgtype.Int4
 	WorkspaceID          pgtype.Int4
+	Bucket               pgtype.Text
+	PriorityRank         pgtype.Int4
+	DeadlineDate         pgtype.Date
+	GoalID               pgtype.Int4
 	SourceKind           string
 	SourceDocumentID     pgtype.Int4
 	SourceBlockID        pgtype.Int4
+	CurrentDocumentID    pgtype.Int4
+	CurrentBlockID       pgtype.Int4
+	CompletedAt          pgtype.Timestamptz
+	CompletedDocumentID  pgtype.Int4
+	CompletedBlockID     pgtype.Int4
 	CreatedAtRecordingID pgtype.Int4
 	UpdatedAtRecordingID pgtype.Int4
 	CreatedAt            pgtype.Timestamptz
 	UpdatedAt            pgtype.Timestamptz
+}
+
+type TodoGoal struct {
+	ID          int32
+	UserID      int32
+	Name        string
+	Description string
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
 }
 
 type TodoHistory struct {
