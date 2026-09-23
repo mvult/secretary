@@ -33,7 +33,7 @@ func main() {
 		log.Println("No .env file found, using system environment variables")
 	}
 
-	addr := ":8080"
+	addr := ":8091"
 	if v := os.Getenv("ADDR"); v != "" {
 		addr = v
 	}

@@ -152,7 +152,7 @@ export function SettingsView({
 
       <div className="settings-card">
         <label className="settings-label" htmlFor="backend-url">Backend URL</label>
-        <input id="backend-url" className="settings-input" type="text" value={backendUrl} placeholder="http://localhost:8080" onChange={(event) => onChangeBackendUrl(event.target.value)} />
+        <input id="backend-url" className="settings-input" type="text" value={backendUrl} placeholder="http://localhost:8091" onChange={(event) => onChangeBackendUrl(event.target.value)} />
 
         <label className="settings-label" htmlFor="sync-email">Email</label>
         <input id="sync-email" className="settings-input" type="email" value={email} placeholder="you@example.com" onChange={(event) => onChangeEmail(event.target.value)} />

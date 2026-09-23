@@ -11,7 +11,7 @@ export function useSearchView(state: OutlineState) {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const lastSearchJPressRef = useRef<number | null>(null);
 
-  const matches = useMemo(() => findMatchingNotes(state, searchQuery), [searchQuery, state]);
+  const matches = useMemo(() => findMatchingNotes(state.pages, searchQuery), [searchQuery, state.pages]);
   const titleMatches = useMemo(
     () => matches.filter(({ page }) => pageMatchesTitle(page, searchQuery)),
     [matches, searchQuery],

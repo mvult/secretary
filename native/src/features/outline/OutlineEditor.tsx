@@ -2,7 +2,7 @@ import { useMemo, useRef } from 'react';
 import type { Dispatch } from 'react';
 import { OutlineRow } from './OutlineRow';
 import type { OutlineAction } from './state';
-import { getSelectedInfo, getSelectionClipboardText } from './tree';
+import { getNodeDepths, getSelectedInfo, getSelectionClipboardText } from './tree';
 import type { OutlinePage, OutlineState } from './types';
 
 async function writeSystemClipboard(text: string) {
@@ -25,17 +25,22 @@ interface OutlineEditorProps {
   page: OutlinePage;
   state: OutlineState;
   dispatch: Dispatch<OutlineAction>;
+  pagesByBackendId: Map<number, OutlinePage>;
   onOpenDocumentLinkPicker: () => void;
   onFollowDocumentLink: () => void;
   onOpenDocumentLink: (targetDocumentId: number) => void;
 }
 
-export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker, onFollowDocumentLink, onOpenDocumentLink }: OutlineEditorProps) {
+export function OutlineEditor({ page, state, dispatch, pagesByBackendId, onOpenDocumentLinkPicker, onFollowDocumentLink, onOpenDocumentLink }: OutlineEditorProps) {
   const lastDPressRef = useRef<number | null>(null);
   const lastGPressRef = useRef<number | null>(null);
   const lastBracketPressRef = useRef<number | null>(null);
   const lastYPressRef = useRef<number | null>(null);
-  const { selectedIds } = useMemo(() => getSelectedInfo(state), [state]);
+  const selectedIds = useMemo(
+    () => new Set(getSelectedInfo(state).selectedIds),
+    [state.activePageId, state.anchorId, state.focusedId, state.pages],
+  );
+  const nodeDepths = useMemo(() => getNodeDepths(page.nodes), [page.nodes]);
 
   return (
     <div
@@ -422,8 +427,10 @@ export function OutlineEditor({ page, state, dispatch, onOpenDocumentLinkPicker,
             key={node.id}
             node={node}
             state={state}
+            depth={nodeDepths.get(node.id) ?? 0}
+            pagesByBackendId={pagesByBackendId}
             isFocused={state.focusedId === node.id}
-            isSelected={selectedIds.includes(node.id)}
+            isSelected={selectedIds.has(node.id)}
             onFocus={(nodeId) => dispatch({ type: 'focus', nodeId })}
             onStartEditing={() => dispatch({ type: 'startEditing', placement: 'end' })}
             onDraftChange={(text) => dispatch({ type: 'updateDraft', text })}

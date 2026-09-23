@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { getMarkdownHeadingLevel, OutlineText } from './OutlineText';
 import { ESCAPE_SEQUENCE_MS } from './keymap';
-import { getCurrentPage, getNodeDepth } from './tree';
-import type { OutlineNode, OutlineState } from './types';
+import type { OutlineNode, OutlinePage, OutlineState } from './types';
 
 interface OutlineRowProps {
   node: OutlineNode;
   state: OutlineState;
+  depth: number;
+  pagesByBackendId: Map<number, OutlinePage>;
   isFocused: boolean;
   isSelected: boolean;
   onFocus: (nodeId: string) => void;
@@ -43,6 +44,8 @@ function formatTodoStatus(status: string) {
 export function OutlineRow({
   node,
   state,
+  depth,
+  pagesByBackendId,
   isFocused,
   isSelected,
   onFocus,
@@ -58,18 +61,12 @@ export function OutlineRow({
   onOpenDocumentLink,
 }: OutlineRowProps) {
   const isEditing = state.editingId === node.id;
-  const page = getCurrentPage(state);
-  const depth = getNodeDepth(page?.nodes ?? [], node.id);
   const buttonRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastJPressRef = useRef<number | null>(null);
   const wasEditingRef = useRef(false);
   const normalCursor = Math.max(0, Math.min(state.normalCursor, node.text.length));
   const headingLevel = getMarkdownHeadingLevel(node.text);
-  const pagesByBackendId = useMemo(
-    () => new Map(state.pages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
-    [state.pages],
-  );
 
   useEffect(() => {
     if (isEditing) {

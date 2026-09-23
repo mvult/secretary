@@ -29,9 +29,9 @@ import { getDocumentHistoryEntry, listDocumentHistory, listPendingWhatsAppNotifi
 
 function App() {
   const [state, dispatch] = useOutlineState();
-  const page = getCurrentPage(state);
-  const journalPage = getJournalPage(state);
-  const journals = getJournalPages(state);
+  const page = useMemo(() => getCurrentPage(state), [state.activePageId, state.pages]);
+  const journalPage = useMemo(() => getJournalPage(state), [state.pages]);
+  const journals = useMemo(() => getJournalPages(state), [state.pages]);
   const refreshTodosRef = useRef<(() => Promise<void>) | null>(null);
   const [isToolbarMenuOpen, setIsToolbarMenuOpen] = useState(false);
   const [isNoteHistoryOpen, setIsNoteHistoryOpen] = useState(false);
@@ -576,6 +576,7 @@ function App() {
               page={page}
               state={state}
               dispatch={dispatch}
+              pagesByBackendId={pagesByBackendId}
               activeNoteDirectoryPath={directory.activeNoteDirectoryPath}
               activePageSaveMessage={session.activePageSaveMessage}
               onOpenDocumentLinkPicker={documentLinks.openDocumentLinkPicker}

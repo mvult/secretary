@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { formatTodoTimestamp, todoStatusTone } from '../../app/format';
 import { TODO_STATUS_ORDER, type TodoFilter } from '../../app/types';
 import type { BackendTodo, BackendTodoBucket, BackendTodoGoal } from '../../lib/backend';
@@ -73,16 +73,22 @@ export function TodosView({
 }: TodosViewProps) {
   const [backlogQuery, setBacklogQuery] = useState('');
   const query = backlogQuery.trim().toLowerCase();
-  const activeTodos = filteredTodos.filter((todo) => todo.bucket);
-  const backlogTodos = filteredTodos.filter((todo) => {
-    if (todo.bucket) {
-      return false;
+  const { backlogTodos, todosByBucket } = useMemo(() => {
+    const nextBacklogTodos: BackendTodo[] = [];
+    const nextTodosByBucket = new Map<BackendTodoBucket, BackendTodo[]>(
+      TODO_BUCKETS.map(({ key }) => [key, []]),
+    );
+
+    for (const todo of filteredTodos) {
+      if (todo.bucket) {
+        nextTodosByBucket.get(todo.bucket)?.push(todo);
+      } else if (!query || `${todo.name} ${todo.desc} ${todo.goalName}`.toLowerCase().includes(query)) {
+        nextBacklogTodos.push(todo);
+      }
     }
-    if (!query) {
-      return true;
-    }
-    return `${todo.name} ${todo.desc} ${todo.goalName}`.toLowerCase().includes(query);
-  });
+
+    return { backlogTodos: nextBacklogTodos, todosByBucket: nextTodosByBucket };
+  }, [filteredTodos, query]);
 
   function renderTodoCard(todo: BackendTodo, compact = false) {
     const goalName = todo.goalName || todoGoals.find((goal) => goal.id === todo.goalId)?.name || '';
@@ -246,7 +252,7 @@ export function TodosView({
             <div className="todo-planning-layout">
               <div className="todo-kanban-board">
                 {TODO_BUCKETS.map((bucket) => {
-                  const bucketTodos = activeTodos.filter((todo) => todo.bucket === bucket.key);
+                  const bucketTodos = todosByBucket.get(bucket.key) ?? [];
                   return (
                     <section key={bucket.key} className="todo-kanban-column">
                       <header className="todo-kanban-header">

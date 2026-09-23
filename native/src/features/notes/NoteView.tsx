@@ -7,6 +7,7 @@ interface NoteViewProps {
   page: OutlinePage;
   state: OutlineState;
   dispatch: React.Dispatch<OutlineAction>;
+  pagesByBackendId: Map<number, OutlinePage>;
   activeNoteDirectoryPath: { name: string }[];
   activePageSaveMessage: string;
   onOpenDocumentLinkPicker: () => void;
@@ -18,6 +19,7 @@ export function NoteView({
   page,
   state,
   dispatch,
+  pagesByBackendId,
   activeNoteDirectoryPath,
   activePageSaveMessage,
   onOpenDocumentLinkPicker,
@@ -49,6 +51,7 @@ export function NoteView({
         page={page}
         state={state}
         dispatch={dispatch}
+        pagesByBackendId={pagesByBackendId}
         onOpenDocumentLinkPicker={onOpenDocumentLinkPicker}
         onFollowDocumentLink={onFollowDocumentLink}
         onOpenDocumentLink={onOpenDocumentLink}

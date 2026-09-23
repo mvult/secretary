@@ -6,7 +6,7 @@ import { UsersService } from '../gen/secretary/v1/users_connect';
 import { getToken } from './auth';
 
 const isDev = import.meta.env.MODE === 'development';
-const baseUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:8080' : '/');
+const baseUrl = import.meta.env.VITE_API_URL || (isDev ? 'http://localhost:8091' : '/');
 
 const transport = createConnectTransport({
   baseUrl,

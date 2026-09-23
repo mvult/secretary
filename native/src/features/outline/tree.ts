@@ -358,6 +358,25 @@ export function getNodeDepth(nodes: OutlineNode[], nodeId: string): number {
   return depth;
 }
 
+export function getNodeDepths(nodes: OutlineNode[]) {
+  const byId = getNodeMap(nodes);
+  const depths = new Map<string, number>();
+
+  for (const node of nodes) {
+    let depth = 0;
+    let current: OutlineNode | null = node;
+
+    while (current?.parentId) {
+      depth += 1;
+      current = byId.get(current.parentId) ?? null;
+    }
+
+    depths.set(node.id, depth);
+  }
+
+  return depths;
+}
+
 function getSelectionIds(state: OutlineState): string[] {
   const ids = getActiveNodes(state).map((node) => node.id);
   if (!state.anchorId) {
@@ -422,9 +441,9 @@ function pageRecencyValue(page: OutlinePage) {
   return parsed;
 }
 
-export function findMatchingNotes(state: OutlineState, query: string) {
+export function findMatchingNotes(pages: OutlinePage[], query: string) {
   const normalized = query.trim().toLowerCase();
-  const notes = getNotePages(state);
+  const notes = pages.filter((page) => page.kind === 'note');
 
   if (!normalized) {
     return notes
@@ -1009,6 +1028,15 @@ export function jumpFocusInPage(state: OutlineState, position: 'start' | 'end'):
 
   const targetNode = position === 'start' ? nodes[0] : nodes[nodes.length - 1];
   const nextCursor = position === 'start' ? 0 : targetNode.text.length;
+  if (state.mode === 'visual') {
+    return {
+      ...state,
+      editingId: null,
+      focusedId: targetNode.id,
+      normalCursor: nextCursor,
+      anchorId: state.anchorId ?? state.focusedId,
+    };
+  }
   return clearSelection({ ...state, mode: 'normal', editingId: null, normalCursor: nextCursor }, targetNode.id);
 }
 

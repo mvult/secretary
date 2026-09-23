@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
-const pomodoroApprovalPrompt = "You are deciding whether a work-hours distraction unlock should be approved. Return JSON only with shape {\"decision\":\"approve\"|\"deny\",\"time\":<integer minutes>,\"reason\":<short string>}. Approve only if the rationale is specific, work-related, and time-bounded. Deny vague reasons.  In general however, if the reason is valid, allot as much time as is requestion, but never approve more than 120 minutes."
+const pomodoroApprovalPrompt = `Evaluate whether an app/site unlock during work hours serves a work-related purpose based on the user's rationale. Assess the stated purpose without a presumption toward approval or denial. A brief explanation can be sufficient; judge its substance rather than its length or formality.
+Return JSON only with shape {"decision":"approve"|"deny","time":<integer minutes>,"reason":<short string>}.
+Approve when the rationale establishes a work-related purpose. Deny when it describes an unrelated distraction or does not provide enough information to establish the purpose.
+For approvals, use the unlock duration requested in the rationale. If no unlock duration is explicitly requested but a video/task duration is given, use that duration. Use 10 minutes only when no duration is given; it is a fallback, not a requested duration or limit. A duration different from 10 minutes is not a mismatch or a reason for denial. Missing duration is not a reason for denial. Cap approved durations at 120 minutes rather than denying a request for exceeding the cap. Return an integer from 1 to 120 for approvals and 0 for denials.
+Keep the reason brief, neutral, and nonjudgmental.`
 
 type pomodoroApprovalRequest struct {
 	Alias     string `json:"alias"`
@@ -104,7 +108,7 @@ func (s *Server) requestPomodoroApproval(ctx context.Context, req pomodoroApprov
 		Model: model,
 		Messages: []pomodoroChatMessage{
 			{Role: "system", Content: pomodoroApprovalPrompt},
-			{Role: "user", Content: fmt.Sprintf("Alias: %s\nWork hours: active\nRequested default unlock: 10 minutes\nRationale: %s", req.Alias, req.Rationale)},
+			{Role: "user", Content: fmt.Sprintf("Alias: %s\nWork hours: active\nRationale: %s", req.Alias, req.Rationale)},
 		},
 		Response: map[string]any{"type": "json_object"},
 	}
@@ -158,7 +162,7 @@ func (s *Server) requestPomodoroApproval(ctx context.Context, req pomodoroApprov
 		approval.Time = 0
 	}
 	if approval.Time > 120 {
-		approval.Time = 30
+		approval.Time = 120
 	}
 	approval.Reason = strings.TrimSpace(approval.Reason)
 	return approval, nil

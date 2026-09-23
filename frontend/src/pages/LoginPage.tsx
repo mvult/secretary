@@ -18,7 +18,7 @@ export function LoginPage() {
 
     try {
       const isDev = import.meta.env.MODE === 'development';
-      const baseUrl = isDev ? 'http://localhost:8080' : '';
+      const baseUrl = isDev ? 'http://localhost:8091' : '';
       const res = await fetch(`${baseUrl}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

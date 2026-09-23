@@ -98,7 +98,7 @@ COPY --from=backend_builder /server .
 # COPY --from=arigaio/atlas:latest /atlas /usr/local/bin/atlas
 
 # Expose port
-EXPOSE 8080
+EXPOSE 8091
 
 # Run the server
 CMD ["./server"]

@@ -15,6 +15,7 @@ import type { OutlinePage, OutlineState } from '../outline/types';
 import { formatPanelTimestamp } from '../../app/format';
 import { describeInvalidBlockTree, describeSaveFailure, findPageForPersistence, normalizePageForSave, pageHash, pagePersistenceKey, validatePageForSave } from '../../app/pagePersistence';
 import { SETTINGS_STORAGE_KEY, type PageSaveIndicator, type StoredSettings } from '../../app/types';
+import { reconcileSavedPage } from './saveReconciliation';
 
 interface UseSessionSyncOptions {
   state: OutlineState;
@@ -37,47 +38,6 @@ type PausedSaveState = {
 
 function logSaveDebug(label: string, details: Record<string, unknown>) {
   console.debug(`[save-debug] ${label}`, details);
-}
-
-function buildRequestToSavedNodeMap(requestPage: OutlinePage, savedPage: OutlinePage) {
-  const byBackendId = new Map(savedPage.nodes.filter((node) => node.backendId).map((node) => [node.backendId!, node]));
-  const result = new Map<string, OutlinePage['nodes'][number]>();
-
-  requestPage.nodes.forEach((node, index) => {
-    const savedNode = (node.backendId ? byBackendId.get(node.backendId) : null) ?? savedPage.nodes[index] ?? null;
-    if (savedNode) {
-      result.set(node.id, savedNode);
-    }
-  });
-
-  return result;
-}
-
-function mergeSavedIdentitiesIntoPage(requestPage: OutlinePage, latestPage: OutlinePage, savedPage: OutlinePage): OutlinePage {
-  const requestToSaved = buildRequestToSavedNodeMap(requestPage, savedPage);
-
-  return {
-    ...latestPage,
-    backendId: savedPage.backendId,
-    workspaceId: savedPage.workspaceId,
-    directoryId: latestPage.directoryId,
-    createdAt: savedPage.createdAt,
-    updatedAt: savedPage.updatedAt,
-    nodes: latestPage.nodes.map((node) => {
-      const savedNode = requestToSaved.get(node.id);
-      if (!savedNode) {
-        return node;
-      }
-
-      return {
-        ...node,
-        backendId: savedNode.backendId,
-        todoId: savedNode.todoId,
-        createdAt: savedNode.createdAt,
-        updatedAt: savedNode.updatedAt,
-      };
-    }),
-  };
 }
 
 export interface SessionSyncState {
@@ -143,7 +103,7 @@ function clearInvalidServerBlockIds(page: OutlinePage, validBlockIds: Set<number
 }
 
 export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionSyncOptions): SessionSyncState {
-  const [backendUrl, setBackendUrl] = useState('http://localhost:8080');
+  const [backendUrl, setBackendUrl] = useState('http://localhost:8091');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [centerColumn, setCenterColumn] = useState(false);
@@ -161,7 +121,10 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
   const [staleBlockRecovery, setStaleBlockRecovery] = useState<StaleBlockRecovery | null>(null);
   const [pendingSyncConfirmation, setPendingSyncConfirmation] = useState<{ reason: 'startup' | 'login' | 'manual'; dirtyPages: { pageId: string; title: string; kind: OutlinePage['kind'] }[] } | null>(null);
   const stateRef = useRef(state);
-  const pagesForPersistence = useMemo(() => getPagesForPersistence(state), [state]);
+  const pagesForPersistence = useMemo(
+    () => getPagesForPersistence(state),
+    [state.draftText, state.editingId, state.pages],
+  );
   const pagesRef = useRef(pagesForPersistence);
   const lastSavedHashesRef = useRef<Map<string, string>>(new Map());
   const saveTimerRef = useRef<number | null>(null);
@@ -184,13 +147,7 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
     const persistedPage = pagesForPersistence.find((entry) => entry.id === page.id) ?? page;
     return pageHash(persistedPage);
   }, [page, pagesForPersistence]);
-  const activePageIsDirty = useMemo(() => {
-    if (!page) {
-      return false;
-    }
-    const persistedPage = pagesForPersistence.find((entry) => entry.id === page.id) ?? page;
-    return lastSavedHashesRef.current.get(persistedPage.id) !== pageHash(persistedPage);
-  }, [page, pagesForPersistence]);
+  const activePageIsDirty = Boolean(page && activePageHash !== null && lastSavedHashesRef.current.get(page.id) !== activePageHash);
   const activePageSaveIndicator = activePagePersistenceKey ? pageSaveIndicators[activePagePersistenceKey] ?? null : null;
   const activePageHasNewerEdits = Boolean(
     activePageHash
@@ -227,7 +184,7 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
 
     try {
       const parsed = JSON.parse(saved) as StoredSettings;
-      setBackendUrl(parsed.backendUrl ?? 'http://localhost:8080');
+      setBackendUrl(parsed.backendUrl ?? 'http://localhost:8091');
       setEmail(parsed.email ?? '');
       setAuthToken(parsed.token ?? '');
       setUserId(parsed.userId ?? null);
@@ -539,42 +496,25 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
             const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(pageToSave, workspaceId!));
             const savedPage = documentToOutlinePage(savedDocument);
             const latestPage = findPageForPersistence(pagesRef.current, currentPage) ?? findPageForPersistence(pagesRef.current, savedPage);
-            const latestHash = latestPage ? pageHash(latestPage) : null;
-
-            if (latestHash === requestHash || !currentPage.backendId) {
-              logSaveDebug('save response merge', {
-                pageId: requestPageId,
-                backendDocumentId: savedPage.backendId ?? null,
-                title: getPageTitle(savedPage),
-                latestHashMatchesRequest: latestHash === requestHash,
-                forcedBecauseNewDocument: !currentPage.backendId,
-                returnedBlockIds: savedPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
-              });
-              dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: requestPageId, source: 'session:saveResponseMerge' });
-              clearPausedSaveState(requestPageId);
-              clearPausedSaveState(savedPage.id);
-              lastSavedHashesRef.current.delete(requestPageId);
-              lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
-            } else {
-              const identityMergedPage = latestPage
-                ? mergeSavedIdentitiesIntoPage(pageToSave, latestPage, savedPage)
-                : savedPage;
-              logSaveDebug('save response skipped merge', {
-                pageId: requestPageId,
-                backendDocumentId: currentPage.backendId ?? null,
-                title: getPageTitle(currentPage),
-                latestHash,
-                requestHash,
-                latestPageId: latestPage?.id ?? null,
-                latestOutgoingBlockIds: latestPage?.nodes.filter((node) => node.backendId).map((node) => node.backendId) ?? [],
-                returnedBlockIds: savedPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
-                mergedBlockIds: identityMergedPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
-              });
-              dispatch({ type: 'mergeRemotePage', page: identityMergedPage, previousPageId: latestPage?.id ?? requestPageId, source: 'session:saveResponseIdentityMerge' });
-              clearPausedSaveState(requestPageId);
-              clearPausedSaveState(identityMergedPage.id);
-              lastSavedHashesRef.current.delete(requestPageId);
-              lastSavedHashesRef.current.set(identityMergedPage.id, pageHash(identityMergedPage));
+            const reconciled = reconcileSavedPage(pageToSave, latestPage ? normalizePageForSave(latestPage) : pageToSave, savedPage);
+            logSaveDebug('save response merge', {
+              pageId: requestPageId,
+              backendDocumentId: savedPage.backendId ?? null,
+              needsSave: reconciled.needsSave,
+              requestHash,
+            });
+            const mergeAction: OutlineAction = {
+              type: 'mergeRemotePage', page: reconciled.page, previousPageId: requestPageId, source: 'session:saveResponseMerge',
+            };
+            // The next flush iteration may run before React renders this dispatch.
+            stateRef.current = reduceOutlineState(stateRef.current, mergeAction);
+            pagesRef.current = getPagesForPersistence(stateRef.current);
+            dispatch(mergeAction);
+            clearPausedSaveState(requestPageId);
+            clearPausedSaveState(reconciled.page.id);
+            lastSavedHashesRef.current.delete(requestPageId);
+            lastSavedHashesRef.current.set(reconciled.page.id, reconciled.savedHash);
+            if (reconciled.needsSave) {
               pendingFlushRef.current = true;
             }
 
@@ -584,7 +524,7 @@ export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionS
               [savedKey]: {
                 status: 'saved',
                 message: `Saved ${formatPanelTimestamp(savedPage.updatedAt || savedPage.createdAt || '')}`,
-                hash: pageHash(savedPage),
+                hash: reconciled.savedHash,
               },
             }));
             if (savedKey !== pageKey) {

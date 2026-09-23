@@ -1,7 +1,8 @@
+import { useMemo } from 'react';
 import { OutlineEditor } from '../outline/OutlineEditor';
 import { OutlineText } from '../outline/OutlineText';
 import { getMarkdownHeadingLevel } from '../outline/OutlineText';
-import { getNodeDepth, getPageDateLabel } from '../outline/tree';
+import { getNodeDepths, getPageDateLabel } from '../outline/tree';
 import type { OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
 import { formatInlineTodoStatus } from '../../app/format';
@@ -31,6 +32,15 @@ export function JournalsView({
   onFollowDocumentLink,
   onOpenDocumentLink,
 }: JournalsViewProps) {
+  const journalNodeDepths = useMemo(
+    () => new Map(
+      journals
+        .filter((journal) => journal.id !== state.activePageId)
+        .map((journal) => [journal.id, getNodeDepths(journal.nodes)]),
+    ),
+    [journals, state.activePageId],
+  );
+
   return (
     <>
       <header className="page-header page-header-stacked">
@@ -65,6 +75,7 @@ export function JournalsView({
                   page={journal}
                   state={state}
                   dispatch={dispatch}
+                  pagesByBackendId={pagesByBackendId}
                   onOpenDocumentLinkPicker={onOpenDocumentLinkPicker}
                   onFollowDocumentLink={onFollowDocumentLink}
                   onOpenDocumentLink={onOpenDocumentLink}
@@ -79,7 +90,7 @@ export function JournalsView({
                       data-focused="false"
                       data-selected="false"
                       data-editing="false"
-                      style={{ paddingLeft: `${12 + getNodeDepth(journal.nodes, node.id) * 24}px` }}
+                      style={{ paddingLeft: `${12 + (journalNodeDepths.get(journal.id)?.get(node.id) ?? 0) * 24}px` }}
                     >
                       <span className="row-gutter" aria-hidden="true">•</span>
                       {node.todoStatus ? (

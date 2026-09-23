@@ -9,6 +9,10 @@ export function useDocumentLinkPicker(state: OutlineState) {
   const documentLinkInputRef = useRef<HTMLInputElement | null>(null);
 
   const documentLinkMatches = useMemo(() => {
+    if (!isDocumentLinkPickerOpen) {
+      return [];
+    }
+
     const normalized = documentLinkQuery.trim().toLowerCase();
     return state.pages
       .filter((entry) => {
@@ -25,7 +29,7 @@ export function useDocumentLinkPicker(state: OutlineState) {
         return getPageTitle(left).localeCompare(getPageTitle(right)) || left.id.localeCompare(right.id);
       })
       .slice(0, 8);
-  }, [documentLinkQuery, state.pages]);
+  }, [documentLinkQuery, isDocumentLinkPickerOpen, state.pages]);
   const activeDocumentLinkMatch = useMemo(
     () => documentLinkMatches.find((entry) => entry.id === activeDocumentLinkResultId) ?? documentLinkMatches[0] ?? null,
     [activeDocumentLinkResultId, documentLinkMatches],

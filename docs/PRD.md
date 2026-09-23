@@ -272,7 +272,7 @@ The mobile app should use existing backend APIs where possible.
 
 Relevant backend behavior:
 
-- Backend default local API port is `8080`.
+- Backend default local API port is `8091`.
 - Auth uses `POST /api/login` and bearer-token middleware.
 - Documents API supports list, get, save, delete, directory create/update/delete, and history.
 - `SaveDocument` persists full document snapshots and reconciles blocks.
