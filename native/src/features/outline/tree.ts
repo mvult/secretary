@@ -559,10 +559,8 @@ export function restoreSnapshot(state: OutlineState, snapshot: OutlineSnapshot):
 }
 
 export function hydratePages(state: OutlineState, pages: OutlinePage[]): OutlineState {
-  const nextPages = ensureTodayJournalPage({
-    ...state,
-    pages: clonePages(pages),
-  }).pages;
+  // Loading/restoring is not a user request to create a journal.
+  const nextPages = clonePages(pages);
   const activePage = getJournalPage({
     ...state,
     pages: nextPages,
@@ -572,7 +570,7 @@ export function hydratePages(state: OutlineState, pages: OutlinePage[]): Outline
     ...state,
     pages: nextPages,
     activePageId: activePage?.id ?? '',
-    activeView: activePage?.kind === 'note' ? 'note' : 'journals',
+    activeView: state.activeView === 'settings' ? 'settings' : activePage?.kind === 'note' ? 'note' : 'journals',
     focusedId: activePage ? getSafeFocusedId(activePage.nodes) : '',
     normalCursor: 0,
     anchorId: null,
@@ -581,15 +579,18 @@ export function hydratePages(state: OutlineState, pages: OutlinePage[]): Outline
     editCursor: 'end',
     mode: 'normal',
     history: [],
+    yankBuffer: null,
   };
 }
 
 function buildNodeIdMap(previousPage: OutlinePage, nextPage: OutlinePage) {
   const byBackendId = new Map(nextPage.nodes.filter((node) => node.backendId).map((node) => [node.backendId!, node.id]));
+  const byClientKey = new Map(nextPage.nodes.filter((node) => node.clientKey).map((node) => [node.clientKey!, node.id]));
+  const byId = new Map(nextPage.nodes.map((node) => [node.id, node.id]));
   const result = new Map<string, string>();
 
-  previousPage.nodes.forEach((node, index) => {
-    const nextId = (node.backendId ? byBackendId.get(node.backendId) : null) ?? nextPage.nodes[index]?.id;
+  previousPage.nodes.forEach((node) => {
+    const nextId = node.backendId ? byBackendId.get(node.backendId) : byClientKey.get(node.id) ?? byId.get(node.id);
     if (nextId) {
       result.set(node.id, nextId);
     }

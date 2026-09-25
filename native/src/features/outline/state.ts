@@ -45,6 +45,7 @@ import {
 import type { OutlineState } from './types';
 
 export type OutlineAction =
+  | { type: 'applySessionState'; state: OutlineState }
   | { type: 'focus'; nodeId: string }
   | { type: 'moveCaret'; motion: 'left' | 'right' | 'wordForward' | 'wordBackward' | 'wordEnd' | 'lineStart' | 'lineEnd' }
   | { type: 'moveFocus'; direction: 1 | -1; extendSelection: boolean }
@@ -82,6 +83,7 @@ export type OutlineAction =
   | { type: 'toggleVisualMode' }
   | { type: 'updatePageTitle'; title: string }
   | { type: 'hydrate'; pages: OutlineState['pages']; source?: string }
+  | { type: 'refreshPages'; pages: OutlineState['pages'] }
   | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string; source?: string }
   | { type: 'syncRemoteTodo'; sourceDocumentId: number; sourceBlockId: number; todoId: number; status: OutlineState['pages'][number]['nodes'][number]['todoStatus']; updatedAt?: string }
   | { type: 'undo' };
@@ -107,8 +109,8 @@ const initialState: OutlineState = {
 
 function withHistory(state: OutlineState, updater: (current: OutlineState) => OutlineState): OutlineState {
   const nextState = updater(state);
-  if (nextState === state) {
-    return state;
+  if (nextState === state || sameEditablePages(state.pages, nextState.pages)) {
+    return nextState;
   }
 
   return {
@@ -117,10 +119,27 @@ function withHistory(state: OutlineState, updater: (current: OutlineState) => Ou
   };
 }
 
+// Focus, cursor, editor mode, and server bookkeeping are not undoable edits.
+function sameEditablePages(left: OutlineState['pages'], right: OutlineState['pages']) {
+  if (left === right) return true;
+  return left.length === right.length && left.every((page, index) => {
+    const other = right[index];
+    return page.id === other.id && page.kind === other.kind && page.date === other.date
+      && page.title === other.title && page.directoryId === other.directoryId
+      && page.nodes.length === other.nodes.length && page.nodes.every((node, nodeIndex) => {
+        const next = other.nodes[nodeIndex];
+        return node.id === next.id && node.parentId === next.parentId && node.text === next.text
+          && (node.todoStatus || '') === (next.todoStatus || '');
+      });
+  });
+}
+
 export function reduceOutlineState(state: OutlineState, action: OutlineAction): OutlineState {
   const currentState = state;
 
   switch (action.type) {
+    case 'applySessionState':
+      return action.state;
     case 'focus':
       return focusNode(currentState, action.nodeId);
     case 'moveCaret':
@@ -195,6 +214,13 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
       return toggleVisualMode(currentState);
     case 'updatePageTitle':
       return withHistory(currentState, (active) => updatePageTitle(active, action.title));
+    case 'refreshPages': {
+      const active = action.pages.find((page) => page.id === currentState.activePageId);
+      if (active && (!currentState.editingId || active.nodes.some((node) => node.id === currentState.editingId))) {
+        return { ...currentState, pages: action.pages, history: [] };
+      }
+      return hydratePages(currentState, action.pages);
+    }
     case 'hydrate':
       logIdentityChange('hydrate pages', {
         source: action.source ?? 'unknown',
@@ -231,15 +257,24 @@ export function reduceOutlineState(state: OutlineState, action: OutlineAction): 
     case 'syncRemoteTodo':
       return syncRemoteTodoToPage(currentState, action.sourceDocumentId, action.sourceBlockId, action.todoId, action.status, action.updatedAt);
     case 'undo': {
-      const previous = currentState.history[currentState.history.length - 1];
+      // Also skip no-op entries retained by a live app from the older implementation.
+      let index = currentState.history.length - 1;
+      while (index >= 0 && sameEditablePages(currentState.pages, currentState.history[index].pages)) index--;
+      const previous = currentState.history[index];
       if (!previous) {
-        return currentState;
+        return currentState.history.length ? { ...currentState, history: [] } : currentState;
       }
 
       const restored = restoreSnapshot(currentState, previous);
       return {
         ...restored,
-        history: currentState.history.slice(0, -1),
+        // The snapshot's pages contain the pre-edit text. Its draft buffer may
+        // already contain the later edit; reopening it would hide the undo.
+        editingId: null,
+        draftText: '',
+        mode: 'normal',
+        anchorId: null,
+        history: currentState.history.slice(0, index),
       };
     }
     default:

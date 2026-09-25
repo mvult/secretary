@@ -307,6 +307,11 @@ export function useAppCommands({
 
     setPendingDeleteNoteId(null);
 
+    if (pendingDeleteNote.backendId && !syncEnabled) {
+      setSyncMessage('Connect to the workspace before deleting a server note.');
+      return;
+    }
+
     if (pendingDeleteNote.backendId && syncEnabled) {
       void (async () => {
         try {

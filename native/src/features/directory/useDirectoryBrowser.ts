@@ -2,11 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch } from
 import {
   createDirectory,
   deleteDirectory,
-  saveDocument,
   updateDirectory,
   type BackendDirectory,
 } from '../../lib/backend';
-import { outlinePageToDocument, documentToOutlinePage } from '../outline/remote';
 import { getPageTitle } from '../outline/tree';
 import type { OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
@@ -20,6 +18,7 @@ interface UseDirectoryBrowserOptions {
   authToken: string;
   workspaceId: number | null;
   syncEnabled: boolean;
+  flushDirtyPages: () => Promise<void>;
   directories: BackendDirectory[];
   setDirectories: Dispatch<React.SetStateAction<BackendDirectory[]>>;
   setSyncMessage: Dispatch<React.SetStateAction<string>>;
@@ -33,6 +32,7 @@ export function useDirectoryBrowser({
   authToken,
   workspaceId,
   syncEnabled,
+  flushDirtyPages,
   directories,
   setDirectories,
   setSyncMessage,
@@ -282,8 +282,7 @@ export function useDirectoryBrowser({
     setIsSubmittingDirectoryPrompt(true);
     try {
       if (syncEnabled) {
-        const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(renamedPage, workspaceId!));
-        dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: pageToRename.id, source: 'directory:renameSaved' });
+        await flushDirtyPages();
       }
       setDirectoryPrompt(null);
       setDirectoryPromptValue('');
@@ -293,7 +292,7 @@ export function useDirectoryBrowser({
     } finally {
       setIsSubmittingDirectoryPrompt(false);
     }
-  }, [authToken, backendUrl, createDirectoryHere, directories, directoryPrompt, directoryPromptValue, dispatch, isSubmittingDirectoryPrompt, setSyncMessage, stateRef, syncEnabled, upsertDirectory, workspaceId]);
+  }, [authToken, backendUrl, createDirectoryHere, directories, directoryPrompt, directoryPromptValue, dispatch, flushDirtyPages, isSubmittingDirectoryPrompt, setSyncMessage, stateRef, syncEnabled, upsertDirectory, workspaceId]);
 
   const deleteSelectedDirectory = useCallback(async () => {
     if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'directory' || !activeDirectoryEntry.directory) {
@@ -342,11 +341,10 @@ export function useDirectoryBrowser({
       })),
     };
 
-    const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(duplicatedPage, workspaceId));
-    const savedPage = documentToOutlinePage(savedDocument);
-    dispatch({ type: 'mergeRemotePage', page: savedPage, source: 'directory:duplicateSaved' });
-    return savedPage;
-  }, [authToken, backendUrl, dispatch, workspaceId]);
+    dispatch({ type: 'mergeRemotePage', page: duplicatedPage, source: 'directory:duplicateLocal' });
+    await flushDirtyPages();
+    return duplicatedPage;
+  }, [authToken, dispatch, flushDirtyPages, workspaceId]);
 
   const duplicateDirectoryIntoParent = useCallback(async (sourceDirectory: BackendDirectory, targetParentId: number | null): Promise<BackendDirectory> => {
     if (!authToken || !workspaceId) {
@@ -374,6 +372,10 @@ export function useDirectoryBrowser({
   }, [authToken, backendUrl, directories, duplicateNoteIntoDirectory, stateRef, upsertDirectory, workspaceId]);
 
   const pasteClipboardHere = useCallback(async () => {
+    if (!syncEnabled) {
+      setSyncMessage('Connect to the workspace before moving notes or copying directories.');
+      return;
+    }
     if (!directoryClipboard) {
       setSyncMessage('Clipboard is empty. Use d on a note or directory, or y on a directory first.');
       return;
@@ -389,8 +391,7 @@ export function useDirectoryBrowser({
       dispatch({ type: 'mergeRemotePage', page: movedPage, previousPageId: clipboardPage.id, source: 'directory:moveLocal' });
       try {
         if (syncEnabled) {
-          const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(movedPage, workspaceId!));
-          dispatch({ type: 'mergeRemotePage', page: documentToOutlinePage(savedDocument), previousPageId: clipboardPage.id, source: 'directory:moveSaved' });
+          await flushDirtyPages();
         }
         setActiveDirectoryEntryKey(`note-${movedPage.id}`);
         setDirectoryClipboard(null);
@@ -437,7 +438,7 @@ export function useDirectoryBrowser({
     } catch (error) {
       setSyncMessage(error instanceof Error ? error.message : 'Directory copy failed.');
     }
-  }, [activeDirectoryId, authToken, backendUrl, directories, directoryClipboard, dispatch, duplicateDirectoryIntoParent, setSyncMessage, stateRef, syncEnabled, upsertDirectory, workspaceId]);
+  }, [activeDirectoryId, authToken, backendUrl, directories, directoryClipboard, dispatch, duplicateDirectoryIntoParent, flushDirtyPages, setSyncMessage, stateRef, syncEnabled, upsertDirectory, workspaceId]);
 
   const cutSelectedNoteToClipboard = useCallback(() => {
     if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'note' || !activeDirectoryEntry.page) {

@@ -17,7 +17,7 @@ SET
   todo_id = NULL,
   updated_at = now()
 WHERE id = $1
-RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at, client_key
 `
 
 func (q *Queries) ClearBlockTodo(ctx context.Context, id int32) (Block, error) {
@@ -32,6 +32,7 @@ func (q *Queries) ClearBlockTodo(ctx context.Context, id int32) (Block, error) {
 		&i.TodoID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientKey,
 	)
 	return i, err
 }
@@ -83,7 +84,7 @@ INSERT INTO block (
   text,
   todo_id
 ) VALUES ($1, $2, $3, $4, $5)
-RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at, client_key
 `
 
 type CreateBlockParams struct {
@@ -112,6 +113,7 @@ func (q *Queries) CreateBlock(ctx context.Context, arg CreateBlockParams) (Block
 		&i.TodoID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientKey,
 	)
 	return i, err
 }
@@ -145,8 +147,14 @@ INSERT INTO todo (
   source_document_id,
   source_block_id,
   current_document_id,
-  current_block_id
-) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7, $6, $7)
+  current_block_id,
+  completed_at,
+  completed_document_id,
+  completed_block_id
+) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7, $6, $7,
+  CASE WHEN $3::text = 'done' THEN now() END,
+  CASE WHEN $3::text = 'done' THEN $6::integer END,
+  CASE WHEN $3::text = 'done' THEN $7::integer END)
 RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
 `
 
@@ -242,7 +250,7 @@ INSERT INTO document (
   title,
   journal_date
 ) VALUES ($1, $2, $3, $4, $5)
-RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at, client_key, revision
 `
 
 type CreateDocumentParams struct {
@@ -271,6 +279,8 @@ func (q *Queries) CreateDocument(ctx context.Context, arg CreateDocumentParams) 
 		&i.JournalDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientKey,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -397,7 +407,9 @@ SELECT
   d.title,
   d.journal_date,
   d.created_at,
-  d.updated_at
+  d.updated_at,
+  d.client_key,
+  d.revision
 FROM document d
 WHERE d.id = $1
 `
@@ -414,6 +426,8 @@ func (q *Queries) GetDocument(ctx context.Context, id int32) (Document, error) {
 		&i.JournalDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientKey,
+		&i.Revision,
 	)
 	return i, err
 }
@@ -517,7 +531,8 @@ SELECT
   b.text,
   b.todo_id,
   b.created_at,
-  b.updated_at
+  b.updated_at,
+  b.client_key
 FROM block b
 WHERE b.document_id = $1
 ORDER BY b.sort_order ASC, b.id ASC
@@ -541,6 +556,52 @@ func (q *Queries) ListBlocksByDocument(ctx context.Context, documentID int32) ([
 			&i.TodoID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ClientKey,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listBlocksWithTodoStatusByWorkspace = `-- name: ListBlocksWithTodoStatusByWorkspace :many
+SELECT b.id, b.document_id, b.parent_block_id, b.sort_order, b.text, b.todo_id, b.created_at, b.updated_at, b.client_key, t.status AS todo_status
+FROM block b
+JOIN document d ON d.id = b.document_id
+LEFT JOIN todo t ON t.id = b.todo_id
+WHERE d.workspace_id = $1
+ORDER BY b.document_id ASC, b.sort_order ASC, b.id ASC
+`
+
+type ListBlocksWithTodoStatusByWorkspaceRow struct {
+	Block      Block
+	TodoStatus pgtype.Text
+}
+
+func (q *Queries) ListBlocksWithTodoStatusByWorkspace(ctx context.Context, workspaceID int32) ([]ListBlocksWithTodoStatusByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, listBlocksWithTodoStatusByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListBlocksWithTodoStatusByWorkspaceRow
+	for rows.Next() {
+		var i ListBlocksWithTodoStatusByWorkspaceRow
+		if err := rows.Scan(
+			&i.Block.ID,
+			&i.Block.DocumentID,
+			&i.Block.ParentBlockID,
+			&i.Block.SortOrder,
+			&i.Block.Text,
+			&i.Block.TodoID,
+			&i.Block.CreatedAt,
+			&i.Block.UpdatedAt,
+			&i.Block.ClientKey,
+			&i.TodoStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -643,7 +704,9 @@ SELECT
   d.title,
   d.journal_date,
   d.created_at,
-  d.updated_at
+  d.updated_at,
+  d.client_key,
+  d.revision
 FROM document d
 WHERE d.workspace_id = $1
 ORDER BY
@@ -671,6 +734,8 @@ func (q *Queries) ListDocumentsByWorkspace(ctx context.Context, workspaceID int3
 			&i.JournalDate,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.ClientKey,
+			&i.Revision,
 		); err != nil {
 			return nil, err
 		}
@@ -692,7 +757,7 @@ SET
   todo_id = $6,
   updated_at = now()
 WHERE id = $1
-RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at, client_key
 `
 
 type UpdateBlockParams struct {
@@ -723,6 +788,7 @@ func (q *Queries) UpdateBlock(ctx context.Context, arg UpdateBlockParams) (Block
 		&i.TodoID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientKey,
 	)
 	return i, err
 }
@@ -835,7 +901,7 @@ SET
   journal_date = $5,
   updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at, client_key, revision
 `
 
 type UpdateDocumentParams struct {
@@ -864,6 +930,8 @@ func (q *Queries) UpdateDocument(ctx context.Context, arg UpdateDocumentParams) 
 		&i.JournalDate,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.ClientKey,
+		&i.Revision,
 	)
 	return i, err
 }

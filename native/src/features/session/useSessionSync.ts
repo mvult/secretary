@@ -1,790 +1,477 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject } from 'react';
-import {
-  createWorkspace,
-  getDocument,
-  listDocuments,
-  listWorkspaces,
-  login,
-  saveDocument,
-  type BackendDirectory,
-} from '../../lib/backend';
+import { BackendError, createWorkspace, getDocument, listDocuments, listWorkspaces, login, onAuthFailure, saveDocument, type BackendDirectory } from '../../lib/backend';
+import { backendIdentity, draftScope, DraftStorage, openDraftDatabase, type DraftRecord } from '../../lib/draftStorage';
 import { documentToOutlinePage, outlinePageToDocument } from '../outline/remote';
 import { getPageTitle, getPagesForPersistence } from '../outline/tree';
 import { reduceOutlineState, type OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
-import { formatPanelTimestamp } from '../../app/format';
-import { describeInvalidBlockTree, describeSaveFailure, findPageForPersistence, normalizePageForSave, pageHash, pagePersistenceKey, validatePageForSave } from '../../app/pagePersistence';
+import { findPageForPersistence, normalizePageForSave, pageHash, pagePersistenceKey, validatePageForSave } from '../../app/pagePersistence';
 import { SETTINGS_STORAGE_KEY, type PageSaveIndicator, type StoredSettings } from '../../app/types';
 import { reconcileSavedPage } from './saveReconciliation';
+import { useSaveStatus } from './useSaveStatus';
+import { draftConflicts, mergeWorkspace, recoveryCopy, trackDrafts } from './draftReconciliation';
 
-interface UseSessionSyncOptions {
+type SessionStatus = 'restoring' | 'signed-out' | 'validating' | 'loading' | 'ready' | 'reauth-required' | 'unavailable';
+type LoadStage = 'restoring' | 'authenticating' | 'documents' | 'merging' | 'persisting';
+type LoadStatus = 'idle' | LoadStage | 'ready' | 'failed';
+const loadLabels: Record<LoadStage, string> = {
+  restoring: 'Restoring local drafts', authenticating: 'Validating session',
+  documents: 'Loading documents', merging: 'Reconciling drafts', persisting: 'Saving local cache',
+};
+interface Options {
   state: OutlineState;
   dispatch: Dispatch<OutlineAction>;
   onPagesSavedRef?: MutableRefObject<(() => Promise<void>) | null>;
 }
 
-type StaleBlockRecovery = {
-  pageId: string;
-  pageTitle: string;
-  blockId: number;
-  hash: string;
-  message: string;
-};
-
-type PausedSaveState = {
-  hash: string;
-  blockId: number;
-};
-
-function logSaveDebug(label: string, details: Record<string, unknown>) {
-  console.debug(`[save-debug] ${label}`, details);
+function readSettings(): StoredSettings {
+  try {
+    const value = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+    return value && typeof value === 'object' ? value : {};
+  }
+  catch { return {}; }
 }
 
-export interface SessionSyncState {
-  backendUrl: string;
-  setBackendUrl: Dispatch<React.SetStateAction<string>>;
-  email: string;
-  setEmail: Dispatch<React.SetStateAction<string>>;
-  password: string;
-  setPassword: Dispatch<React.SetStateAction<string>>;
-  centerColumn: boolean;
-  setCenterColumn: Dispatch<React.SetStateAction<boolean>>;
-  editorFontScale: number;
-  setEditorFontScale: Dispatch<React.SetStateAction<number>>;
-  syncMessage: string;
-  setSyncMessage: Dispatch<React.SetStateAction<string>>;
-  authToken: string;
-  userId: number | null;
-  workspaceId: number | null;
-  directories: BackendDirectory[];
-  setDirectories: Dispatch<React.SetStateAction<BackendDirectory[]>>;
-  isSyncing: boolean;
-  bootstrapped: boolean;
-  initialLoadResolved: boolean;
-  syncEnabled: boolean;
-  pagesForPersistence: OutlinePage[];
-  pageSaveIndicators: Record<string, PageSaveIndicator>;
-  activePageSaveMessage: string;
-  activePageIsDirty: boolean;
-  activePageHasNewerEdits: boolean;
-  saveFailureAlert: { pageTitle: string; message: string } | null;
-  dismissSaveFailureAlert: () => void;
-  staleBlockRecovery: StaleBlockRecovery | null;
-  dismissStaleBlockRecovery: () => void;
-  repairStalePageInPlace: () => Promise<void>;
-  reloadStalePageFromServer: () => Promise<void>;
-  pendingSyncConfirmation: { reason: 'startup' | 'login' | 'manual'; dirtyPages: { pageId: string; title: string; kind: OutlinePage['kind'] }[] } | null;
-  confirmPendingSync: () => Promise<void>;
-  cancelPendingSync: () => void;
-  stateRef: MutableRefObject<OutlineState>;
-  pagesRef: MutableRefObject<OutlinePage[]>;
-  flushDirtyPages: (snapshotOverride?: OutlinePage[]) => Promise<void>;
-  dispatchAfterFlush: (action: OutlineAction) => void;
-  runLogin: () => Promise<void>;
-  runSync: () => Promise<void>;
-  handleLogout: () => void;
+function message(error: unknown) { return error instanceof Error ? error.message : 'Request failed.'; }
+
+// Only used AFTER a successful authenticated RPC, never as session validation itself.
+function tokenUser(token: string) {
+  const payload = token.split('.')[1];
+  return Number(JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))).sub);
 }
 
-function clearInvalidServerBlockIds(page: OutlinePage, validBlockIds: Set<number>): OutlinePage {
-  return {
-    ...page,
-    nodes: page.nodes.map((node) => (
-      node.backendId && !validBlockIds.has(node.backendId)
-        ? {
-            ...node,
-            backendId: undefined,
-            todoId: null,
-            createdAt: undefined,
-            updatedAt: undefined,
-          }
-        : node
-    )),
-  };
-}
-
-export function useSessionSync({ state, dispatch, onPagesSavedRef }: UseSessionSyncOptions): SessionSyncState {
-  const [backendUrl, setBackendUrl] = useState('http://localhost:8091');
-  const [email, setEmail] = useState('');
+export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }: Options) {
+  const [settings] = useState(readSettings);
+  const [backendUrl, updateBackendUrl] = useState(settings.backendUrl ?? 'http://localhost:8091');
+  const [email, setEmail] = useState(settings.email ?? '');
   const [password, setPassword] = useState('');
-  const [centerColumn, setCenterColumn] = useState(false);
-  const [editorFontScale, setEditorFontScale] = useState(1);
+  const [authToken, setAuthToken] = useState(settings.token ?? '');
+  const [userId, setUserId] = useState<number | null>(settings.userId ?? null);
+  const [workspaceId, setWorkspaceId] = useState<number | null>(settings.workspaceId ?? null);
+  const [centerColumn, setCenterColumn] = useState(settings.centerColumn ?? false);
+  const [editorFontScale, setEditorFontScale] = useState(settings.editorFontScale ?? 1);
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>('restoring');
+  const [loadStatus, setLoadStatus] = useState<LoadStatus>('idle');
+  const [loadTimings, setLoadTimings] = useState<Partial<Record<LoadStage | 'total', number>>>({});
+  const [localReady, setLocalReady] = useState(false);
+  const [localError, setLocalError] = useState('');
+  const [persistedHashes, setPersistedHashes] = useState<Record<string, string>>({});
   const [syncMessage, setSyncMessage] = useState('');
-  const [authToken, setAuthToken] = useState('');
-  const [userId, setUserId] = useState<number | null>(null);
-  const [workspaceId, setWorkspaceId] = useState<number | null>(null);
   const [directories, setDirectories] = useState<BackendDirectory[]>([]);
-  const [isSyncing, setIsSyncing] = useState(false);
   const [pageSaveIndicators, setPageSaveIndicators] = useState<Record<string, PageSaveIndicator>>({});
-  const [bootstrapped, setBootstrapped] = useState(false);
-  const [initialLoadResolved, setInitialLoadResolved] = useState(false);
   const [saveFailureAlert, setSaveFailureAlert] = useState<{ pageTitle: string; message: string } | null>(null);
-  const [staleBlockRecovery, setStaleBlockRecovery] = useState<StaleBlockRecovery | null>(null);
-  const [pendingSyncConfirmation, setPendingSyncConfirmation] = useState<{ reason: 'startup' | 'login' | 'manual'; dirtyPages: { pageId: string; title: string; kind: OutlinePage['kind'] }[] } | null>(null);
+  const [refresh, setRefresh] = useState(0);
   const stateRef = useRef(state);
-  const pagesForPersistence = useMemo(
-    () => getPagesForPersistence(state),
-    [state.draftText, state.editingId, state.pages],
-  );
+  const pagesForPersistence = useMemo(() => getPagesForPersistence(state), [state.pages, state.draftText, state.editingId]);
   const pagesRef = useRef(pagesForPersistence);
-  const lastSavedHashesRef = useRef<Map<string, string>>(new Map());
-  const saveTimerRef = useRef<number | null>(null);
-  const flushPromiseRef = useRef<Promise<void> | null>(null);
-  const pendingFlushRef = useRef(false);
-  const bootSyncRef = useRef(false);
-  const pendingSyncRequestRef = useRef<{ tokenOverride?: string; workspaceOverride?: number | null } | null>(null);
-  const pausedSaveStateRef = useRef<Map<string, PausedSaveState>>(new Map());
-  const page = useMemo(
-    () => state.pages.find((entry) => entry.id === state.activePageId) ?? null,
-    [state.activePageId, state.pages],
-  );
-  const syncEnabled = Boolean(backendUrl.trim() && authToken && workspaceId);
+  const recordsRef = useRef<DraftRecord[]>([]);
+  const directoriesRef = useRef(directories);
+  const storageRef = useRef<DraftStorage | null>(null);
+  const epochRef = useRef(0);
+  const savingRef = useRef<Promise<void> | null>(null);
+  const writableRef = useRef(false);
+  const syncRef = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const scopeReadyRef = useRef(false);
+  const refreshWaiters = useRef<(() => void)[]>([]);
+  const persistRequestRef = useRef(0);
 
-  const activePagePersistenceKey = page ? pagePersistenceKey(page) : null;
-  const activePageHash = useMemo(() => {
-    if (!page) {
-      return null;
-    }
-    const persistedPage = pagesForPersistence.find((entry) => entry.id === page.id) ?? page;
-    return pageHash(persistedPage);
-  }, [page, pagesForPersistence]);
-  const activePageIsDirty = Boolean(page && activePageHash !== null && lastSavedHashesRef.current.get(page.id) !== activePageHash);
-  const activePageSaveIndicator = activePagePersistenceKey ? pageSaveIndicators[activePagePersistenceKey] ?? null : null;
-  const activePageHasNewerEdits = Boolean(
-    activePageHash
-      && activePageSaveIndicator?.hash
-      && activePageSaveIndicator.hash !== activePageHash,
-  );
-  const activePageSaveMessage = !page
-    ? ''
-    : activePageIsDirty
-      ? activePageSaveIndicator?.status === 'failed' && !activePageHasNewerEdits
-        ? `Save failed: ${activePageSaveIndicator.message}`
-        : activePageSaveIndicator?.status === 'saving'
-          ? 'Saving...'
-          : 'Unsaved changes'
-      : activePageSaveIndicator?.status === 'saving'
-        ? 'Saving...'
-        : activePageSaveIndicator?.status === 'failed'
-          ? `Save failed: ${activePageSaveIndicator.message}`
-          : activePageSaveIndicator?.status === 'saved'
-            ? activePageSaveIndicator.message
-            : '';
+  const apply = useCallback((action: OutlineAction) => {
+    stateRef.current = reduceOutlineState(stateRef.current, action);
+    pagesRef.current = getPagesForPersistence(stateRef.current);
+    recordsRef.current = trackDrafts(recordsRef.current, pagesRef.current,
+      action.type === 'createTodayJournal' || action.type === 'selectJournal');
+    // Reducers create UUIDs for new pages/blocks. Apply the computed state rather
+    // than executing the action a second time with different identities in React.
+    rawDispatch({ type: 'applySessionState', state: stateRef.current });
+  }, [rawDispatch]);
 
   useEffect(() => {
     stateRef.current = state;
     pagesRef.current = pagesForPersistence;
-  }, [pagesForPersistence, state]);
+    directoriesRef.current = directories;
+  }, [state, pagesForPersistence, directories]);
 
-  useEffect(() => {
-    const saved = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
-    if (!saved) {
-      setBootstrapped(true);
-      return;
-    }
+  const currentRecords = useCallback((pages = pagesRef.current) => trackDrafts(recordsRef.current, pages), []);
 
+  const persist = useCallback(async (records = currentRecords()) => {
+    const storage = storageRef.current;
+    if (!storage) throw new Error('Local draft storage is not ready.');
+    const epoch = epochRef.current;
+    const request = ++persistRequestRef.current;
     try {
-      const parsed = JSON.parse(saved) as StoredSettings;
-      setBackendUrl(parsed.backendUrl ?? 'http://localhost:8091');
-      setEmail(parsed.email ?? '');
-      setAuthToken(parsed.token ?? '');
-      setUserId(parsed.userId ?? null);
-      setWorkspaceId(parsed.workspaceId ?? null);
-      setCenterColumn(parsed.centerColumn ?? false);
-      setEditorFontScale(typeof parsed.editorFontScale === 'number' ? Math.min(1.5, Math.max(0.75, parsed.editorFontScale)) : 1);
-    } catch {
-      window.localStorage.removeItem(SETTINGS_STORAGE_KEY);
-    }
-
-    setBootstrapped(true);
-  }, []);
-
-  useEffect(() => {
-    if (!bootstrapped) {
-      return;
-    }
-
-    const payload: StoredSettings = {
-      backendUrl,
-      email,
-      token: authToken || undefined,
-      userId: userId ?? undefined,
-      workspaceId: workspaceId ?? undefined,
-      centerColumn,
-      editorFontScale,
-    };
-    window.localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(payload));
-  }, [authToken, backendUrl, bootstrapped, centerColumn, editorFontScale, email, userId, workspaceId]);
-
-  useEffect(() => {
-    if (!bootstrapped) {
-      return;
-    }
-
-    if (!authToken || !backendUrl.trim()) {
-      setInitialLoadResolved(true);
-    }
-  }, [authToken, backendUrl, bootstrapped]);
-
-  const applyRemotePages = useCallback((nextPages: OutlinePage[]) => {
-    dispatch({ type: 'hydrate', pages: nextPages, source: 'session:applyRemotePages' });
-    const hashes = new Map<string, string>();
-    for (const nextPage of nextPages) {
-      hashes.set(nextPage.id, pageHash(nextPage));
-    }
-    lastSavedHashesRef.current = hashes;
-    setPageSaveIndicators({});
-  }, [dispatch]);
-
-  const getDirtyPages = useCallback(() => {
-    const snapshot = getPagesForPersistence(stateRef.current);
-    return snapshot
-      .filter((page) => lastSavedHashesRef.current.get(page.id) !== pageHash(page))
-      .map((page) => ({
-        pageId: page.id,
-        title: getPageTitle(page),
-        kind: page.kind,
-      }));
-  }, [stateRef]);
-
-  const syncFromBackend = useCallback(async (tokenOverride?: string, workspaceOverride?: number | null) => {
-    const nextToken = tokenOverride ?? authToken;
-    if (!backendUrl.trim()) {
-      setSyncMessage('Add a backend URL first.');
-      setInitialLoadResolved(true);
-      return;
-    }
-    if (!nextToken) {
-      setSyncMessage('Log in first.');
-      setInitialLoadResolved(true);
-      return;
-    }
-
-    setIsSyncing(true);
-    try {
-      let workspaces = await listWorkspaces(backendUrl, nextToken);
-      let nextWorkspaceId = workspaceOverride ?? workspaceId;
-
-      if (!nextWorkspaceId) {
-        if (workspaces.length === 0) {
-          const workspace = await createWorkspace(backendUrl, nextToken, 'Personal');
-          workspaces = [workspace];
-        }
-        nextWorkspaceId = workspaces[0]?.id ?? null;
+      await storage.save({ records, directories: directoriesRef.current });
+      if (epoch === epochRef.current && request === persistRequestRef.current) {
+        setPersistedHashes(Object.fromEntries(records.map((record) => [record.page.id, pageHash(record.page)])));
+        setLocalError('');
       }
-
-      if (!nextWorkspaceId) {
-        throw new Error('No workspace is available for this account.');
-      }
-
-      const { documents, directories: nextDirectories } = await listDocuments(backendUrl, nextToken, nextWorkspaceId);
-      applyRemotePages(documents.map(documentToOutlinePage));
-      setDirectories(nextDirectories);
-      setWorkspaceId(nextWorkspaceId);
-      setSyncMessage(`Loaded ${documents.length} document${documents.length === 1 ? '' : 's'} and ${nextDirectories.length} director${nextDirectories.length === 1 ? 'y' : 'ies'}.`);
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Sync failed.';
-      setSyncMessage(message);
-      if (/unauthenticated|invalid token|missing token/i.test(message)) {
-        setAuthToken('');
-        setWorkspaceId(null);
+      if (epoch === epochRef.current && request === persistRequestRef.current) {
+        setLocalError(message(error));
+        setSessionStatus('unavailable');
+        setSyncMessage('Local draft storage failed. Retry after storage is available.');
+        syncRef.current = false;
       }
-    } finally {
-      setIsSyncing(false);
-      setInitialLoadResolved(true);
+      throw error;
     }
-  }, [applyRemotePages, authToken, backendUrl, workspaceId]);
+  }, [currentRecords]);
 
-  const requestSyncConfirmation = useCallback((reason: 'startup' | 'login' | 'manual', tokenOverride?: string, workspaceOverride?: number | null) => {
-    pendingSyncRequestRef.current = { tokenOverride, workspaceOverride };
-    setPendingSyncConfirmation({
-      reason,
-      dirtyPages: getDirtyPages(),
-    });
-  }, [getDirtyPages]);
-
-  const confirmPendingSync = useCallback(async () => {
-    const request = pendingSyncRequestRef.current;
-    pendingSyncRequestRef.current = null;
-    setPendingSyncConfirmation(null);
-    setInitialLoadResolved(false);
-    await syncFromBackend(request?.tokenOverride, request?.workspaceOverride ?? null);
-    if (onPagesSavedRef?.current) {
-      await onPagesSavedRef.current();
-    }
-  }, [onPagesSavedRef, syncFromBackend]);
-
-  const cancelPendingSync = useCallback(() => {
-    pendingSyncRequestRef.current = null;
-    setPendingSyncConfirmation(null);
-    setInitialLoadResolved(true);
-    setSyncMessage('Sync cancelled.');
+  const failSession = useCallback((error: unknown) => {
+    syncRef.current = false;
+    setSessionStatus(error instanceof BackendError && error.status === 401 ? 'reauth-required' : 'unavailable');
+    setLoadStatus('failed');
+    setSyncMessage(message(error));
   }, []);
 
-  const dismissSaveFailureAlert = useCallback(() => {
-    setSaveFailureAlert(null);
-  }, []);
-
-  const dismissStaleBlockRecovery = useCallback(() => {
-    setStaleBlockRecovery(null);
-  }, []);
-
-  const clearPausedSaveState = useCallback((pageId: string) => {
-    pausedSaveStateRef.current.delete(pageId);
-  }, []);
-
-  const repairPageWithServerBlockIds = useCallback(async (pageToRepair: OutlinePage) => {
-    if (!authToken || !pageToRepair.backendId) {
-      return null;
+  useEffect(() => onAuthFailure((failure) => {
+    if (failure.baseUrl === backendUrl && failure.token === authToken && authToken) {
+      failSession(new BackendError('Session expired. Log in to resume saving; local drafts are retained.', 401));
     }
-
-    const serverDocument = await getDocument(backendUrl, authToken, pageToRepair.backendId);
-    const existingServerBlockIds = new Set(serverDocument.blocks.map((block) => block.id));
-    const repairedPage = clearInvalidServerBlockIds(pageToRepair, existingServerBlockIds);
-    return pageHash(repairedPage) === pageHash(pageToRepair) ? null : repairedPage;
-  }, [authToken, backendUrl]);
-
-  const reloadStalePageFromServer = useCallback(async () => {
-    if (!staleBlockRecovery || !authToken) {
-      return;
-    }
-
-    const sourcePage = stateRef.current.pages.find((entry) => entry.id === staleBlockRecovery.pageId) ?? null;
-    if (!sourcePage?.backendId) {
-      setSyncMessage('This page does not have a server copy to reload.');
-      return;
-    }
-
-    const serverDocument = await getDocument(backendUrl, authToken, sourcePage.backendId);
-    const savedPage = documentToOutlinePage(serverDocument);
-    dispatch({ type: 'mergeRemotePage', page: savedPage, previousPageId: sourcePage.id, source: 'session:reloadStalePageFromServer' });
-    clearPausedSaveState(sourcePage.id);
-    clearPausedSaveState(savedPage.id);
-    lastSavedHashesRef.current.delete(sourcePage.id);
-    lastSavedHashesRef.current.set(savedPage.id, pageHash(savedPage));
-    setPageSaveIndicators((current) => {
-      const next = { ...current };
-      delete next[pagePersistenceKey(sourcePage)];
-      next[pagePersistenceKey(savedPage)] = {
-        status: 'saved',
-        message: `Reloaded ${formatPanelTimestamp(savedPage.updatedAt || savedPage.createdAt || '')}`,
-        hash: pageHash(savedPage),
-      };
-      return next;
-    });
-    setStaleBlockRecovery(null);
-    setSaveFailureAlert(null);
-    setSyncMessage(`Reloaded ${getPageTitle(savedPage)} from the server.`);
-  }, [authToken, backendUrl, clearPausedSaveState, dispatch, staleBlockRecovery, stateRef]);
+  }), [authToken, backendUrl, failSession]);
 
   useEffect(() => {
-    if (!bootstrapped || bootSyncRef.current || !authToken || !backendUrl.trim()) {
-      return;
-    }
-    bootSyncRef.current = true;
-    requestSyncConfirmation('startup');
-  }, [authToken, backendUrl, bootstrapped, requestSyncConfirmation]);
+    try {
+      localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify({ backendUrl, email, token: authToken || undefined,
+        userId: userId ?? undefined, workspaceId: workspaceId ?? undefined, centerColumn, editorFontScale }));
+    } catch { setSyncMessage('Settings could not be retained on this device.'); }
+  }, [backendUrl, email, authToken, userId, workspaceId, centerColumn, editorFontScale]);
 
   useEffect(() => {
-    if (!bootstrapped || !initialLoadResolved || state.pages.length > 0) {
-      return;
-    }
+    const epoch = ++epochRef.current;
+    let cancelled = false;
+    const active = () => !cancelled && epoch === epochRef.current;
+    scopeReadyRef.current = false;
+    writableRef.current = false;
+    syncRef.current = false;
+    setLocalReady(false);
+    setLoadStatus('restoring');
+    setSessionStatus('restoring');
+    setSyncMessage('');
+    setLoadTimings({});
+    const started = performance.now();
+    let stageStarted = started;
+    let stage: LoadStage = 'restoring';
+    const timings: Partial<Record<LoadStage | 'total', number>> = {};
+    const finishStage = () => {
+      const now = performance.now();
+      timings[stage] = now - stageStarted;
+      timings.total = now - started;
+      if (active()) setLoadTimings({ ...timings });
+    };
+    const beginStage = (next: LoadStage) => {
+      finishStage();
+      stage = next;
+      stageStarted = performance.now();
+      setLoadStatus(next);
+    };
 
-    dispatch({ type: 'createTodayJournal' });
-  }, [bootstrapped, dispatch, initialLoadResolved, state.pages.length]);
+    const restore = async () => {
+      try {
+        if (userId && workspaceId) {
+          // Manual refresh reuses the live repository so edits made during refresh survive.
+          if (!storageRef.current) {
+            const db = await openDraftDatabase();
+            const storage = new DraftStorage(db, draftScope(backendUrl, userId, workspaceId));
+            const cached = await storage.load();
+            if (!active()) { db.close(); return; }
+            storageRef.current = storage;
+            recordsRef.current = cached.records;
+            directoriesRef.current = cached.directories;
+            setDirectories(cached.directories);
+            apply({ type: 'hydrate', pages: cached.records.map((entry) => entry.page), source: 'session:restoreDrafts' });
+            setPersistedHashes(Object.fromEntries(cached.records.map((entry) => [entry.page.id, pageHash(entry.page)])));
+          }
+          scopeReadyRef.current = true;
+          writableRef.current = true;
+          setLocalReady(true);
+        }
+        if (!authToken) {
+          setSessionStatus(userId ? 'reauth-required' : 'signed-out');
+          setLoadStatus('idle');
+          return;
+        }
+        setSessionStatus('validating');
+        beginStage('authenticating');
+        let workspaces = await listWorkspaces(backendUrl, authToken);
+        if (!active()) return;
+        if (!userId || tokenUser(authToken) !== userId) throw new BackendError('Log in to validate this account.', 401);
+        if (!workspaceId) {
+          if (!workspaces.length) workspaces = [await createWorkspace(backendUrl, authToken, 'Personal')];
+          if (active()) setWorkspaceId(workspaces[0].id);
+          return;
+        }
+        if (!workspaces.some((workspace) => workspace.id === workspaceId)) throw new BackendError('Workspace access denied. Local drafts are retained.', 403);
+        setSessionStatus('loading');
+        beginStage('documents');
+        const remote = await listDocuments(backendUrl, authToken, workspaceId);
+        if (!active()) return;
+        beginStage('merging');
+        const records = mergeWorkspace(currentRecords(), remote.documents.map(documentToOutlinePage));
+        recordsRef.current = records;
+        directoriesRef.current = remote.directories;
+        setDirectories(remote.directories);
+        apply({ type: 'refreshPages', pages: records.map((entry) => entry.page) });
+        beginStage('persisting');
+        await persist(records);
+        if (!active()) return;
+        syncRef.current = true;
+        setSessionStatus('ready');
+        setLoadStatus('ready');
+        setSyncMessage(`Loaded ${remote.documents.length} documents${records.some((entry) => entry.conflict) ? '; local conflicts retained' : ''}.`);
+        if (!pagesRef.current.length) apply({ type: 'createTodayJournal' });
+      } catch (error) {
+        if (!active()) return;
+        if (!storageRef.current && userId && workspaceId) setLocalError(message(error));
+        failSession(error);
+      }
+    };
+    void restore().finally(() => {
+      finishStage();
+      if (active()) refreshWaiters.current.splice(0).forEach((resolve) => resolve());
+    });
+    return () => {
+      cancelled = true;
+      syncRef.current = false;
+      if (epochRef.current === epoch) ++epochRef.current;
+    };
+  }, [backendUrl, userId, workspaceId, authToken, refresh, apply, currentRecords, persist, failSession]);
+
+  // No network debounce here: retain every editor snapshot, including active draft text.
+  useEffect(() => {
+    if (!localReady || !scopeReadyRef.current) return;
+    void persist().catch(() => undefined);
+  }, [pagesForPersistence, directories, localReady, persist]);
 
   const flushDirtyPages = useCallback(async (snapshotOverride?: OutlinePage[]) => {
-    if (!syncEnabled) {
-      return;
-    }
-
-    if (flushPromiseRef.current) {
-      pendingFlushRef.current = true;
-      await flushPromiseRef.current;
-    }
-
-    const run = (async () => {
-      let nextSnapshotOverride = snapshotOverride;
-
-      do {
-        pendingFlushRef.current = false;
-        const snapshot = nextSnapshotOverride ?? pagesRef.current;
-        nextSnapshotOverride = undefined;
-        let savedAnyPage = false;
-
-        for (const snapshotPage of snapshot) {
-          const currentPage = findPageForPersistence(pagesRef.current, snapshotPage) ?? snapshotPage;
-          const currentHash = pageHash(currentPage);
-          const pausedSave = pausedSaveStateRef.current.get(currentPage.id) ?? null;
-          if (pausedSave && pausedSave.hash === currentHash) {
-            logSaveDebug('skip blocked page', {
-              pageId: currentPage.id,
-              backendDocumentId: currentPage.backendId ?? null,
-              title: getPageTitle(currentPage),
-              hash: currentHash,
-              missingBlockId: pausedSave.blockId,
-            });
-            continue;
-          }
-          if (pausedSave && pausedSave.hash !== currentHash) {
-            clearPausedSaveState(currentPage.id);
-            if (staleBlockRecovery?.pageId === currentPage.id) {
-              setStaleBlockRecovery(null);
-            }
-            logSaveDebug('resume page after edit', {
-              pageId: currentPage.id,
-              backendDocumentId: currentPage.backendId ?? null,
-              title: getPageTitle(currentPage),
-              previousPausedHash: pausedSave.hash,
-              nextHash: currentHash,
-            });
-          }
-          if (lastSavedHashesRef.current.get(currentPage.id) === currentHash) {
-            continue;
-          }
-
-          const pageKey = pagePersistenceKey(currentPage);
-          setPageSaveIndicators((current) => ({
-            ...current,
-            [pageKey]: { status: 'saving', message: 'Saving...', hash: currentHash },
-          }));
-
-          try {
-            const pageToSave = normalizePageForSave(currentPage);
-            if (pageHash(pageToSave) !== currentHash) {
-              logSaveDebug('normalized page before save', {
-                pageId: currentPage.id,
-                backendDocumentId: currentPage.backendId ?? null,
-                title: getPageTitle(currentPage),
-                originalNodeOrder: currentPage.nodes.map((node) => ({
-                  id: node.id,
-                  backendId: node.backendId ?? null,
-                  parentId: node.parentId,
-                  text: node.text.trim() || '(blank block)',
-                })),
-                normalizedNodeOrder: pageToSave.nodes.map((node) => ({
-                  id: node.id,
-                  backendId: node.backendId ?? null,
-                  parentId: node.parentId,
-                  text: node.text.trim() || '(blank block)',
-                })),
-              });
-            }
-
-            const validationMessage = validatePageForSave(pageToSave);
-            if (validationMessage) {
-              logSaveDebug('invalid block tree after normalization', {
-                pageId: currentPage.id,
-                backendDocumentId: currentPage.backendId ?? null,
-                title: getPageTitle(currentPage),
-                issue: describeInvalidBlockTree(pageToSave),
-              });
-              throw new Error(validationMessage);
-            }
-
-            const requestHash = pageHash(pageToSave);
-            const requestPageId = currentPage.id;
-            const outgoingBlockIds = pageToSave.nodes
-              .filter((node) => node.backendId)
-              .map((node) => node.backendId);
-            logSaveDebug('save request', {
-              pageId: requestPageId,
-              backendDocumentId: currentPage.backendId ?? null,
-              title: getPageTitle(currentPage),
-              nodeCount: pageToSave.nodes.length,
-              outgoingBlockIds,
-            });
-            const savedDocument = await saveDocument(backendUrl, authToken, outlinePageToDocument(pageToSave, workspaceId!));
-            const savedPage = documentToOutlinePage(savedDocument);
-            const latestPage = findPageForPersistence(pagesRef.current, currentPage) ?? findPageForPersistence(pagesRef.current, savedPage);
-            const reconciled = reconcileSavedPage(pageToSave, latestPage ? normalizePageForSave(latestPage) : pageToSave, savedPage);
-            logSaveDebug('save response merge', {
-              pageId: requestPageId,
-              backendDocumentId: savedPage.backendId ?? null,
-              needsSave: reconciled.needsSave,
-              requestHash,
-            });
-            const mergeAction: OutlineAction = {
-              type: 'mergeRemotePage', page: reconciled.page, previousPageId: requestPageId, source: 'session:saveResponseMerge',
-            };
-            // The next flush iteration may run before React renders this dispatch.
-            stateRef.current = reduceOutlineState(stateRef.current, mergeAction);
-            pagesRef.current = getPagesForPersistence(stateRef.current);
-            dispatch(mergeAction);
-            clearPausedSaveState(requestPageId);
-            clearPausedSaveState(reconciled.page.id);
-            lastSavedHashesRef.current.delete(requestPageId);
-            lastSavedHashesRef.current.set(reconciled.page.id, reconciled.savedHash);
-            if (reconciled.needsSave) {
-              pendingFlushRef.current = true;
-            }
-
-            const savedKey = pagePersistenceKey(savedPage);
-            setPageSaveIndicators((current) => ({
-              ...current,
-              [savedKey]: {
-                status: 'saved',
-                message: `Saved ${formatPanelTimestamp(savedPage.updatedAt || savedPage.createdAt || '')}`,
-                hash: reconciled.savedHash,
-              },
-            }));
-            if (savedKey !== pageKey) {
-              setPageSaveIndicators((current) => {
-                const next = { ...current };
-                delete next[pageKey];
-                return next;
-              });
-            }
-            savedAnyPage = true;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : 'Save failed.';
-            const staleMatch = message.match(/block\s+(\d+)\s+does not belong to document/i);
-            if (staleMatch && currentPage.backendId) {
-              try {
-                const repairedPage = await repairPageWithServerBlockIds(currentPage);
-                if (repairedPage) {
-                  logSaveDebug('auto-repaired stale block ids', {
-                    pageId: currentPage.id,
-                    backendDocumentId: currentPage.backendId ?? null,
-                    title: getPageTitle(currentPage),
-                    removedBlockIds: currentPage.nodes
-                      .filter((node, index) => node.backendId && !repairedPage.nodes[index]?.backendId)
-                      .map((node) => node.backendId),
-                  });
-                  dispatch({ type: 'mergeRemotePage', page: repairedPage, previousPageId: currentPage.id, source: 'session:autoRepairStaleBlockIds' });
-                  clearPausedSaveState(currentPage.id);
-                  clearPausedSaveState(repairedPage.id);
-                  setStaleBlockRecovery(null);
-                  setSaveFailureAlert(null);
-                  setSyncMessage(`Recovered stale block ids in ${getPageTitle(currentPage)}. Retrying save.`);
-                  pendingFlushRef.current = true;
-                  continue;
-                }
-              } catch {
-                // Fall through to the normal save failure handling if the repair lookup fails.
-              }
-            }
-            console.error('Document save failed', describeSaveFailure(currentPage, error));
-            logSaveDebug('save failure', {
-              pageId: currentPage.id,
-              backendDocumentId: currentPage.backendId ?? null,
-              title: getPageTitle(currentPage),
-              message,
-              missingBlockId: staleMatch ? Number(staleMatch[1]) : null,
-              outgoingBlockIds: currentPage.nodes.filter((node) => node.backendId).map((node) => node.backendId),
-            });
-            setPageSaveIndicators((current) => ({
-              ...current,
-              [pageKey]: { status: 'failed', message, hash: currentHash },
-            }));
-            if (staleMatch) {
-              pausedSaveStateRef.current.set(currentPage.id, {
-                hash: currentHash,
-                blockId: Number(staleMatch[1]),
-              });
-              setStaleBlockRecovery({
-                pageId: currentPage.id,
-                pageTitle: getPageTitle(currentPage),
-                blockId: Number(staleMatch[1]),
-                hash: currentHash,
-                message,
-              });
-            }
-            setSaveFailureAlert({ pageTitle: getPageTitle(currentPage), message });
-            setSyncMessage(`Save failed for ${getPageTitle(currentPage)}: ${message}`);
-          }
+    if (!userId || !workspaceId || JSON.stringify(storageRef.current?.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId))) return;
+    if (savingRef.current) return savingRef.current;
+    if (!syncRef.current || !scopeReadyRef.current) return;
+    if (!currentRecords().some((entry) => !entry.pending && !entry.conflict && entry.savedHash !== pageHash(entry.page))) return;
+    const epoch = epochRef.current;
+    const run = async () => {
+      setSaving(true);
+      for (const candidate of snapshotOverride ?? pagesRef.current) {
+        if (epoch !== epochRef.current || !syncRef.current) break;
+        const page = findPageForPersistence(pagesRef.current, candidate);
+        if (!page) continue;
+        const record = currentRecords().find((entry) => entry.page.id === page.id)!;
+        if (record.pending || record.conflict || record.savedHash === pageHash(page)) continue;
+        const requestPage = normalizePageForSave(page);
+        const validation = validatePageForSave(requestPage);
+        if (validation) { setSaveFailureAlert({ pageTitle: getPageTitle(page), message: validation }); continue; }
+        const key = pagePersistenceKey(page);
+        let sent = false;
+        try {
+          // A legacy request has no receipt: after interruption it must be compared, not replayed.
+          recordsRef.current = currentRecords().map((entry) => entry.page.id === page.id ? { ...entry, pending: true } : entry);
+          await persist(recordsRef.current);
+          if (epoch !== epochRef.current || !syncRef.current) break;
+          setPageSaveIndicators((value) => ({ ...value, [key]: { status: 'saving', message: 'Saving…', hash: pageHash(page) } }));
+          sent = true;
+          const saved = documentToOutlinePage(await saveDocument(backendUrl, authToken, outlinePageToDocument(requestPage, workspaceId!)));
+          if (epoch !== epochRef.current) break;
+          const latest = findPageForPersistence(pagesRef.current, page);
+          if (!latest) break;
+          const reconciled = reconcileSavedPage(requestPage, normalizePageForSave(latest), saved);
+          const other = currentRecords().filter((entry) => entry.page.id !== page.id);
+          recordsRef.current = [...other, { page: reconciled.page, baseline: saved, savedHash: reconciled.savedHash }];
+          apply({ type: 'mergeRemotePage', page: reconciled.page, previousPageId: page.id, source: 'session:saveResponse' });
+          await persist();
+          if (epoch !== epochRef.current) break;
+          setPageSaveIndicators((value) => ({ ...value, [pagePersistenceKey(reconciled.page)]: { status: 'saved', message: 'Saved', hash: reconciled.savedHash } }));
+        } catch (error) {
+          if (epoch !== epochRef.current) break;
+          const uncertain = sent && (!(error instanceof BackendError) || error.status >= 500);
+          const authFailure = error instanceof BackendError && [401, 403].includes(error.status);
+          recordsRef.current = currentRecords().map((entry) => entry.page.id === page.id ? {
+            ...entry, pending: uncertain,
+            conflict: authFailure ? undefined : uncertain ? 'The save outcome is unknown. Compare the server copy before retrying.' : message(error),
+          } : entry);
+          await persist().catch(() => undefined);
+          setPageSaveIndicators((value) => ({ ...value, [key]: { status: 'failed', message: message(error), hash: pageHash(page) } }));
+          setSaveFailureAlert({ pageTitle: getPageTitle(page), message: message(error) });
+          if (error instanceof BackendError && [401, 403].includes(error.status)) failSession(error);
         }
-
-        if (savedAnyPage && onPagesSavedRef?.current) {
-          try {
-            await onPagesSavedRef.current();
-          } catch {
-            // Ignore follow-up refresh failures after document persistence.
-          }
-        }
-      } while (pendingFlushRef.current);
-    })();
-
-    flushPromiseRef.current = run.finally(() => {
-      flushPromiseRef.current = null;
-    });
-    await flushPromiseRef.current;
-  }, [authToken, backendUrl, dispatch, onPagesSavedRef, syncEnabled, workspaceId]);
-
-  const repairStalePageInPlace = useCallback(async () => {
-    if (!staleBlockRecovery || !authToken || !workspaceId) {
-      return;
-    }
-
-    const sourcePage = stateRef.current.pages.find((entry) => entry.id === staleBlockRecovery.pageId) ?? null;
-    if (!sourcePage) {
-      setSyncMessage('The failed local page is no longer available.');
-      setStaleBlockRecovery(null);
-      return;
-    }
-
-    if (!sourcePage.backendId) {
-      setSyncMessage('This page does not have a server copy to repair against.');
-      return;
-    }
-
-    const repairedPage = (await repairPageWithServerBlockIds(sourcePage)) ?? sourcePage;
-
-    dispatch({ type: 'mergeRemotePage', page: repairedPage, previousPageId: sourcePage.id, source: 'session:repairStalePageInPlace' });
-    clearPausedSaveState(sourcePage.id);
-    clearPausedSaveState(repairedPage.id);
-    setStaleBlockRecovery(null);
-    setSaveFailureAlert(null);
-    setSyncMessage(`Repaired missing server block ids in ${getPageTitle(sourcePage)}. Autosave can retry now.`);
-    await flushDirtyPages([repairedPage]);
-  }, [authToken, clearPausedSaveState, dispatch, flushDirtyPages, repairPageWithServerBlockIds, staleBlockRecovery, stateRef, workspaceId]);
-
-  const persistSignature = useMemo(
-    () => pagesForPersistence.map((nextPage) => `${nextPage.id}:${pageHash(nextPage)}`).join('|'),
-    [pagesForPersistence],
-  );
-
-  useEffect(() => {
-    if (!syncEnabled) {
-      return;
-    }
-
-    const hasDirtyPages = pagesForPersistence.some((nextPage) => lastSavedHashesRef.current.get(nextPage.id) !== pageHash(nextPage));
-    if (!hasDirtyPages) {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
       }
-      return;
-    }
-
-    if (saveTimerRef.current) {
-      window.clearTimeout(saveTimerRef.current);
-    }
-    saveTimerRef.current = window.setTimeout(() => {
-      void flushDirtyPages().catch((error) => {
-        setSyncMessage(error instanceof Error ? error.message : 'Auto-save failed.');
-      });
-    }, 10000);
-
-    return () => {
-      if (saveTimerRef.current) {
-        window.clearTimeout(saveTimerRef.current);
-        saveTimerRef.current = null;
-      }
+      if (epoch === epochRef.current) await onPagesSavedRef?.current?.().catch(() => undefined);
     };
-  }, [flushDirtyPages, pagesForPersistence, persistSignature, syncEnabled]);
-
-  useEffect(() => {
-    const handlePageHide = () => {
-      void flushDirtyPages();
-    };
-
-    window.addEventListener('pagehide', handlePageHide);
-    return () => window.removeEventListener('pagehide', handlePageHide);
-  }, [flushDirtyPages]);
-
-  const dispatchAfterFlush = useCallback((action: OutlineAction) => {
-    const nextState = reduceOutlineState(stateRef.current, action);
-    dispatch(action);
-
-    if (!syncEnabled) {
-      return;
-    }
-
-    void flushDirtyPages(getPagesForPersistence(nextState)).catch((error) => {
-      setSyncMessage(error instanceof Error ? error.message : 'Save failed after navigation.');
+    const promise = run().finally(() => {
+      if (savingRef.current === promise) savingRef.current = null;
+      if (epoch === epochRef.current) setSaving(false);
     });
-  }, [dispatch, flushDirtyPages, syncEnabled]);
+    savingRef.current = promise;
+    return promise;
+  }, [apply, authToken, backendUrl, currentRecords, failSession, onPagesSavedRef, persist, userId, workspaceId]);
 
-  const runLogin = useCallback(async () => {
-    if (!backendUrl.trim()) {
-      setSyncMessage('Add a backend URL first.');
-      return;
-    }
-    if (!email.trim() || !password) {
-      setSyncMessage('Email and password are required.');
-      return;
-    }
-
-    setIsSyncing(true);
-    try {
-      setInitialLoadResolved(false);
-      const response = await login(backendUrl, email, password);
-      bootSyncRef.current = true;
-      setAuthToken(response.token);
-      setUserId(response.user.id);
-      setPassword('');
-      setSyncMessage(`Logged in as ${response.user.firstName || email}.`);
-      setInitialLoadResolved(true);
-      requestSyncConfirmation('login', response.token, null);
-    } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Login failed.');
-    } finally {
-      setIsSyncing(false);
-    }
-  }, [backendUrl, email, onPagesSavedRef, password, syncFromBackend]);
+  const syncEnabled = sessionStatus === 'ready' && loadStatus === 'ready' && localReady && !localError;
+  useEffect(() => {
+    if (!syncEnabled) return;
+    const timer = window.setTimeout(() => { void flushDirtyPages(); }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [pagesForPersistence, syncEnabled, saving, flushDirtyPages]);
 
   const runSync = useCallback(async () => {
-    try {
-      await flushDirtyPages();
-      requestSyncConfirmation('manual');
-    } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Sync failed.');
+    if (savingRef.current) await savingRef.current;
+    if (storageRef.current) {
+      try { await persist(); } catch { return; }
     }
-  }, [flushDirtyPages, requestSyncConfirmation]);
+    await new Promise<void>((resolve) => {
+      refreshWaiters.current.push(resolve);
+      setRefresh((value) => value + 1);
+    });
+  }, [persist]);
+
+  useEffect(() => {
+    const reconnect = () => { void runSync(); };
+    window.addEventListener('online', reconnect);
+    return () => window.removeEventListener('online', reconnect);
+  }, [runSync]);
+
+  const detach = useCallback(async () => {
+    syncRef.current = false;
+    writableRef.current = false;
+    ++epochRef.current;
+    if (storageRef.current) {
+      try { await persist(); }
+      catch (error) { writableRef.current = true; setSessionStatus('unavailable'); setLoadStatus('failed'); throw error; }
+    }
+    scopeReadyRef.current = false;
+    savingRef.current = null;
+    refreshWaiters.current.splice(0).forEach((resolve) => resolve());
+    storageRef.current = null;
+    recordsRef.current = [];
+    setLocalReady(false);
+    setLocalError('');
+    setPersistedHashes({});
+    setPageSaveIndicators({});
+    setLoadTimings({});
+    setLoadStatus('idle');
+    setSaving(false);
+    setDirectories([]);
+    apply({ type: 'hydrate', pages: [], source: 'session:detach' });
+  }, [apply, persist]);
+
+  const runLogin = useCallback(async () => {
+    const epoch = epochRef.current;
+    setSessionStatus('validating');
+    setLoadStatus('authenticating');
+    setSyncMessage('');
+    syncRef.current = false;
+    try {
+      const response = await login(backendUrl, email, password);
+      if (epoch !== epochRef.current) return;
+      await detach();
+      setUserId(response.user.id);
+      setWorkspaceId(response.user.id === userId ? workspaceId : null);
+      setAuthToken(response.token);
+      setPassword('');
+      setRefresh((value) => value + 1);
+    } catch (error) { if (epoch === epochRef.current) failSession(error); }
+  }, [backendUrl, detach, email, failSession, password, userId, workspaceId]);
 
   const handleLogout = useCallback(() => {
-    setAuthToken('');
-    setUserId(null);
-    setWorkspaceId(null);
-    setDirectories([]);
-    setPageSaveIndicators({});
-    setSyncMessage('Logged out.');
-    bootSyncRef.current = false;
-  }, []);
+    void detach().then(() => {
+      setAuthToken(''); setUserId(null); setWorkspaceId(null); setPassword('');
+      setSessionStatus('signed-out'); setSyncMessage('Logged out. Local drafts retained for this account.');
+    }).catch((error) => setSyncMessage(`Logout paused: ${message(error)}`));
+  }, [detach]);
+
+  // Backend settings are applied on blur in SettingsView, not for every keystroke.
+  const setBackendUrl = useCallback((value: string) => {
+    if (value === backendUrl) return;
+    void (async () => {
+      try {
+        const normalized = backendIdentity(value);
+        let previous: string | null = null;
+        try { previous = backendIdentity(backendUrl); } catch { /* Allow repairing invalid stored settings. */ }
+        if (normalized === previous) { updateBackendUrl(normalized); return; }
+        await detach();
+        setAuthToken(''); setUserId(null); setWorkspaceId(null);
+        updateBackendUrl(normalized);
+      } catch (error) { setSyncMessage(message(error)); }
+    })();
+  }, [backendUrl, detach]);
+
+  const dispatch = useCallback((action: OutlineAction) => {
+    if (!writableRef.current && !['openSettings', 'openAI', 'openPomodoro'].includes(action.type)) return;
+    if (storageRef.current && (!userId || !workspaceId || JSON.stringify(storageRef.current.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId)))) return;
+    apply(action);
+  }, [apply, backendUrl, userId, workspaceId]);
+
+  const updateDirectories: Dispatch<React.SetStateAction<BackendDirectory[]>> = useCallback((value) => {
+    if (!userId || !workspaceId || JSON.stringify(storageRef.current?.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId))) return;
+    setDirectories(value);
+  }, [backendUrl, userId, workspaceId]);
+
+  const dispatchAfterFlush = useCallback((action: OutlineAction) => {
+    dispatch(action);
+    if (scopeReadyRef.current) void persist().catch(() => undefined);
+    void flushDirtyPages();
+  }, [dispatch, flushDirtyPages, persist]);
+
+  const resolveConflict = useCallback(async (pageId: string, resolution: 'reload' | 'copy') => {
+    if (!authToken || savingRef.current) return;
+    const epoch = epochRef.current;
+    try {
+      const record = currentRecords().find((entry) => entry.page.id === pageId);
+      if (!record) return;
+      const serverId = record.serverCopy?.backendId ?? record.page.backendId;
+      const document = serverId
+        ? await getDocument(backendUrl, authToken, serverId).catch((error) => {
+          if (error instanceof BackendError && error.status === 404) return null;
+          throw error;
+        })
+        : null;
+      const remote = document ? documentToOutlinePage(document) : null;
+      if (epoch !== epochRef.current) return;
+      const latest = currentRecords().find((entry) => entry.page.id === pageId)!;
+      let records = currentRecords().filter((entry) => entry.page.id !== pageId);
+      if (resolution === 'copy') records.push({ page: recoveryCopy(latest.page) });
+      if (remote) records.push({ page: remote, baseline: remote, savedHash: pageHash(remote) });
+      if (resolution === 'reload' && !remote) throw new Error('No identified server copy. Save a recovery copy instead.');
+      // Freeze editor actions while committing this explicit discard/copy decision.
+      writableRef.current = false;
+      try { await persist(records); }
+      finally { if (epoch === epochRef.current) writableRef.current = true; }
+      if (epoch !== epochRef.current) return;
+      recordsRef.current = records;
+      apply({ type: 'hydrate', pages: records.map((entry) => entry.page), source: 'session:resolveConflict' });
+    } catch (error) { setSyncMessage(message(error)); throw error; }
+  }, [apply, authToken, backendUrl, currentRecords, persist]);
+
+  const page = pagesForPersistence.find((entry) => entry.id === state.activePageId);
+  const conflicts = draftConflicts(currentRecords(), saving);
+  const record = page ? currentRecords().find((entry) => entry.page.id === page.id) : undefined;
+  const activePageIsDirty = Boolean(page && pageHash(page) !== record?.savedHash);
+  const indicator = page ? pageSaveIndicators[pagePersistenceKey(page)] : undefined;
+  const localMessage = localError ? `Local storage failed: ${localError}`
+    : page && persistedHashes[page.id] !== pageHash(page) ? 'Retaining locally…' : 'Retained locally';
+  const hasActiveConflict = conflicts.some((entry) => entry.page.id === page?.id);
+  const sessionLabel = sessionStatus === 'restoring' || sessionStatus === 'validating' || sessionStatus === 'loading'
+    ? loadLabels[loadStatus as LoadStage] ?? 'Validating session'
+    : sessionStatus === 'reauth-required' || sessionStatus === 'signed-out' ? 'Login required'
+      : sessionStatus === 'unavailable' ? 'Sync unavailable' : 'Ready';
+  const loadTimingMessage = Object.entries(loadTimings).map(([key, ms]) =>
+    `${key === 'total' ? 'Total' : loadLabels[key as LoadStage]}: ${Math.round(ms!)} ms`).join(' · ');
+  const saveMessage = hasActiveConflict ? `${localMessage} · conflict`
+    : activePageIsDirty ? `${localMessage} · ${indicator?.status === 'saving' ? 'saving…' : sessionStatus === 'ready' ? 'pending save' : sessionLabel.toLowerCase()}`
+      : localError ? localMessage : 'Saved';
+  const activePageSaveMessage = useSaveStatus(
+    JSON.stringify([backendUrl, userId, workspaceId, page?.id]), saveMessage,
+    Boolean(localError || hasActiveConflict || indicator?.status === 'failed' || sessionStatus !== 'ready'),
+  );
 
   return {
-    backendUrl,
-    setBackendUrl,
-    email,
-    setEmail,
-    password,
-    setPassword,
-    centerColumn,
-    setCenterColumn,
-    editorFontScale,
-    setEditorFontScale,
-    syncMessage,
-    setSyncMessage,
-    authToken,
-    userId,
-    workspaceId,
-    directories,
-    setDirectories,
-    isSyncing,
-    bootstrapped,
-    initialLoadResolved,
-    syncEnabled,
-    pagesForPersistence,
-    pageSaveIndicators,
-    activePageSaveMessage,
-    activePageIsDirty,
-    activePageHasNewerEdits,
-    saveFailureAlert,
-    dismissSaveFailureAlert,
-    staleBlockRecovery,
-    dismissStaleBlockRecovery,
-    repairStalePageInPlace,
-    reloadStalePageFromServer,
-    pendingSyncConfirmation,
-    confirmPendingSync,
-    cancelPendingSync,
-    stateRef,
-    pagesRef,
-    flushDirtyPages,
-    dispatchAfterFlush,
-    runLogin,
-    runSync,
-    handleLogout,
+    backendUrl, setBackendUrl, email, setEmail, password, setPassword, authToken, userId, workspaceId,
+    centerColumn, setCenterColumn, editorFontScale, setEditorFontScale, syncMessage, setSyncMessage,
+    directories, setDirectories: updateDirectories, stateRef, pagesRef, pagesForPersistence, pageSaveIndicators,
+    sessionStatus, sessionLabel, loadStatus, loadTimings, loadTimingMessage, localReady, localError,
+    conflicts,
+    resolveConflict, dispatch,
+    isSyncing: sessionStatus === 'restoring' || sessionStatus === 'validating' || sessionStatus === 'loading' || saving,
+    bootstrapped: sessionStatus !== 'restoring', initialLoadResolved: loadStatus === 'ready', syncEnabled,
+    activePageSaveMessage, activePageIsDirty, activePageHasNewerEdits: Boolean(page && indicator?.hash !== pageHash(page)),
+    saveFailureAlert, dismissSaveFailureAlert: () => setSaveFailureAlert(null),
+    flushDirtyPages, dispatchAfterFlush, runLogin, runSync, handleLogout,
   };
 }

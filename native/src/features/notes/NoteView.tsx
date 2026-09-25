@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { OutlineEditor } from '../outline/OutlineEditor';
 import type { OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
@@ -10,6 +11,7 @@ interface NoteViewProps {
   pagesByBackendId: Map<number, OutlinePage>;
   activeNoteDirectoryPath: { name: string }[];
   activePageSaveMessage: string;
+  conflictReview?: ReactNode;
   onOpenDocumentLinkPicker: () => void;
   onFollowDocumentLink: () => void;
   onOpenDocumentLink: (targetDocumentId: number) => void;
@@ -22,6 +24,7 @@ export function NoteView({
   pagesByBackendId,
   activeNoteDirectoryPath,
   activePageSaveMessage,
+  conflictReview,
   onOpenDocumentLinkPicker,
   onFollowDocumentLink,
   onOpenDocumentLink,
@@ -39,13 +42,15 @@ export function NoteView({
             onChange={(event) => dispatch({ type: 'updatePageTitle', title: event.target.value })}
           />
           {activeNoteDirectoryPath.length > 0 ? (
-            <span className="page-kind">{activePageSaveMessage || activeNoteDirectoryPath.map((entry) => entry.name).join(' / ')}</span>
+            <span className="page-kind page-save-status" title={activePageSaveMessage || activeNoteDirectoryPath.map((entry) => entry.name).join(' / ')}>{activePageSaveMessage || activeNoteDirectoryPath.map((entry) => entry.name).join(' / ')}</span>
           ) : null}
           {activeNoteDirectoryPath.length === 0 && activePageSaveMessage ? (
-            <span className="page-kind">{activePageSaveMessage}</span>
+            <span className="page-kind page-save-status" title={activePageSaveMessage}>{activePageSaveMessage}</span>
           ) : null}
         </div>
       </header>
+
+      {conflictReview}
 
       <OutlineEditor
         page={page}

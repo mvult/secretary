@@ -5,6 +5,33 @@
 
 import type { BinaryReadOptions, FieldList, JsonReadOptions, JsonValue, PartialMessage, PlainMessage } from "@bufbuild/protobuf";
 import { Message, proto3, protoInt64 } from "@bufbuild/protobuf";
+import { DocumentMutationEffects } from "./persistence_pb.js";
+
+/**
+ * @generated from enum secretary.v1.DocumentSaveOutcome
+ */
+export enum DocumentSaveOutcome {
+  /**
+   * @generated from enum value: DOCUMENT_SAVE_OUTCOME_UNSPECIFIED = 0;
+   */
+  UNSPECIFIED = 0,
+
+  /**
+   * @generated from enum value: DOCUMENT_SAVE_OUTCOME_APPLIED = 1;
+   */
+  APPLIED = 1,
+
+  /**
+   * @generated from enum value: DOCUMENT_SAVE_OUTCOME_EXISTING_JOURNAL = 2;
+   */
+  EXISTING_JOURNAL = 2,
+}
+// Retrieve enum metadata with: proto3.getEnumType(DocumentSaveOutcome)
+proto3.util.setEnumType(DocumentSaveOutcome, "secretary.v1.DocumentSaveOutcome", [
+  { no: 0, name: "DOCUMENT_SAVE_OUTCOME_UNSPECIFIED" },
+  { no: 1, name: "DOCUMENT_SAVE_OUTCOME_APPLIED" },
+  { no: 2, name: "DOCUMENT_SAVE_OUTCOME_EXISTING_JOURNAL" },
+]);
 
 /**
  * @generated from message secretary.v1.Block
@@ -157,6 +184,14 @@ export class Document extends Message<Document> {
    */
   directoryId = protoInt64.zero;
 
+  /**
+   * Positive only for a coherent snapshot served by the versioned protocol.
+   * Zero means legacy/unversioned, never a usable update baseline.
+   *
+   * @generated from field: int64 revision = 11;
+   */
+  revision = protoInt64.zero;
+
   constructor(data?: PartialMessage<Document>) {
     super();
     proto3.util.initPartial(data, this);
@@ -175,6 +210,7 @@ export class Document extends Message<Document> {
     { no: 8, name: "updated_at", kind: "scalar", T: 9 /* ScalarType.STRING */ },
     { no: 9, name: "blocks", kind: "message", T: Block, repeated: true },
     { no: 10, name: "directory_id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 11, name: "revision", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): Document {
@@ -430,6 +466,23 @@ export class SaveDocumentRequest extends Message<SaveDocumentRequest> {
    */
   document?: Document;
 
+  /**
+   * @generated from field: uint32 protocol_version = 2;
+   */
+  protocolVersion = 0;
+
+  /**
+   * @generated from field: string mutation_id = 3;
+   */
+  mutationId = "";
+
+  /**
+   * Presence is required by protocol v1; zero is the create precondition.
+   *
+   * @generated from field: optional int64 expected_revision = 4;
+   */
+  expectedRevision?: bigint;
+
   constructor(data?: PartialMessage<SaveDocumentRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -439,6 +492,9 @@ export class SaveDocumentRequest extends Message<SaveDocumentRequest> {
   static readonly typeName = "secretary.v1.SaveDocumentRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "document", kind: "message", T: Document },
+    { no: 2, name: "protocol_version", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 3, name: "mutation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "expected_revision", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SaveDocumentRequest {
@@ -467,6 +523,21 @@ export class SaveDocumentResponse extends Message<SaveDocumentResponse> {
    */
   document?: Document;
 
+  /**
+   * @generated from field: string mutation_id = 2;
+   */
+  mutationId = "";
+
+  /**
+   * @generated from field: secretary.v1.DocumentSaveOutcome outcome = 3;
+   */
+  outcome = DocumentSaveOutcome.UNSPECIFIED;
+
+  /**
+   * @generated from field: secretary.v1.DocumentMutationEffects effects = 4;
+   */
+  effects?: DocumentMutationEffects;
+
   constructor(data?: PartialMessage<SaveDocumentResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -476,6 +547,9 @@ export class SaveDocumentResponse extends Message<SaveDocumentResponse> {
   static readonly typeName = "secretary.v1.SaveDocumentResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "document", kind: "message", T: Document },
+    { no: 2, name: "mutation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 3, name: "outcome", kind: "enum", T: proto3.getEnumType(DocumentSaveOutcome) },
+    { no: 4, name: "effects", kind: "message", T: DocumentMutationEffects },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): SaveDocumentResponse {
@@ -504,6 +578,26 @@ export class DeleteDocumentRequest extends Message<DeleteDocumentRequest> {
    */
   id = protoInt64.zero;
 
+  /**
+   * @generated from field: int64 workspace_id = 2;
+   */
+  workspaceId = protoInt64.zero;
+
+  /**
+   * @generated from field: uint32 protocol_version = 3;
+   */
+  protocolVersion = 0;
+
+  /**
+   * @generated from field: string mutation_id = 4;
+   */
+  mutationId = "";
+
+  /**
+   * @generated from field: optional int64 expected_revision = 5;
+   */
+  expectedRevision?: bigint;
+
   constructor(data?: PartialMessage<DeleteDocumentRequest>) {
     super();
     proto3.util.initPartial(data, this);
@@ -513,6 +607,10 @@ export class DeleteDocumentRequest extends Message<DeleteDocumentRequest> {
   static readonly typeName = "secretary.v1.DeleteDocumentRequest";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
     { no: 1, name: "id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "workspace_id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "protocol_version", kind: "scalar", T: 13 /* ScalarType.UINT32 */ },
+    { no: 4, name: "mutation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "expected_revision", kind: "scalar", T: 3 /* ScalarType.INT64 */, opt: true },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteDocumentRequest {
@@ -536,6 +634,16 @@ export class DeleteDocumentRequest extends Message<DeleteDocumentRequest> {
  * @generated from message secretary.v1.DeleteDocumentResponse
  */
 export class DeleteDocumentResponse extends Message<DeleteDocumentResponse> {
+  /**
+   * @generated from field: string mutation_id = 1;
+   */
+  mutationId = "";
+
+  /**
+   * @generated from field: secretary.v1.DocumentMutationEffects effects = 2;
+   */
+  effects?: DocumentMutationEffects;
+
   constructor(data?: PartialMessage<DeleteDocumentResponse>) {
     super();
     proto3.util.initPartial(data, this);
@@ -544,6 +652,8 @@ export class DeleteDocumentResponse extends Message<DeleteDocumentResponse> {
   static readonly runtime: typeof proto3 = proto3;
   static readonly typeName = "secretary.v1.DeleteDocumentResponse";
   static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "mutation_id", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 2, name: "effects", kind: "message", T: DocumentMutationEffects },
   ]);
 
   static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DeleteDocumentResponse {
@@ -560,6 +670,221 @@ export class DeleteDocumentResponse extends Message<DeleteDocumentResponse> {
 
   static equals(a: DeleteDocumentResponse | PlainMessage<DeleteDocumentResponse> | undefined, b: DeleteDocumentResponse | PlainMessage<DeleteDocumentResponse> | undefined): boolean {
     return proto3.util.equals(DeleteDocumentResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message secretary.v1.DocumentHistoryEntry
+ */
+export class DocumentHistoryEntry extends Message<DocumentHistoryEntry> {
+  /**
+   * @generated from field: int64 id = 1;
+   */
+  id = protoInt64.zero;
+
+  /**
+   * @generated from field: int64 document_id = 2;
+   */
+  documentId = protoInt64.zero;
+
+  /**
+   * @generated from field: string capture_reason = 3;
+   */
+  captureReason = "";
+
+  /**
+   * @generated from field: string content_hash = 4;
+   */
+  contentHash = "";
+
+  /**
+   * @generated from field: string snapshot_json = 5;
+   */
+  snapshotJson = "";
+
+  /**
+   * @generated from field: string captured_at = 6;
+   */
+  capturedAt = "";
+
+  constructor(data?: PartialMessage<DocumentHistoryEntry>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.DocumentHistoryEntry";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 2, name: "document_id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+    { no: 3, name: "capture_reason", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 4, name: "content_hash", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 5, name: "snapshot_json", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+    { no: 6, name: "captured_at", kind: "scalar", T: 9 /* ScalarType.STRING */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): DocumentHistoryEntry {
+    return new DocumentHistoryEntry().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): DocumentHistoryEntry {
+    return new DocumentHistoryEntry().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): DocumentHistoryEntry {
+    return new DocumentHistoryEntry().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: DocumentHistoryEntry | PlainMessage<DocumentHistoryEntry> | undefined, b: DocumentHistoryEntry | PlainMessage<DocumentHistoryEntry> | undefined): boolean {
+    return proto3.util.equals(DocumentHistoryEntry, a, b);
+  }
+}
+
+/**
+ * @generated from message secretary.v1.ListDocumentHistoryRequest
+ */
+export class ListDocumentHistoryRequest extends Message<ListDocumentHistoryRequest> {
+  /**
+   * @generated from field: int64 document_id = 1;
+   */
+  documentId = protoInt64.zero;
+
+  constructor(data?: PartialMessage<ListDocumentHistoryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.ListDocumentHistoryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "document_id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListDocumentHistoryRequest {
+    return new ListDocumentHistoryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListDocumentHistoryRequest {
+    return new ListDocumentHistoryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListDocumentHistoryRequest {
+    return new ListDocumentHistoryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListDocumentHistoryRequest | PlainMessage<ListDocumentHistoryRequest> | undefined, b: ListDocumentHistoryRequest | PlainMessage<ListDocumentHistoryRequest> | undefined): boolean {
+    return proto3.util.equals(ListDocumentHistoryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message secretary.v1.ListDocumentHistoryResponse
+ */
+export class ListDocumentHistoryResponse extends Message<ListDocumentHistoryResponse> {
+  /**
+   * @generated from field: repeated secretary.v1.DocumentHistoryEntry history = 1;
+   */
+  history: DocumentHistoryEntry[] = [];
+
+  constructor(data?: PartialMessage<ListDocumentHistoryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.ListDocumentHistoryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "history", kind: "message", T: DocumentHistoryEntry, repeated: true },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): ListDocumentHistoryResponse {
+    return new ListDocumentHistoryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): ListDocumentHistoryResponse {
+    return new ListDocumentHistoryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): ListDocumentHistoryResponse {
+    return new ListDocumentHistoryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: ListDocumentHistoryResponse | PlainMessage<ListDocumentHistoryResponse> | undefined, b: ListDocumentHistoryResponse | PlainMessage<ListDocumentHistoryResponse> | undefined): boolean {
+    return proto3.util.equals(ListDocumentHistoryResponse, a, b);
+  }
+}
+
+/**
+ * @generated from message secretary.v1.GetDocumentHistoryEntryRequest
+ */
+export class GetDocumentHistoryEntryRequest extends Message<GetDocumentHistoryEntryRequest> {
+  /**
+   * @generated from field: int64 id = 1;
+   */
+  id = protoInt64.zero;
+
+  constructor(data?: PartialMessage<GetDocumentHistoryEntryRequest>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.GetDocumentHistoryEntryRequest";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "id", kind: "scalar", T: 3 /* ScalarType.INT64 */ },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetDocumentHistoryEntryRequest {
+    return new GetDocumentHistoryEntryRequest().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetDocumentHistoryEntryRequest {
+    return new GetDocumentHistoryEntryRequest().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetDocumentHistoryEntryRequest {
+    return new GetDocumentHistoryEntryRequest().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetDocumentHistoryEntryRequest | PlainMessage<GetDocumentHistoryEntryRequest> | undefined, b: GetDocumentHistoryEntryRequest | PlainMessage<GetDocumentHistoryEntryRequest> | undefined): boolean {
+    return proto3.util.equals(GetDocumentHistoryEntryRequest, a, b);
+  }
+}
+
+/**
+ * @generated from message secretary.v1.GetDocumentHistoryEntryResponse
+ */
+export class GetDocumentHistoryEntryResponse extends Message<GetDocumentHistoryEntryResponse> {
+  /**
+   * @generated from field: secretary.v1.DocumentHistoryEntry history = 1;
+   */
+  history?: DocumentHistoryEntry;
+
+  constructor(data?: PartialMessage<GetDocumentHistoryEntryResponse>) {
+    super();
+    proto3.util.initPartial(data, this);
+  }
+
+  static readonly runtime: typeof proto3 = proto3;
+  static readonly typeName = "secretary.v1.GetDocumentHistoryEntryResponse";
+  static readonly fields: FieldList = proto3.util.newFieldList(() => [
+    { no: 1, name: "history", kind: "message", T: DocumentHistoryEntry },
+  ]);
+
+  static fromBinary(bytes: Uint8Array, options?: Partial<BinaryReadOptions>): GetDocumentHistoryEntryResponse {
+    return new GetDocumentHistoryEntryResponse().fromBinary(bytes, options);
+  }
+
+  static fromJson(jsonValue: JsonValue, options?: Partial<JsonReadOptions>): GetDocumentHistoryEntryResponse {
+    return new GetDocumentHistoryEntryResponse().fromJson(jsonValue, options);
+  }
+
+  static fromJsonString(jsonString: string, options?: Partial<JsonReadOptions>): GetDocumentHistoryEntryResponse {
+    return new GetDocumentHistoryEntryResponse().fromJsonString(jsonString, options);
+  }
+
+  static equals(a: GetDocumentHistoryEntryResponse | PlainMessage<GetDocumentHistoryEntryResponse> | undefined, b: GetDocumentHistoryEntryResponse | PlainMessage<GetDocumentHistoryEntryResponse> | undefined): boolean {
+    return proto3.util.equals(GetDocumentHistoryEntryResponse, a, b);
   }
 }
 

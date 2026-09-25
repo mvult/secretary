@@ -304,6 +304,49 @@ func TestWorkspaceDocumentPersistenceFlow(t *testing.T) {
 	if createPayload.Document.Blocks[0].TodoId != 0 {
 		t.Fatalf("expected note block to have no todo, got %d", createPayload.Document.Blocks[0].TodoId)
 	}
+	// Bulk loading must match the independent single-document loader, including
+	// empty documents, ordered parent/child blocks, and linked/unlinked TODOs.
+	initialListResp, err := authPost(ts.URL+secretaryv1connect.DocumentsServiceListDocumentsProcedure, token,
+		&secretaryv1.ListDocumentsRequest{WorkspaceId: workspaceID})
+	if err != nil {
+		t.Fatalf("initial list documents: %v", err)
+	}
+	if initialListResp.StatusCode != http.StatusOK {
+		initialListResp.Body.Close()
+		t.Fatalf("initial list documents status: %d", initialListResp.StatusCode)
+	}
+	var initialList secretaryv1.ListDocumentsResponse
+	if err := decodeProtoBody(initialListResp.Body, &initialList); err != nil {
+		initialListResp.Body.Close()
+		t.Fatalf("decode initial list documents: %v", err)
+	}
+	initialListResp.Body.Close()
+	if len(initialList.Documents) != 4 {
+		t.Fatalf("expected populated note and three empty linked documents, got %d", len(initialList.Documents))
+	}
+	if initialList.Documents[0].Id != linkedJournalID {
+		t.Fatal("expected journal-first document ordering")
+	}
+	for _, listed := range initialList.Documents {
+		getResp, err := authPost(ts.URL+secretaryv1connect.DocumentsServiceGetDocumentProcedure, token,
+			&secretaryv1.GetDocumentRequest{Id: listed.Id})
+		if err != nil {
+			t.Fatalf("get document %d: %v", listed.Id, err)
+		}
+		if getResp.StatusCode != http.StatusOK {
+			getResp.Body.Close()
+			t.Fatalf("get document %d status: %d", listed.Id, getResp.StatusCode)
+		}
+		var single secretaryv1.GetDocumentResponse
+		if err := decodeProtoBody(getResp.Body, &single); err != nil {
+			getResp.Body.Close()
+			t.Fatalf("decode document %d: %v", listed.Id, err)
+		}
+		getResp.Body.Close()
+		if !proto.Equal(listed, single.Document) {
+			t.Fatalf("bulk and single-document loading differ for document %d", listed.Id)
+		}
+	}
 	var initialLinkedTargets []int64
 	rows, err := pool.Query(ctx, `
 		SELECT target_document_id

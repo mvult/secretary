@@ -285,6 +285,7 @@ type Block struct {
 	TodoID        pgtype.Int4
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
+	ClientKey     string
 }
 
 type BlockDocumentLink struct {
@@ -311,6 +312,8 @@ type Document struct {
 	JournalDate pgtype.Date
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
+	ClientKey   string
+	Revision    int64
 }
 
 type DocumentHistory struct {
@@ -334,6 +337,22 @@ type IssuePosition struct {
 	ID         int32
 	IssueID    int32
 	ArgumentID int32
+}
+
+type MutationReceipt struct {
+	ActorUserID     int32
+	ScopeKind       string
+	ScopeID         int32
+	MutationID      pgtype.UUID
+	ProtocolVersion int32
+	Operation       string
+	PayloadSha256   []byte
+	TargetIds       []int64
+	CreationKey     pgtype.Text
+	ResultType      string
+	ResultVersion   int32
+	ResultPayload   []byte
+	CommittedAt     pgtype.Timestamptz
 }
 
 type QbafResult struct {

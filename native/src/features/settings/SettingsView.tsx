@@ -19,6 +19,8 @@ interface SettingsViewProps {
   workspaceId: number | null;
   isSyncing: boolean;
   syncMessage: string;
+  sessionStatus: string;
+  loadTimingMessage?: string;
   showCenterColumnToggle?: boolean;
   showLogout?: boolean;
   onChangeBackendUrl: (value: string) => void;
@@ -41,6 +43,8 @@ export function SettingsView({
   workspaceId,
   isSyncing,
   syncMessage,
+  sessionStatus,
+  loadTimingMessage,
   showCenterColumnToggle = true,
   showLogout = true,
   onChangeBackendUrl,
@@ -52,6 +56,8 @@ export function SettingsView({
   onSync,
   onLogout,
 }: SettingsViewProps) {
+  const [backendDraft, setBackendDraft] = useState(backendUrl);
+  useEffect(() => setBackendDraft(backendUrl), [backendUrl]);
   const [whatsAppStatus, setWhatsAppStatus] = useState<WhatsAppStatus | null>(null);
   const [whatsAppQR, setWhatsAppQR] = useState('');
   const [importanceInstructions, setImportanceInstructions] = useState('');
@@ -152,7 +158,8 @@ export function SettingsView({
 
       <div className="settings-card">
         <label className="settings-label" htmlFor="backend-url">Backend URL</label>
-        <input id="backend-url" className="settings-input" type="text" value={backendUrl} placeholder="http://localhost:8091" onChange={(event) => onChangeBackendUrl(event.target.value)} />
+        <input id="backend-url" className="settings-input" type="text" value={backendDraft} placeholder="http://localhost:8091"
+          onChange={(event) => setBackendDraft(event.target.value)} onBlur={() => onChangeBackendUrl(backendDraft)} />
 
         <label className="settings-label" htmlFor="sync-email">Email</label>
         <input id="sync-email" className="settings-input" type="email" value={email} placeholder="you@example.com" onChange={(event) => onChangeEmail(event.target.value)} />
@@ -191,7 +198,7 @@ export function SettingsView({
         ) : null}
 
         <div className="settings-actions">
-          <button type="button" className="sync-button" onClick={onLogin} disabled={isSyncing}>
+          <button type="button" className="sync-button" onClick={onLogin} disabled={isSyncing || backendDraft !== backendUrl}>
             {authToken ? 'Refresh login' : 'Log in'}
           </button>
           <button type="button" className="sync-button" onClick={onSync} disabled={isSyncing || !authToken}>
@@ -207,9 +214,10 @@ export function SettingsView({
         <div className="settings-hotkeys">
           <span className="settings-label">Status</span>
           <p className="settings-message">
-            {isSyncing ? 'Working...' : authToken ? `Connected${workspaceId ? ` to workspace ${workspaceId}` : ''}.` : 'Not connected.'}
+            {sessionStatus}{workspaceId ? ` · workspace ${workspaceId}` : ''}
           </p>
           {syncMessage ? <p className="settings-message">{syncMessage}</p> : null}
+          {loadTimingMessage ? <p className="settings-message">Load timings · {loadTimingMessage}</p> : null}
         </div>
       </div>
 

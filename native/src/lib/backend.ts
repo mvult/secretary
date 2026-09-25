@@ -462,20 +462,35 @@ function normalizeDocument(value: any): BackendDocument {
   };
 }
 
-async function readError(response: Response) {
+export class BackendError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+    this.name = 'BackendError';
+  }
+}
+
+type AuthFailure = { baseUrl: string; token?: string };
+const authFailureListeners = new Set<(failure: AuthFailure) => void>();
+export function onAuthFailure(listener: (failure: AuthFailure) => void) {
+  authFailureListeners.add(listener);
+  return () => { authFailureListeners.delete(listener); };
+}
+
+async function readError(response: Response, baseUrl: string, token?: string) {
+  if (response.status === 401) for (const listener of authFailureListeners) listener({ baseUrl, token });
   try {
     const payload = await response.json();
     if (typeof payload?.message === 'string') {
-      return payload.message;
+      return new BackendError(payload.message, response.status, payload.code);
     }
     if (typeof payload?.error === 'string') {
-      return payload.error;
+      return new BackendError(payload.error, response.status, payload.code);
     }
   } catch {
     // Ignore JSON parsing failures for error bodies.
   }
 
-  return `${response.status} ${response.statusText}`;
+  return new BackendError(`${response.status} ${response.statusText}`, response.status);
 }
 
 async function postJson<TResponse>(baseUrl: string, path: string, body: unknown, token?: string) {
@@ -489,7 +504,7 @@ async function postJson<TResponse>(baseUrl: string, path: string, body: unknown,
   });
 
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw await readError(response, baseUrl, token);
   }
 
   return response.json() as Promise<TResponse>;
@@ -500,7 +515,7 @@ async function getJson<TResponse>(baseUrl: string, path: string, token?: string)
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw await readError(response, baseUrl, token);
   }
   return response.json() as Promise<TResponse>;
 }
@@ -515,7 +530,7 @@ async function putJson<TResponse>(baseUrl: string, path: string, body: unknown, 
     body: JSON.stringify(body),
   });
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw await readError(response, baseUrl, token);
   }
   return response.json() as Promise<TResponse>;
 }
@@ -851,7 +866,7 @@ export async function approvePomodoroUnlock(baseUrl: string, token: string, alia
     body: JSON.stringify({ alias, rationale }),
   });
   if (!response.ok) {
-    throw new Error(await readError(response));
+    throw await readError(response, baseUrl, token);
   }
   const payload = await response.json() as Partial<PomodoroUnlockApproval>;
   return {

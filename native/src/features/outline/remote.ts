@@ -12,6 +12,7 @@ export function documentToOutlinePage(document: BackendDocument): OutlinePage {
   const nodes: OutlineNode[] = sortedBlocks.map((block) => ({
     id: `block-${block.id}`,
     backendId: block.id,
+    clientKey: block.clientKey || undefined,
     parentId: block.parentBlockId ? `block-${block.parentBlockId}` : null,
     text: block.text,
     todoStatus: block.todoStatus || null,

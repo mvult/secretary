@@ -7,7 +7,9 @@ SELECT
   d.title,
   d.journal_date,
   d.created_at,
-  d.updated_at
+  d.updated_at,
+  d.client_key,
+  d.revision
 FROM document d
 WHERE d.workspace_id = $1
 ORDER BY
@@ -25,7 +27,9 @@ SELECT
   d.title,
   d.journal_date,
   d.created_at,
-  d.updated_at
+  d.updated_at,
+  d.client_key,
+  d.revision
 FROM document d
 WHERE d.id = $1;
 
@@ -37,7 +41,7 @@ INSERT INTO document (
   title,
   journal_date
 ) VALUES ($1, $2, $3, $4, $5)
-RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at;
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at, client_key, revision;
 
 -- name: UpdateDocument :one
 UPDATE document
@@ -48,7 +52,7 @@ SET
   journal_date = $5,
   updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at;
+RETURNING id, workspace_id, directory_id, kind, title, journal_date, created_at, updated_at, client_key, revision;
 
 -- name: DeleteDocument :exec
 DELETE FROM document
@@ -191,10 +195,19 @@ SELECT
   b.text,
   b.todo_id,
   b.created_at,
-  b.updated_at
+  b.updated_at,
+  b.client_key
 FROM block b
 WHERE b.document_id = $1
 ORDER BY b.sort_order ASC, b.id ASC;
+
+-- name: ListBlocksWithTodoStatusByWorkspace :many
+SELECT sqlc.embed(b), t.status AS todo_status
+FROM block b
+JOIN document d ON d.id = b.document_id
+LEFT JOIN todo t ON t.id = b.todo_id
+WHERE d.workspace_id = $1
+ORDER BY b.document_id ASC, b.sort_order ASC, b.id ASC;
 
 -- name: CreateBlock :one
 INSERT INTO block (
@@ -204,7 +217,7 @@ INSERT INTO block (
   text,
   todo_id
 ) VALUES ($1, $2, $3, $4, $5)
-RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at, client_key;
 
 -- name: UpdateBlock :one
 UPDATE block
@@ -216,7 +229,7 @@ SET
   todo_id = $6,
   updated_at = now()
 WHERE id = $1
-RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at, client_key;
 
 -- name: ClearBlockTodo :one
 UPDATE block
@@ -224,7 +237,7 @@ SET
   todo_id = NULL,
   updated_at = now()
 WHERE id = $1
-RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at;
+RETURNING id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at, client_key;
 
 -- name: DeleteBlockDocumentLinksByBlock :exec
 DELETE FROM block_document_link
@@ -253,8 +266,14 @@ INSERT INTO todo (
   source_document_id,
   source_block_id,
   current_document_id,
-  current_block_id
-) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7, $6, $7)
+  current_block_id,
+  completed_at,
+  completed_document_id,
+  completed_block_id
+) VALUES ($1, $2, $3, $4, $5, 'block', $6, $7, $6, $7,
+  CASE WHEN $3::text = 'done' THEN now() END,
+  CASE WHEN $3::text = 'done' THEN $6::integer END,
+  CASE WHEN $3::text = 'done' THEN $7::integer END)
 RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
 
 -- name: UpdateCanonicalTodoForBlock :one

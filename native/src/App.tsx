@@ -12,8 +12,7 @@ import { useGlobalHotkeys } from './app/useGlobalHotkeys';
 import { ToolbarMenu } from './app/ToolbarMenu';
 import { DeleteNoteDialog } from './app/DeleteNoteDialog';
 import { SaveFailureDialog } from './app/SaveFailureDialog';
-import { StaleBlockRecoveryDialog } from './app/StaleBlockRecoveryDialog';
-import { SyncConfirmDialog } from './app/SyncConfirmDialog';
+import { DraftConflictReview } from './features/session/DraftConflicts';
 import { DocumentLinkDialog } from './features/document-links/DocumentLinkDialog';
 import { JournalsView } from './features/journals/JournalsView';
 import { NoteView } from './features/notes/NoteView';
@@ -28,7 +27,7 @@ import { usePomodoro } from './features/pomodoro/usePomodoro';
 import { getDocumentHistoryEntry, listDocumentHistory, listPendingWhatsAppNotifications, markWhatsAppNotificationsNotified, type BackendDocumentHistoryEntry, type BackendTodo, type WhatsAppMessageNotification } from './lib/backend';
 
 function App() {
-  const [state, dispatch] = useOutlineState();
+  const [state, rawDispatch] = useOutlineState();
   const page = useMemo(() => getCurrentPage(state), [state.activePageId, state.pages]);
   const journalPage = useMemo(() => getJournalPage(state), [state.pages]);
   const journals = useMemo(() => getJournalPages(state), [state.pages]);
@@ -44,7 +43,8 @@ function App() {
   const toolbarMenuRef = useRef<HTMLDivElement | null>(null);
   const lastTodoGPressRef = useRef<number | null>(null);
 
-  const session = useSessionSync({ state, dispatch, onPagesSavedRef: refreshTodosRef });
+  const session = useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef: refreshTodosRef });
+  const dispatch = session.dispatch;
   const editorFontScaleStyle = { '--editor-font-scale': session.editorFontScale } as CSSProperties;
 
   const search = useSearchView(state);
@@ -95,6 +95,7 @@ function App() {
     workspaceId: session.workspaceId,
     syncEnabled: session.syncEnabled,
     directories: session.directories,
+    flushDirtyPages: session.flushDirtyPages,
     setDirectories: session.setDirectories,
     setSyncMessage: session.setSyncMessage,
   });
@@ -374,25 +375,18 @@ function App() {
 
   const modalOverlays = (
     <>
-      <SyncConfirmDialog
-        reason={session.pendingSyncConfirmation?.reason ?? null}
-        dirtyPages={session.pendingSyncConfirmation?.dirtyPages ?? []}
-        onCancel={session.cancelPendingSync}
-        onConfirm={() => void session.confirmPendingSync()}
-      />
+      {session.sessionStatus !== 'ready' || session.localError ? (
+        <div className="settings-card" role="status">
+          <p className="settings-message">{session.localError ? `Local storage failed: ${session.localError}` : `${session.sessionLabel}${session.syncMessage ? ` · ${session.syncMessage}` : ''}`}</p>
+          <button type="button" className="sync-button" onClick={() => dispatch({ type: 'openSettings' })}>Settings / login</button>
+          <button type="button" className="sync-button" onClick={() => void session.runSync()} disabled={session.isSyncing}>Retry</button>
+        </div>
+      ) : null}
 
       <SaveFailureDialog
         pageTitle={session.saveFailureAlert?.pageTitle ?? null}
         message={session.saveFailureAlert?.message ?? ''}
         onClose={session.dismissSaveFailureAlert}
-      />
-
-      <StaleBlockRecoveryDialog
-        pageTitle={session.staleBlockRecovery?.pageTitle ?? null}
-        blockId={session.staleBlockRecovery?.blockId ?? null}
-        onKeepLocal={session.dismissStaleBlockRecovery}
-        onRepairThisNote={() => void session.repairStalePageInPlace()}
-        onReloadServerCopy={() => void session.reloadStalePageFromServer()}
       />
 
       <DocumentLinkDialog
@@ -465,8 +459,10 @@ function App() {
                 workspaceId={session.workspaceId}
                 isSyncing={session.isSyncing}
                 syncMessage={session.syncMessage}
+                sessionStatus={session.sessionLabel}
+                loadTimingMessage={session.loadTimingMessage}
                 showCenterColumnToggle={false}
-                showLogout={false}
+                onLogout={handleLogout}
                 onChangeBackendUrl={(value) => {
                   session.setBackendUrl(value);
                   session.setSyncMessage('');
@@ -510,12 +506,12 @@ function App() {
                 <header className="page-header">
                   <p className="page-date">Workspace</p>
                   <div className="page-heading-row">
-                    <h2 className="page-title">Preparing today&apos;s journal</h2>
+                    <h2 className="page-title">Workspace</h2>
                   </div>
                 </header>
 
                 <div className="settings-card">
-                  <p className="settings-message">{session.initialLoadResolved ? 'Creating today\'s journal.' : 'Loading documents from the backend.'}</p>
+                  <p className="settings-message">{session.sessionStatus === 'signed-out' ? 'Log in to open a workspace.' : session.loadStatus === 'failed' ? 'Workspace loading failed. Retry or open settings.' : session.initialLoadResolved ? 'Workspace is empty.' : `${session.sessionLabel}…`}</p>
                   <div className="settings-actions">
                     <button type="button" className="sync-button" onClick={() => dispatch({ type: 'openSettings' })}>
                       Open settings
@@ -564,6 +560,11 @@ function App() {
               dispatch={dispatch}
               pagesByBackendId={pagesByBackendId}
               activePageSaveMessage={session.activePageSaveMessage}
+              renderConflict={(journal) => {
+                const record = session.conflicts.find((entry) => entry.page.id === journal.id);
+                return record ? <DraftConflictReview record={record} backendUrl={session.backendUrl}
+                  token={session.authToken} onResolve={session.resolveConflict} /> : null;
+              }}
               onSelectJournalPage={(pageId) => commands.openJournalPage(pageId, { recordJump: true })}
               onOpenDocumentLinkPicker={documentLinks.openDocumentLinkPicker}
               onFollowDocumentLink={commands.followDocumentLink}
@@ -579,6 +580,10 @@ function App() {
               pagesByBackendId={pagesByBackendId}
               activeNoteDirectoryPath={directory.activeNoteDirectoryPath}
               activePageSaveMessage={session.activePageSaveMessage}
+              conflictReview={session.conflicts.filter((entry) => entry.page.id === page.id).map((record) => (
+                <DraftConflictReview key={record.page.id} record={record} backendUrl={session.backendUrl}
+                  token={session.authToken} onResolve={session.resolveConflict} />
+              ))}
               onOpenDocumentLinkPicker={documentLinks.openDocumentLinkPicker}
               onFollowDocumentLink={commands.followDocumentLink}
               onOpenDocumentLink={commands.openDocumentLinkTarget}
@@ -680,6 +685,8 @@ function App() {
               workspaceId={session.workspaceId}
               isSyncing={session.isSyncing}
               syncMessage={session.syncMessage}
+              sessionStatus={session.sessionLabel}
+              loadTimingMessage={session.loadTimingMessage}
               onChangeBackendUrl={(value) => {
                 session.setBackendUrl(value);
                 session.setSyncMessage('');

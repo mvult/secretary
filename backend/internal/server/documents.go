@@ -100,28 +100,54 @@ func (s *Server) CreateWorkspace(ctx context.Context, req *connect.Request[secre
 }
 
 func (s *Server) ListDocuments(ctx context.Context, req *connect.Request[secretaryv1.ListDocumentsRequest]) (*connect.Response[secretaryv1.ListDocumentsResponse], error) {
+	started := time.Now()
 	userID, err := requireUserID(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	workspaceID := req.Msg.WorkspaceId
-	if workspaceID <= 0 {
+	if !validDatabaseID(workspaceID, false) || !validDatabaseID(userID, false) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("workspace_id is required"))
 	}
-
-	if err := s.ensureWorkspaceAccess(ctx, int32(workspaceID), int32(userID)); err != nil {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to begin document read"))
+	}
+	defer tx.Rollback(ctx)
+	q := s.queries.WithTx(tx)
+	if err := s.ensureWorkspaceAccessWithQueries(ctx, q, int32(workspaceID), int32(userID)); err != nil {
 		return nil, err
 	}
+	accessDone := time.Now()
 
-	directories, err := s.queries.ListDirectoriesByWorkspace(ctx, int32(workspaceID))
+	directories, err := q.ListDirectoriesByWorkspace(ctx, int32(workspaceID))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list directories"))
 	}
+	directoriesDone := time.Now()
 
-	docs, err := s.queries.ListDocumentsByWorkspace(ctx, int32(workspaceID))
+	docs, err := q.ListDocumentsByWorkspace(ctx, int32(workspaceID))
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list documents"))
+	}
+	documentsDone := time.Now()
+	rows, err := q.ListBlocksWithTodoStatusByWorkspace(ctx, int32(workspaceID))
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list workspace blocks and todo statuses"))
+	}
+	blocksDone := time.Now()
+	blocksByDocument := make(map[int32][]db.Block, len(docs))
+	blockTodoStatuses := make(map[int32]string)
+	linkedTodoCount := 0
+	for _, row := range rows {
+		blocksByDocument[row.Block.DocumentID] = append(blocksByDocument[row.Block.DocumentID], row.Block)
+		if row.Block.TodoID.Valid {
+			linkedTodoCount++
+		}
+		if row.TodoStatus.Valid {
+			blockTodoStatuses[row.Block.ID] = row.TodoStatus.String
+		}
 	}
 
 	directoryResult := make([]*secretaryv1.Directory, 0, len(directories))
@@ -131,17 +157,17 @@ func (s *Server) ListDocuments(ctx context.Context, req *connect.Request[secreta
 
 	result := make([]*secretaryv1.Document, 0, len(docs))
 	for _, doc := range docs {
-		blocks, err := s.queries.ListBlocksByDocument(ctx, doc.ID)
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to list document blocks"))
-		}
-		blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, s.queries, blocks)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, documentToProto(doc, blocks, blockTodoStatuses, nil))
+		result = append(result, documentToProto(doc, blocksByDocument[doc.ID], blockTodoStatuses, nil))
+	}
+	assembled := time.Now()
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to finish document read"))
 	}
 
+	// Four data reads plus transaction control. Total excludes Connect serialization/transfer.
+	log.Printf("list_documents workspace_id=%d documents=%d blocks=%d linked_todos=%d queries=4 access=%s directories=%s documents_read=%s blocks_todos_read=%s assemble=%s commit=%s total=%s",
+		workspaceID, len(docs), len(rows), linkedTodoCount,
+		accessDone.Sub(started), directoriesDone.Sub(accessDone), documentsDone.Sub(directoriesDone), blocksDone.Sub(documentsDone), assembled.Sub(blocksDone), time.Since(assembled), time.Since(started))
 	return connect.NewResponse(&secretaryv1.ListDocumentsResponse{Documents: result, Directories: directoryResult}), nil
 }
 
@@ -151,16 +177,33 @@ func (s *Server) GetDocument(ctx context.Context, req *connect.Request[secretary
 		return nil, err
 	}
 
-	doc, blocks, err := s.loadAuthorizedDocument(ctx, int32(req.Msg.Id), int32(userID))
+	if !validDatabaseID(req.Msg.Id, false) || !validDatabaseID(userID, false) {
+		return nil, invalidIdentity("document and actor IDs must fit positive database integers")
+	}
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to begin document read"))
+	}
+	defer tx.Rollback(ctx)
+	q := s.queries.WithTx(tx)
+	doc, err := q.GetDocument(ctx, int32(req.Msg.Id))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("document not found"))
+	}
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch document"))
+	}
+	if err := s.ensureWorkspaceAccessWithQueries(ctx, q, doc.WorkspaceID, int32(userID)); err != nil {
+		return nil, err
+	}
+	snapshot, err := s.loadDocumentSnapshot(ctx, q, doc, false)
 	if err != nil {
 		return nil, err
 	}
-	blockTodoStatuses, err := s.loadBlockTodoStatuses(ctx, s.queries, blocks)
-	if err != nil {
-		return nil, err
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to finish document read"))
 	}
-
-	return connect.NewResponse(&secretaryv1.GetDocumentResponse{Document: documentToProto(doc, blocks, blockTodoStatuses, nil)}), nil
+	return connect.NewResponse(&secretaryv1.GetDocumentResponse{Document: snapshot}), nil
 }
 
 func (s *Server) ListDocumentHistory(ctx context.Context, req *connect.Request[secretaryv1.ListDocumentHistoryRequest]) (*connect.Response[secretaryv1.ListDocumentHistoryResponse], error) {
@@ -338,6 +381,9 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	if err != nil {
 		return nil, err
 	}
+	if req.Msg.ProtocolVersion != 0 || req.Msg.MutationId != "" || req.Msg.ExpectedRevision != nil || req.Msg.GetDocument().GetRevision() != 0 {
+		return nil, persistenceProtocolNotEnabled()
+	}
 	if req.Msg.Document == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("document is required"))
 	}
@@ -451,6 +497,19 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		}
 	}
 
+	protoDoc, err := s.persistDocumentBlocks(ctx, tx, savedDoc, incoming, userID, false)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit document transaction"))
+	}
+	return connect.NewResponse(&secretaryv1.SaveDocumentResponse{Document: protoDoc}), nil
+}
+
+// The caller owns the transaction, including revision advancement and receipts.
+func (s *Server) persistDocumentBlocks(ctx context.Context, tx pgx.Tx, savedDoc db.Document, incoming *secretaryv1.Document, userID int64, versioned bool) (*secretaryv1.Document, error) {
+	qtx := s.queries.WithTx(tx)
 	existingBlocks, err := qtx.ListBlocksByDocument(ctx, savedDoc.ID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch existing blocks"))
@@ -458,6 +517,14 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	existingByID := make(map[int32]db.Block, len(existingBlocks))
 	for _, block := range existingBlocks {
 		existingByID[block.ID] = block
+	}
+	if versioned {
+		if existingBlocks == nil {
+			existingBlocks = []db.Block{} // Empty persisted tree, not structural-only validation.
+		}
+		if err := validateSnapshotIdentities(incoming, existingBlocks); err != nil {
+			return nil, err
+		}
 	}
 
 	tempSortOrder := int32(-1)
@@ -536,6 +603,11 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 					TodoID:        params.TodoID,
 				})
 			}
+		} else if versioned {
+			savedBlock, err = qtx.CreateBlockWithClientKey(ctx, db.CreateBlockWithClientKeyParams{
+				DocumentID: params.DocumentID, ParentBlockID: params.ParentBlockID,
+				SortOrder: params.SortOrder, Text: params.Text, TodoID: params.TodoID, ClientKey: blockMsg.ClientKey,
+			})
 		} else {
 			savedBlock, err = qtx.CreateBlock(ctx, params)
 		}
@@ -564,7 +636,13 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	}
 
 	for index, record := range savedRecords {
-		updatedBlock, err := s.reconcileBlockTodo(ctx, qtx, savedDoc, record.block, record.msg, userID)
+		var previous *db.Block
+		if versioned {
+			if old, ok := existingByID[record.block.ID]; ok {
+				previous = &old
+			}
+		}
+		updatedBlock, err := s.reconcileBlockTodo(ctx, qtx, savedDoc, record.block, record.msg, userID, previous)
 		if err != nil {
 			var connectErr *connect.Error
 			if errors.As(err, &connectErr) {
@@ -598,24 +676,25 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 		return nil, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit document transaction"))
-	}
-
 	clientKey := incoming.ClientKey
 	if clientKey == "" {
 		clientKey = defaultDocumentClientKey(int64(finalDoc.ID))
 	}
 	protoDoc := documentToProto(finalDoc, finalBlocks, blockTodoStatuses, clientKeyByServerID)
 	protoDoc.ClientKey = clientKey
-
-	return connect.NewResponse(&secretaryv1.SaveDocumentResponse{Document: protoDoc}), nil
+	if versioned {
+		protoDoc = versionedDocumentToProto(finalDoc, finalBlocks, blockTodoStatuses)
+	}
+	return protoDoc, nil
 }
 
 func (s *Server) DeleteDocument(ctx context.Context, req *connect.Request[secretaryv1.DeleteDocumentRequest]) (*connect.Response[secretaryv1.DeleteDocumentResponse], error) {
 	userID, err := requireUserID(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if req.Msg.ProtocolVersion != 0 || req.Msg.MutationId != "" || req.Msg.ExpectedRevision != nil || req.Msg.WorkspaceId != 0 {
+		return nil, persistenceProtocolNotEnabled()
 	}
 	if req.Msg.Id <= 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
@@ -1113,7 +1192,7 @@ func removedBlocksByID(existingBlocks []db.Block, keptIDs []int32) []db.Block {
 	return removed
 }
 
-func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db.Document, block db.Block, msg *secretaryv1.Block, userID int64) (db.Block, error) {
+func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db.Document, block db.Block, msg *secretaryv1.Block, userID int64, previous *db.Block) (db.Block, error) {
 	status := strings.ToLower(strings.TrimSpace(msg.TodoStatus))
 	if status == "" {
 		if block.TodoID.Valid {
@@ -1138,6 +1217,30 @@ func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db
 	statusValue := pgtype.Text{String: status, Valid: true}
 
 	if block.TodoID.Valid {
+		// Snapshot edits own inline text/status, not standalone TODO metadata.
+		if previous != nil {
+			current, err := qtx.GetTodo(ctx, block.TodoID.Int32)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return db.Block{}, persistenceError(connect.CodeInvalidArgument, secretaryv1.PersistenceErrorReason_PERSISTENCE_ERROR_REASON_INVALID_TREE, "snapshot both removes and updates the same linked TODO", nil)
+			}
+			if err != nil {
+				return db.Block{}, err
+			}
+			if previous.Text == msg.Text {
+				name = current.Name
+			}
+			if name == current.Name && status == current.Status.String {
+				return block, nil
+			}
+			updated, err := qtx.UpdateInlineTodo(ctx, db.UpdateInlineTodoParams{ID: current.ID, Name: name, Status: statusValue})
+			if err != nil {
+				return db.Block{}, err
+			}
+			if err := createTodoHistoryEntry(ctx, qtx, updated.ID, userID, "update", updated.Name, updated.Desc, updated.Status, updated.UserID, updated.CreatedAtRecordingID, updated.UpdatedAtRecordingID); err != nil {
+				return db.Block{}, err
+			}
+			return block, nil
+		}
 		todo, err := qtx.UpdateCanonicalTodoForBlock(ctx, db.UpdateCanonicalTodoForBlockParams{
 			ID:                block.TodoID.Int32,
 			Name:              name,

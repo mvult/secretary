@@ -83,6 +83,16 @@ export function normalizePageForSave(page: OutlinePage): OutlinePage {
     childrenByParent.set(node.parentId, siblings);
   }
 
+  // The wire contract requires parents before children, not regrouping every
+  // subtree. Preserve an already-valid visible order: regrouping here moves rows
+  // only when an autosave response arrives, underneath the active editor.
+  const preceding = new Set<string>();
+  if (clones.every((node) => {
+    if (preceding.has(node.id) || (node.parentId && !preceding.has(node.parentId))) return false;
+    preceding.add(node.id);
+    return true;
+  })) return { ...page, nodes: clones };
+
   const ordered: typeof clones = [];
   const emitted = new Set<string>();
 

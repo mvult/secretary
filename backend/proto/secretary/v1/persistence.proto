@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package secretary.v1;
+
+option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1";
+
+enum PersistenceErrorReason {
+  PERSISTENCE_ERROR_REASON_UNSPECIFIED = 0;
+  PERSISTENCE_ERROR_REASON_REVISION_CONFLICT = 1;
+  PERSISTENCE_ERROR_REASON_DOCUMENT_DELETED = 2;
+  PERSISTENCE_ERROR_REASON_CREATION_KEY_EXISTS = 3;
+  PERSISTENCE_ERROR_REASON_MUTATION_ID_REUSED = 4;
+  PERSISTENCE_ERROR_REASON_INVALID_IDENTITY = 5;
+  PERSISTENCE_ERROR_REASON_INVALID_TREE = 6;
+  PERSISTENCE_ERROR_REASON_INVALID_DESTINATION = 7;
+  PERSISTENCE_ERROR_REASON_PROTOCOL_UPGRADE_REQUIRED = 8;
+}
+
+// Carried as a Connect error detail. Resource information is only included
+// after authorization; clients must branch on code/reason rather than text.
+message PersistenceError {
+  PersistenceErrorReason reason = 1;
+  int64 document_id = 2;
+  optional int64 current_revision = 3;
+}
+
+message DocumentRevision {
+  int64 document_id = 1;
+  int64 revision = 2;
+}
+
+// Invalidate/refetch these documents; never attach a revision to a stale body.
+message DocumentMutationEffects {
+  repeated DocumentRevision updated_documents = 1;
+  repeated int64 deleted_document_ids = 2;
+}

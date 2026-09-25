@@ -3,7 +3,7 @@
 /* eslint-disable */
 // @ts-nocheck
 
-import { CreateDirectoryRequest, CreateDirectoryResponse, DeleteDirectoryRequest, DeleteDirectoryResponse, DeleteDocumentRequest, DeleteDocumentResponse, GetDocumentRequest, GetDocumentResponse, ListDocumentsRequest, ListDocumentsResponse, SaveDocumentRequest, SaveDocumentResponse, UpdateDirectoryRequest, UpdateDirectoryResponse } from "./documents_pb.js";
+import { CreateDirectoryRequest, CreateDirectoryResponse, DeleteDirectoryRequest, DeleteDirectoryResponse, DeleteDocumentRequest, DeleteDocumentResponse, GetDocumentHistoryEntryRequest, GetDocumentHistoryEntryResponse, GetDocumentRequest, GetDocumentResponse, ListDocumentHistoryRequest, ListDocumentHistoryResponse, ListDocumentsRequest, ListDocumentsResponse, SaveDocumentRequest, SaveDocumentResponse, UpdateDirectoryRequest, UpdateDirectoryResponse } from "./documents_pb.js";
 import { MethodKind } from "@bufbuild/protobuf";
 
 /**
@@ -46,6 +46,24 @@ export const DocumentsService = {
       name: "DeleteDocument",
       I: DeleteDocumentRequest,
       O: DeleteDocumentResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc secretary.v1.DocumentsService.ListDocumentHistory
+     */
+    listDocumentHistory: {
+      name: "ListDocumentHistory",
+      I: ListDocumentHistoryRequest,
+      O: ListDocumentHistoryResponse,
+      kind: MethodKind.Unary,
+    },
+    /**
+     * @generated from rpc secretary.v1.DocumentsService.GetDocumentHistoryEntry
+     */
+    getDocumentHistoryEntry: {
+      name: "GetDocumentHistoryEntry",
+      I: GetDocumentHistoryEntryRequest,
+      O: GetDocumentHistoryEntryResponse,
       kind: MethodKind.Unary,
     },
     /**

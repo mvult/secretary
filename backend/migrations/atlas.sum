@@ -1,4 +1,4 @@
-h1:EzW07N33lf1Fl+GDmvgi7HUkBoY67MYIm0Pk+ME9pGU=
+h1:xZjihXIYsRkhhbjYG2eCAJbuEJeUDAPLWNYMTca3gBU=
 001_baseline.sql h1:NpRqek3jkdlw0PqgobS3KI+Bjv6ABCSS2gi6MuY+9Hc=
 002_add_todo_history.sql h1:/ZUkDcKj7AEHv7znBs19CzFP2U+OUIlO0TCGKwMvbJ8=
 20260126052726_test_change.sql h1:1TzEPbEbkfUe7tIxkMR2yN9IvECpxoq/bpNYZ+mNqcY=
@@ -16,3 +16,4 @@ h1:EzW07N33lf1Fl+GDmvgi7HUkBoY67MYIm0Pk+ME9pGU=
 20260512120500_drop_redundant_activity_type_index.sql h1:sCOavWlOp2Ywt1spyol7xvaK0Cq6QGiGgwDclzxF19Q=
 20260615120000_add_whatsapp_ingest.sql h1:hrKFdupYhUaW7eQNh6mFeKevPKsC18FD1kgRAkIx6bc=
 20260708120000_rework_todo_planning.sql h1:FFX9MB1J+6PsRDlmdvRmPHAYvjNZnsvizo5cWh6txSo=
+20260924100000_add_persistence_foundation.sql h1:wI/u7ngdV+XdDZ/iDEJMGG7Mtw9CLKyp+8XCfb4pfQk=

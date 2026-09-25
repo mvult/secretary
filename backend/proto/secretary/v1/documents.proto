@@ -4,6 +4,8 @@ package secretary.v1;
 
 option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1";
 
+import "secretary/v1/persistence.proto";
+
 message Block {
   int64 id = 1;
   string client_key = 2;
@@ -29,6 +31,9 @@ message Document {
   string updated_at = 8;
   repeated Block blocks = 9;
   int64 directory_id = 10;
+  // Positive only for a coherent snapshot served by the versioned protocol.
+  // Zero means legacy/unversioned, never a usable update baseline.
+  int64 revision = 11;
 }
 
 message Directory {
@@ -60,17 +65,37 @@ message GetDocumentResponse {
 
 message SaveDocumentRequest {
   Document document = 1;
+  uint32 protocol_version = 2;
+  string mutation_id = 3;
+  // Presence is required by protocol v1; zero is the create precondition.
+  optional int64 expected_revision = 4;
+}
+
+enum DocumentSaveOutcome {
+  DOCUMENT_SAVE_OUTCOME_UNSPECIFIED = 0;
+  DOCUMENT_SAVE_OUTCOME_APPLIED = 1;
+  DOCUMENT_SAVE_OUTCOME_EXISTING_JOURNAL = 2;
 }
 
 message SaveDocumentResponse {
   Document document = 1;
+  string mutation_id = 2;
+  DocumentSaveOutcome outcome = 3;
+  DocumentMutationEffects effects = 4;
 }
 
 message DeleteDocumentRequest {
   int64 id = 1;
+  int64 workspace_id = 2;
+  uint32 protocol_version = 3;
+  string mutation_id = 4;
+  optional int64 expected_revision = 5;
 }
 
-message DeleteDocumentResponse {}
+message DeleteDocumentResponse {
+  string mutation_id = 1;
+  DocumentMutationEffects effects = 2;
+}
 
 message DocumentHistoryEntry {
   int64 id = 1;

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { OutlineEditor } from '../outline/OutlineEditor';
 import { OutlineText } from '../outline/OutlineText';
 import { getMarkdownHeadingLevel } from '../outline/OutlineText';
@@ -14,6 +14,7 @@ interface JournalsViewProps {
   dispatch: React.Dispatch<OutlineAction>;
   pagesByBackendId: Map<number, OutlinePage>;
   activePageSaveMessage: string;
+  renderConflict?: (page: OutlinePage) => ReactNode;
   onSelectJournalPage: (pageId: string) => void;
   onOpenDocumentLinkPicker: () => void;
   onFollowDocumentLink: () => void;
@@ -27,6 +28,7 @@ export function JournalsView({
   dispatch,
   pagesByBackendId,
   activePageSaveMessage,
+  renderConflict,
   onSelectJournalPage,
   onOpenDocumentLinkPicker,
   onFollowDocumentLink,
@@ -63,12 +65,14 @@ export function JournalsView({
                 <div className="journal-card-heading">
                   <h3 className="page-title">{getPageDateLabel(journal)}</h3>
                   {isActive && activePageSaveMessage ? (
-                    <span className="page-kind">{activePageSaveMessage}</span>
+                    <span className="page-kind page-save-status" title={activePageSaveMessage}>{activePageSaveMessage}</span>
                   ) : journalPage?.id === journal.id ? (
-                    <span className="page-kind">Today</span>
+                    <span className="page-kind page-save-status" title="Today">Today</span>
                   ) : null}
                 </div>
               </button>
+
+              {renderConflict?.(journal)}
 
               {isActive ? (
                 <OutlineEditor

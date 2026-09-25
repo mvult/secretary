@@ -523,6 +523,7 @@ button {
 }
 
 .page-title-input {
+  min-width: 0;
   width: 100%;
   margin: 0;
   padding: 0;
@@ -542,6 +543,17 @@ button {
 
 .page-kind {
   white-space: nowrap;
+}
+
+.page-save-status {
+  flex: 0 0 auto;
+  width: 24ch;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
 }
 
 .outline-region {
@@ -1386,7 +1398,25 @@ button {
 .settings-card {
   padding: 20px;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 14px;
+}
+
+.settings-shell {
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-card .settings-message {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.settings-card .settings-message code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .settings-label {
@@ -1409,6 +1439,7 @@ button {
 
 .settings-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 14px;
 }
@@ -1429,6 +1460,8 @@ button {
 .settings-toggle-copy,
 .settings-hotkeys {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
 }
 

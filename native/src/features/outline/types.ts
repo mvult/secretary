@@ -7,6 +7,8 @@ export type WorkspaceView = 'journals' | 'note' | 'search' | 'todos' | 'settings
 export interface OutlineNode {
   id: string;
   backendId?: number;
+  // Echoed by SaveDocument to map newly allocated server IDs without using position.
+  clientKey?: string;
   parentId: string | null;
   text: string;
   todoStatus?: BackendTodoStatus | null;

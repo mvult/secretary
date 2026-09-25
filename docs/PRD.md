@@ -6,6 +6,8 @@ Secretary needs a React Native mobile app for reading and editing notes, journal
 
 The mobile app should be touch-first and simpler than the desktop/native app. It should preserve the backend data model, especially block-based documents, but should not port keyboard-first or Vim-oriented workflows.
 
+The shared architecture and persistence foundation is specified in [Architecture and Persistence Reliability PRD](architecture-reliability-prd.md). That work covers session/draft recovery, revision-checked saves, shared backend mutation services, generated API clients, and document-scoped state. It does not implement the mobile app itself.
+
 ## Goals
 
 - Read, create, and edit notes.
@@ -117,7 +119,7 @@ Save behavior:
 - Keep an editable local snapshot.
 - Debounce online saves.
 - Save through the existing `SaveDocument` endpoint.
-- Replace local temporary IDs/client keys with server-returned identities after save.
+- Preserve stable local client keys and attach server-returned identities/revisions after save; do not infer block identity from array position.
 - Keep the local draft if save fails.
 - Show simple save states: saving, saved, failed, unsaved changes.
 
@@ -254,17 +256,17 @@ The existing native app has useful TypeScript logic that should be reused or cop
 
 Useful existing sources:
 
-- `native/src/lib/backend.ts`: manual JSON wrappers for login, documents, directories, TODOs, and AI.
+- `native/src/lib/backend.ts`: legacy manual JSON wrappers for reference while migrating to the shared generated API package.
 - `native/src/features/outline/remote.ts`: backend document to outline-page mapping and reverse mapping.
 - `native/src/features/outline/sampleData.ts`: journal date availability rules.
 - `native/src/features/ai/useAIThreads.ts`: current thread creation and send flow.
 
-Recommendation:
+Implementation direction, superseding the earlier copy-first approach:
 
-- Start by lifting/copying the needed API and mapping logic into `mobile/src/lib`.
-- Later, consider extracting a shared TypeScript package if web/native/mobile need to share more code.
-
-Avoid making generated Connect clients the first mobile dependency unless the existing generated clients are brought fully in sync with the backend AI/document surface.
+- Complete the shared generated TypeScript API package described in `docs/architecture-reliability-prd.md` and consume it from mobile rather than copying native handwritten wire wrappers.
+- Bring generated clients into sync with the full backend AI/document surface and align runtime/generator versions as part of that foundation work.
+- Reuse platform-independent document identity, save-protocol, and journal-date logic where suitable. Keep mobile UI and its MMKV storage adapter platform-specific.
+- Follow the shared revision/idempotency contract and retain drafts on manual conflicts. Mobile implementation must account for the foundation's API rollout rather than introducing another unversioned writer.
 
 ## Backend Context
 
