@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -453,7 +454,14 @@ func (s *Server) CreateTodo(ctx context.Context, req *connect.Request[secretaryv
 }
 
 func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv1.UpdateTodoRequest]) (*connect.Response[secretaryv1.UpdateTodoResponse], error) {
+	userID, err := requireUserID(ctx)
+	if err != nil {
+		return nil, err
+	}
 	msg := req.Msg
+	if !validDatabaseID(msg.Id, false) {
+		return nil, invalidIdentity("todo ID must fit a positive database integer")
+	}
 	statusStr := mapStatusToString(msg.Status)
 	if err := validateTodoInput(msg.Name, statusStr); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
@@ -489,6 +497,10 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 		DeadlineDate: deadline,
 		GoalID:       pgtype.Int4{Int32: int32(msg.GoalId), Valid: msg.GoalId != 0},
 	}
+	deps, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{todo: int32(msg.Id)})
+	if err != nil {
+		return nil, err
+	}
 	if msg.UpdatedAtRecordingId != 0 {
 		arg.UpdatedAtRecordingID = pgtype.Int4{Int32: int32(msg.UpdatedAtRecordingId), Valid: true}
 	}
@@ -501,7 +513,7 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update todo"))
 	}
 
-	actorID := msg.UserId // Defaulting to owner
+	actorID := userID
 	historyArg := db.CreateTodoHistoryParams{
 		TodoID:               todoRow.ID,
 		ActorUserID:          pgtype.Int4{Int32: int32(actorID), Valid: true},
@@ -519,6 +531,9 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update todo history"))
 	}
 
+	if _, err := advanceMutationDocuments(ctx, qtx, deps.documents, 0); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo"))
 	}
@@ -530,6 +545,9 @@ func (s *Server) UpdateTodo(ctx context.Context, req *connect.Request[secretaryv
 
 func (s *Server) DeleteTodo(ctx context.Context, req *connect.Request[secretaryv1.DeleteTodoRequest]) (*connect.Response[secretaryv1.DeleteTodoResponse], error) {
 	id := req.Msg.Id
+	if !validDatabaseID(id, false) {
+		return nil, invalidIdentity("todo ID must fit a positive database integer")
+	}
 
 	userID, ok := ctx.Value(userIdKey).(int64)
 	if !ok {
@@ -552,6 +570,10 @@ func (s *Server) DeleteTodo(ctx context.Context, req *connect.Request[secretaryv
 	qtx := s.queries.WithTx(tx)
 
 	// Fetch existing todo to record history
+	deps, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{todo: int32(id)})
+	if err != nil {
+		return nil, err
+	}
 	todoRow, err := qtx.GetTodo(ctx, int32(id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("todo not found"))
@@ -560,7 +582,7 @@ func (s *Server) DeleteTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo"))
 	}
 
-	actorID := todoRow.UserID.Int32 // Defaulting to owner
+	actorID := int32(userID)
 	historyArg := db.CreateTodoHistoryParams{
 		TodoID:               todoRow.ID,
 		ActorUserID:          pgtype.Int4{Int32: actorID, Valid: true},
@@ -583,6 +605,9 @@ func (s *Server) DeleteTodo(ctx context.Context, req *connect.Request[secretaryv
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete todo"))
 	}
 
+	if _, err := advanceMutationDocuments(ctx, qtx, deps.documents, 0); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit delete"))
 	}
@@ -696,11 +721,6 @@ func (s *Server) MoveDocumentTodosToRepository(ctx context.Context, req *connect
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("document_id is required"))
 	}
 
-	doc, blocks, err := s.loadAuthorizedDocument(ctx, int32(req.Msg.DocumentId), int32(userID))
-	if err != nil {
-		return nil, err
-	}
-
 	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to begin todo move transaction"))
@@ -708,6 +728,14 @@ func (s *Server) MoveDocumentTodosToRepository(ctx context.Context, req *connect
 	defer tx.Rollback(ctx)
 	qtx := s.queries.WithTx(tx)
 
+	deps, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{document: int32(req.Msg.DocumentId)})
+	if err != nil {
+		return nil, err
+	}
+	doc, blocks, err := reloadDocumentAndBlocks(ctx, qtx, int32(req.Msg.DocumentId))
+	if err != nil {
+		return nil, err
+	}
 	var movedCount int64
 	for _, block := range blocks {
 		if !block.TodoID.Valid {
@@ -761,6 +789,9 @@ func (s *Server) MoveDocumentTodosToRepository(ctx context.Context, req *connect
 		}
 	}
 
+	if _, err := advanceMutationDocuments(ctx, qtx, deps.documents, 0); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to commit todo move"))
 	}
@@ -792,6 +823,10 @@ func (s *Server) PullOnDeckTodosToToday(ctx context.Context, req *connect.Reques
 	now := time.Now()
 	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	journalDate := pgtype.Date{Time: today, Valid: true}
+	deps, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{workspace: workspaceID, journalDate: journalDate, pullOwner: int32(userID)})
+	if err != nil {
+		return nil, err
+	}
 	journal, err := findWorkspaceJournalByDate(ctx, qtx, workspaceID, journalDate)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to look up today's journal"))
@@ -825,13 +860,18 @@ func (s *Server) PullOnDeckTodosToToday(ctx context.Context, req *connect.Reques
 	}
 	nextSortOrder := int32(1)
 	for _, block := range blocks {
-		if !block.ParentBlockID.Valid && block.SortOrder >= nextSortOrder {
+		if block.SortOrder >= nextSortOrder {
 			nextSortOrder = block.SortOrder + 1
 		}
 	}
 
 	var pulledCount int64
 	for _, todo := range onDeckTodos {
+		// Only process the discovered, locked set. Any newly eligible TODO
+		// belongs to the next pull.
+		if !slices.Contains(deps.todos, todo.ID) {
+			continue
+		}
 		block, err := qtx.CreateBlock(ctx, db.CreateBlockParams{
 			DocumentID:    journal.ID,
 			ParentBlockID: pgtype.Int4{},
@@ -849,9 +889,6 @@ func (s *Server) PullOnDeckTodosToToday(ctx context.Context, req *connect.Reques
 			CurrentDocumentID: pgtype.Int4{Int32: journal.ID, Valid: true},
 			CurrentBlockID:    pgtype.Int4{Int32: block.ID, Valid: true},
 		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
-		}
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInternal, errors.New("failed to move todo into journal"))
 		}
@@ -871,6 +908,9 @@ func (s *Server) PullOnDeckTodosToToday(ctx context.Context, req *connect.Reques
 			return nil, err
 		}
 		if err := maybeCreateDocumentHistorySnapshot(ctx, qtx, *journal, finalBlocks, blockTodoStatuses); err != nil {
+			return nil, err
+		}
+		if _, err := advanceMutationDocuments(ctx, qtx, deps.documents, 0); err != nil {
 			return nil, err
 		}
 	}

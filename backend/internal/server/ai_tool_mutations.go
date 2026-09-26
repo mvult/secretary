@@ -6,7 +6,6 @@ import (
 	"sort"
 	"strings"
 
-	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,6 +21,10 @@ type aiToolMutationEnv struct {
 }
 
 func (e *aiToolMutationEnv) createDocument(title string, content string) (int64, error) {
+	actor, err := requireUserID(e.ctx)
+	if err != nil {
+		return 0, err
+	}
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return 0, errors.New("title is required")
@@ -29,7 +32,7 @@ func (e *aiToolMutationEnv) createDocument(title string, content string) (int64,
 	if strings.EqualFold(title, lockedSystemDocument) {
 		return 0, errors.New("the System document is locked")
 	}
-	directoryID, err := e.ensureAIDirectory()
+	directoryID, err := e.ensureAIDirectory(int32(actor))
 	if err != nil {
 		return 0, err
 	}
@@ -41,11 +44,12 @@ func (e *aiToolMutationEnv) createDocument(title string, content string) (int64,
 		DirectoryId: int64(directoryID),
 		Blocks:      blocksFromPlainText(content, 0),
 	}
-	resp, err := e.server.SaveDocument(e.ctx, connect.NewRequest(&secretaryv1.SaveDocumentRequest{Document: doc}))
+	initialRevision := int64(0)
+	resp, err := e.server.saveDocumentMutation(e.ctx, actor, &secretaryv1.SaveDocumentRequest{Document: doc, ProtocolVersion: 1, MutationId: uuid.NewString(), ExpectedRevision: &initialRevision})
 	if err != nil {
 		return 0, err
 	}
-	return resp.Msg.Document.Id, nil
+	return resp.Document.Id, nil
 }
 
 func (e *aiToolMutationEnv) insertBlock(documentID int64, parentBlockID int64, afterBlockID int64, text string) (int64, int64, error) {
@@ -127,6 +131,17 @@ func (e *aiToolMutationEnv) insertDocumentBlock(doc db.Document, parentBlockID i
 	}
 	defer tx.Rollback(e.ctx)
 	qtx := e.server.queries.WithTx(tx)
+	deps, err := e.server.lockPersistenceWriter(e.ctx, qtx, e.userID, persistenceWriterScope{document: doc.ID})
+	if err != nil {
+		return db.Block{}, err
+	}
+	doc, err = qtx.GetDocument(e.ctx, doc.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if isLockedSystemDocument(doc) {
+		return db.Block{}, errors.New("the System document is locked")
+	}
 	blocks, err := qtx.ListBlocksByDocument(e.ctx, doc.ID)
 	if err != nil {
 		return db.Block{}, err
@@ -136,16 +151,22 @@ func (e *aiToolMutationEnv) insertDocumentBlock(doc db.Document, parentBlockID i
 	if err != nil {
 		return db.Block{}, err
 	}
-	siblingIDs, insertIndex, err := insertionPosition(parentID, afterBlockID, blockByID, 0)
+	_, _, err = insertionPosition(parentID, afterBlockID, blockByID, 0)
 	if err != nil {
 		return db.Block{}, err
 	}
-	created, err := qtx.CreateBlock(e.ctx, db.CreateBlockParams{DocumentID: doc.ID, ParentBlockID: parentID, SortOrder: 1, Text: text})
+	nextOrder := int32(1)
+	for _, block := range blocks {
+		if block.SortOrder >= nextOrder {
+			nextOrder = block.SortOrder + 1
+		}
+	}
+	created, err := qtx.CreateBlock(e.ctx, db.CreateBlockParams{DocumentID: doc.ID, ParentBlockID: parentID, SortOrder: nextOrder, Text: text})
 	if err != nil {
 		return db.Block{}, err
 	}
-	ordered := insertInt32At(siblingIDs, insertIndex, created.ID)
-	created, err = e.reindexSiblings(qtx, blockByID, doc, parentID, ordered, created.ID)
+	ordered := placeDocumentBlock(blocks, created, parentID, int32(afterBlockID))
+	created, err = e.persistBlockOrder(qtx, ordered, created.ID)
 	if err != nil {
 		return db.Block{}, err
 	}
@@ -163,6 +184,9 @@ func (e *aiToolMutationEnv) insertDocumentBlock(doc db.Document, parentBlockID i
 	if err := maybeCreateDocumentHistorySnapshot(e.ctx, qtx, finalDoc, finalBlocks, statuses); err != nil {
 		return db.Block{}, err
 	}
+	if _, err := advanceMutationDocuments(e.ctx, qtx, deps.documents, 0); err != nil {
+		return db.Block{}, err
+	}
 	if err := tx.Commit(e.ctx); err != nil {
 		return db.Block{}, err
 	}
@@ -176,6 +200,17 @@ func (e *aiToolMutationEnv) moveDocumentBlock(block db.Block, doc db.Document, p
 	}
 	defer tx.Rollback(e.ctx)
 	qtx := e.server.queries.WithTx(tx)
+	deps, err := e.server.lockPersistenceWriter(e.ctx, qtx, e.userID, persistenceWriterScope{document: doc.ID})
+	if err != nil {
+		return db.Block{}, err
+	}
+	doc, err = qtx.GetDocument(e.ctx, doc.ID)
+	if err != nil {
+		return db.Block{}, err
+	}
+	if isLockedSystemDocument(doc) {
+		return db.Block{}, errors.New("the System document is locked")
+	}
 	blocks, err := qtx.ListBlocksByDocument(e.ctx, doc.ID)
 	if err != nil {
 		return db.Block{}, err
@@ -192,21 +227,14 @@ func (e *aiToolMutationEnv) moveDocumentBlock(block db.Block, doc db.Document, p
 	if parentID.Valid && (parentID.Int32 == current.ID || isDescendantBlock(current.ID, parentID.Int32, blockByID)) {
 		return db.Block{}, errors.New("cannot move a block into itself or its descendants")
 	}
-	oldParentID := current.ParentBlockID
-	targetSiblingIDs, insertIndex, err := insertionPosition(parentID, afterBlockID, blockByID, current.ID)
+	_, _, err = insertionPosition(parentID, afterBlockID, blockByID, current.ID)
 	if err != nil {
 		return db.Block{}, err
 	}
-	orderedTarget := insertInt32At(targetSiblingIDs, insertIndex, current.ID)
-	moved, err := e.reindexSiblings(qtx, blockByID, doc, parentID, orderedTarget, current.ID)
+	orderedTarget := placeDocumentBlock(blocks, current, parentID, int32(afterBlockID))
+	moved, err := e.persistBlockOrder(qtx, orderedTarget, current.ID)
 	if err != nil {
 		return db.Block{}, err
-	}
-	if !sameParent(oldParentID, parentID) {
-		remaining := siblingIDsForParent(oldParentID, blockByID, current.ID)
-		if _, err := e.reindexSiblings(qtx, blockByID, doc, oldParentID, remaining, 0); err != nil {
-			return db.Block{}, err
-		}
 	}
 	finalDoc, finalBlocks, err := reloadDocumentAndBlocks(e.ctx, qtx, doc.ID)
 	if err != nil {
@@ -217,6 +245,9 @@ func (e *aiToolMutationEnv) moveDocumentBlock(block db.Block, doc db.Document, p
 		return db.Block{}, err
 	}
 	if err := maybeCreateDocumentHistorySnapshot(e.ctx, qtx, finalDoc, finalBlocks, statuses); err != nil {
+		return db.Block{}, err
+	}
+	if _, err := advanceMutationDocuments(e.ctx, qtx, deps.documents, 0); err != nil {
 		return db.Block{}, err
 	}
 	if err := tx.Commit(e.ctx); err != nil {
@@ -267,7 +298,12 @@ func siblingIDsForParent(parentID pgtype.Int4, blockByID map[int32]db.Block, exc
 		}
 		siblings = append(siblings, block)
 	}
-	sort.SliceStable(siblings, func(i, j int) bool { return siblings[i].SortOrder < siblings[j].SortOrder })
+	sort.SliceStable(siblings, func(i, j int) bool {
+		if siblings[i].SortOrder == siblings[j].SortOrder {
+			return siblings[i].ID < siblings[j].ID
+		}
+		return siblings[i].SortOrder < siblings[j].SortOrder
+	})
 	result := make([]int32, 0, len(siblings))
 	for _, sibling := range siblings {
 		result = append(result, sibling.ID)
@@ -275,22 +311,56 @@ func siblingIDsForParent(parentID pgtype.Int4, blockByID map[int32]db.Block, exc
 	return result
 }
 
-func (e *aiToolMutationEnv) reindexSiblings(qtx *db.Queries, blockByID map[int32]db.Block, doc db.Document, parentID pgtype.Int4, orderedIDs []int32, targetBlockID int32) (db.Block, error) {
+// Keep the database's global visible order. Sibling-only numbering collides
+// with child rows and can return a child before its parent on the next read.
+func placeDocumentBlock(blocks []db.Block, target db.Block, parentID pgtype.Int4, afterID int32) []db.Block {
+	byID := blocksByID(blocks)
+	remaining := make([]db.Block, 0, len(blocks))
+	moving := []db.Block{}
+	for _, block := range blocks {
+		if block.ID == target.ID || isDescendantBlock(target.ID, block.ID, byID) {
+			if block.ID == target.ID {
+				block.ParentBlockID = parentID
+			}
+			moving = append(moving, block)
+		} else {
+			remaining = append(remaining, block)
+		}
+	}
+	if len(moving) == 0 {
+		target.ParentBlockID = parentID
+		moving = append(moving, target)
+	}
+	index := 0
+	for i, block := range remaining {
+		if afterID != 0 && (block.ID == afterID || isDescendantBlock(afterID, block.ID, byID)) {
+			index = i + 1
+		} else if afterID == 0 && parentID.Valid && block.ID == parentID.Int32 {
+			index = i + 1
+		}
+	}
+	result := append([]db.Block{}, remaining[:index]...)
+	result = append(result, moving...)
+	return append(result, remaining[index:]...)
+}
+
+func (e *aiToolMutationEnv) persistBlockOrder(qtx *db.Queries, ordered []db.Block, targetBlockID int32) (db.Block, error) {
 	var target db.Block
-	for index, blockID := range orderedIDs {
-		block := blockByID[blockID]
-		updated, err := qtx.UpdateBlock(e.ctx, db.UpdateBlockParams{ID: block.ID, DocumentID: block.DocumentID, ParentBlockID: parentID, SortOrder: int32(index + 1), Text: block.Text, TodoID: block.TodoID})
+	// Vacate positive positions before reordering: the sibling uniqueness
+	// constraint is immediate, so swapping two positions in place can fail.
+	for index, block := range ordered {
+		_, err := qtx.UpdateBlock(e.ctx, db.UpdateBlockParams{ID: block.ID, DocumentID: block.DocumentID, ParentBlockID: block.ParentBlockID, SortOrder: -int32(index + 1), Text: block.Text, TodoID: block.TodoID})
 		if err != nil {
 			return db.Block{}, err
 		}
-		blockByID[blockID] = updated
-		if targetBlockID == 0 || updated.ID == targetBlockID {
-			target = updated
+	}
+	for index, block := range ordered {
+		updated, err := qtx.UpdateBlock(e.ctx, db.UpdateBlockParams{ID: block.ID, DocumentID: block.DocumentID, ParentBlockID: block.ParentBlockID, SortOrder: int32(index + 1), Text: block.Text, TodoID: block.TodoID})
+		if err != nil {
+			return db.Block{}, err
 		}
-		if block.ParentBlockID != parentID || block.SortOrder != int32(index+1) {
-			if err := reconcileBlockDocumentLinks(e.ctx, qtx, doc, updated); err != nil {
-				return db.Block{}, err
-			}
+		if updated.ID == targetBlockID {
+			target = updated
 		}
 	}
 	return target, nil
@@ -318,7 +388,7 @@ func blocksByID(blocks []db.Block) map[int32]db.Block {
 
 func isDescendantBlock(blockID int32, candidateParentID int32, blockByID map[int32]db.Block) bool {
 	currentID := candidateParentID
-	for currentID != 0 {
+	for remaining := len(blockByID); currentID != 0 && remaining > 0; remaining-- {
 		if currentID == blockID {
 			return true
 		}
@@ -331,20 +401,6 @@ func isDescendantBlock(blockID int32, candidateParentID int32, blockByID map[int
 	return false
 }
 
-func insertInt32At(values []int32, index int, value int32) []int32 {
-	if index < 0 {
-		index = 0
-	}
-	if index > len(values) {
-		index = len(values)
-	}
-	result := make([]int32, 0, len(values)+1)
-	result = append(result, values[:index]...)
-	result = append(result, value)
-	result = append(result, values[index:]...)
-	return result
-}
-
 func sameParent(a pgtype.Int4, b pgtype.Int4) bool {
 	if a.Valid != b.Valid {
 		return false
@@ -355,8 +411,17 @@ func sameParent(a pgtype.Int4, b pgtype.Int4) bool {
 	return a.Int32 == b.Int32
 }
 
-func (e *aiToolMutationEnv) ensureAIDirectory() (int32, error) {
-	directories, err := e.server.queries.ListDirectoriesByWorkspace(e.ctx, e.workspaceID)
+func (e *aiToolMutationEnv) ensureAIDirectory(actor int32) (int32, error) {
+	tx, err := e.server.db.BeginTx(e.ctx, pgx.TxOptions{})
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(e.ctx)
+	qtx := e.server.queries.WithTx(tx)
+	if _, err := e.server.lockPersistenceWriter(e.ctx, qtx, actor, persistenceWriterScope{workspace: e.workspaceID}); err != nil {
+		return 0, err
+	}
+	directories, err := qtx.ListDirectoriesByWorkspace(e.ctx, e.workspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -365,8 +430,11 @@ func (e *aiToolMutationEnv) ensureAIDirectory() (int32, error) {
 			return directory.ID, nil
 		}
 	}
-	created, err := e.server.queries.CreateDirectory(e.ctx, db.CreateDirectoryParams{WorkspaceID: e.workspaceID, Name: agentDirectoryName})
+	created, err := qtx.CreateDirectory(e.ctx, db.CreateDirectoryParams{WorkspaceID: e.workspaceID, Name: agentDirectoryName})
 	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(e.ctx); err != nil {
 		return 0, err
 	}
 	return created.ID, nil
@@ -386,7 +454,7 @@ func blocksFromPlainText(content string, documentID int64) []*secretaryv1.Block 
 			continue
 		}
 		clientKey := "tool-block-" + uuid.NewString()
-		block := &secretaryv1.Block{ClientKey: clientKey, DocumentId: documentID, SortOrder: int32(len(blocks)), Text: text}
+		block := &secretaryv1.Block{ClientKey: clientKey, DocumentId: documentID, SortOrder: int32(len(blocks) + 1), Text: text}
 		if depth > 0 && depth <= len(stack) {
 			block.ParentClientKey = stack[depth-1]
 		}

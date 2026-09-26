@@ -348,19 +348,25 @@ class RecordingDetailScreen(Screen):
         users = await UserService.get_all_users()
         user_map = {user.id: user for user in users}
 
-        lines: List[str] = []
+        todos_by_owner = {}
         for todo in todos:
-            user_note = ""
-            user_id = todo.get("user_id")
-            if user_id is not None:
-                user = user_map.get(user_id)
-                if user:
-                    user_note = f" (@{user.first_name})"
+            todos_by_owner.setdefault(todo.get("user_id"), []).append(todo)
 
-            lines.append(f"• {todo['name']}{user_note}")
-            if todo.get("desc"):
-                lines.append(f"  {todo['desc']}")
-            lines.append("")
+        lines: List[str] = []
+        for user_id in sorted(todos_by_owner, key=lambda owner: owner is None):
+            user = user_map.get(user_id)
+            if user:
+                owner_name = f"@{user.first_name}"
+            elif user_id is None:
+                owner_name = "Unassigned"
+            else:
+                owner_name = f"User {user_id}"
+            lines.append(owner_name)
+            for todo in todos_by_owner[user_id]:
+                lines.append(f"• {todo['name']}")
+                if todo.get("desc"):
+                    lines.append(f"  {todo['desc']}")
+                lines.append("")
 
         if lines and lines[-1] == "":
             lines.pop()

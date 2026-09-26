@@ -287,16 +287,28 @@ func (s *Server) CreateDirectory(ctx context.Context, req *connect.Request[secre
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("directory name is required"))
 	}
 	parentID := toNullInt4(req.Msg.ParentId)
-	if err := validateDirectoryParent(ctx, s.queries, workspaceID, parentID); err != nil {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
 		return nil, err
 	}
-	directory, err := s.queries.CreateDirectory(ctx, db.CreateDirectoryParams{
+	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
+	if _, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{workspace: workspaceID}); err != nil {
+		return nil, err
+	}
+	if err := validateDirectoryParent(ctx, qtx, workspaceID, parentID); err != nil {
+		return nil, err
+	}
+	directory, err := qtx.CreateDirectory(ctx, db.CreateDirectoryParams{
 		WorkspaceID: workspaceID,
 		ParentID:    parentID,
 		Name:        name,
 	})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to create directory"))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&secretaryv1.CreateDirectoryResponse{Directory: directoryToProto(directory)}), nil
 }
@@ -324,15 +336,32 @@ func (s *Server) UpdateDirectory(ctx context.Context, req *connect.Request[secre
 	if err := s.ensureWorkspaceAccess(ctx, directory.WorkspaceID, int32(userID)); err != nil {
 		return nil, err
 	}
-	if err := validateDirectoryParent(ctx, s.queries, directory.WorkspaceID, parentID); err != nil {
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
 		return nil, err
 	}
-	if err := validateDirectoryMove(ctx, s.queries, directory.ID, parentID); err != nil {
+	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
+	if _, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{workspace: directory.WorkspaceID}); err != nil {
 		return nil, err
 	}
-	updatedDirectory, err := s.queries.UpdateDirectory(ctx, db.UpdateDirectoryParams{ID: directory.ID, Name: name, ParentID: parentID})
+	if _, err := qtx.GetDirectory(ctx, directory.ID); errors.Is(err, pgx.ErrNoRows) {
+		return nil, connect.NewError(connect.CodeNotFound, errors.New("directory not found"))
+	} else if err != nil {
+		return nil, err
+	}
+	if err := validateDirectoryParent(ctx, qtx, directory.WorkspaceID, parentID); err != nil {
+		return nil, err
+	}
+	if err := validateDirectoryMove(ctx, qtx, directory.ID, parentID); err != nil {
+		return nil, err
+	}
+	updatedDirectory, err := qtx.UpdateDirectory(ctx, db.UpdateDirectoryParams{ID: directory.ID, Name: name, ParentID: parentID})
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to update directory"))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&secretaryv1.UpdateDirectoryResponse{Directory: directoryToProto(updatedDirectory)}), nil
 }
@@ -356,22 +385,34 @@ func (s *Server) DeleteDirectory(ctx context.Context, req *connect.Request[secre
 		return nil, err
 	}
 	directoryID := pgtype.Int4{Int32: directory.ID, Valid: true}
-	childCount, err := s.queries.CountChildDirectories(ctx, directoryID)
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
+	if _, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{workspace: directory.WorkspaceID}); err != nil {
+		return nil, err
+	}
+	childCount, err := qtx.CountChildDirectories(ctx, directoryID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check child directories"))
 	}
 	if childCount > 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("directory is not empty"))
 	}
-	documentCount, err := s.queries.CountDocumentsInDirectory(ctx, directoryID)
+	documentCount, err := qtx.CountDocumentsInDirectory(ctx, directoryID)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to check directory documents"))
 	}
 	if documentCount > 0 {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("directory is not empty"))
 	}
-	if err := s.queries.DeleteDirectory(ctx, directory.ID); err != nil {
+	if err := qtx.DeleteDirectory(ctx, directory.ID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete directory"))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return connect.NewResponse(&secretaryv1.DeleteDirectoryResponse{}), nil
 }
@@ -389,6 +430,9 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	}
 
 	incoming := req.Msg.Document
+	if !validDatabaseID(incoming.Id, true) || !validDatabaseID(incoming.WorkspaceId, true) || !validDatabaseID(incoming.DirectoryId, true) {
+		return nil, invalidIdentity("document IDs must fit database integers")
+	}
 	kind := strings.TrimSpace(incoming.Kind)
 	if !validDocumentKind(kind) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid document kind"))
@@ -414,6 +458,10 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 	qtx := s.queries.WithTx(tx)
 
 	var savedDoc db.Document
+	deps, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{workspace: int32(incoming.WorkspaceId), document: int32(incoming.Id), journalDate: journalDate})
+	if err != nil {
+		return nil, err
+	}
 	if incoming.Id > 0 {
 		existingDoc, err := qtx.GetDocument(ctx, int32(incoming.Id))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -499,6 +547,9 @@ func (s *Server) SaveDocument(ctx context.Context, req *connect.Request[secretar
 
 	protoDoc, err := s.persistDocumentBlocks(ctx, tx, savedDoc, incoming, userID, false)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := advanceMutationDocuments(ctx, qtx, deps.documents, 0); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -637,10 +688,8 @@ func (s *Server) persistDocumentBlocks(ctx context.Context, tx pgx.Tx, savedDoc 
 
 	for index, record := range savedRecords {
 		var previous *db.Block
-		if versioned {
-			if old, ok := existingByID[record.block.ID]; ok {
-				previous = &old
-			}
+		if old, ok := existingByID[record.block.ID]; ok {
+			previous = &old
 		}
 		updatedBlock, err := s.reconcileBlockTodo(ctx, qtx, savedDoc, record.block, record.msg, userID, previous)
 		if err != nil {
@@ -700,7 +749,17 @@ func (s *Server) DeleteDocument(ctx context.Context, req *connect.Request[secret
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("id is required"))
 	}
 
-	doc, _, err := s.loadAuthorizedDocument(ctx, int32(req.Msg.Id), int32(userID))
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := s.queries.WithTx(tx)
+	deps, err := s.lockPersistenceWriter(ctx, qtx, int32(userID), persistenceWriterScope{document: int32(req.Msg.Id)})
+	if err != nil {
+		return nil, err
+	}
+	doc, err := qtx.GetDocument(ctx, int32(req.Msg.Id))
 	if err != nil {
 		return nil, err
 	}
@@ -708,10 +767,16 @@ func (s *Server) DeleteDocument(ctx context.Context, req *connect.Request[secret
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("only notes can be deleted"))
 	}
 
-	if err := s.queries.DeleteDocument(ctx, doc.ID); err != nil {
+	if err := qtx.DeleteDocument(ctx, doc.ID); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete document"))
 	}
 
+	if _, err := advanceMutationDocuments(ctx, qtx, deps.documents, doc.ID); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
 	return connect.NewResponse(&secretaryv1.DeleteDocumentResponse{}), nil
 }
 
@@ -1218,49 +1283,27 @@ func (s *Server) reconcileBlockTodo(ctx context.Context, qtx *db.Queries, doc db
 
 	if block.TodoID.Valid {
 		// Snapshot edits own inline text/status, not standalone TODO metadata.
-		if previous != nil {
-			current, err := qtx.GetTodo(ctx, block.TodoID.Int32)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return db.Block{}, persistenceError(connect.CodeInvalidArgument, secretaryv1.PersistenceErrorReason_PERSISTENCE_ERROR_REASON_INVALID_TREE, "snapshot both removes and updates the same linked TODO", nil)
-			}
-			if err != nil {
-				return db.Block{}, err
-			}
-			if previous.Text == msg.Text {
-				name = current.Name
-			}
-			if name == current.Name && status == current.Status.String {
-				return block, nil
-			}
-			updated, err := qtx.UpdateInlineTodo(ctx, db.UpdateInlineTodoParams{ID: current.ID, Name: name, Status: statusValue})
-			if err != nil {
-				return db.Block{}, err
-			}
-			if err := createTodoHistoryEntry(ctx, qtx, updated.ID, userID, "update", updated.Name, updated.Desc, updated.Status, updated.UserID, updated.CreatedAtRecordingID, updated.UpdatedAtRecordingID); err != nil {
-				return db.Block{}, err
-			}
-			return block, nil
+		current, err := qtx.GetTodo(ctx, block.TodoID.Int32)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Block{}, persistenceError(connect.CodeInvalidArgument, secretaryv1.PersistenceErrorReason_PERSISTENCE_ERROR_REASON_INVALID_TREE, "snapshot both removes and updates the same linked TODO", nil)
 		}
-		todo, err := qtx.UpdateCanonicalTodoForBlock(ctx, db.UpdateCanonicalTodoForBlockParams{
-			ID:                block.TodoID.Int32,
-			Name:              name,
-			Desc:              desc,
-			Status:            statusValue,
-			UserID:            userIDValue,
-			WorkspaceID:       workspaceID,
-			CurrentDocumentID: sourceDocumentID,
-			CurrentBlockID:    sourceBlockID,
-		})
-		if err == nil {
-			if err := createTodoHistoryEntry(ctx, qtx, todo.ID, userID, "update", todo.Name, todo.Desc, todo.Status, todo.UserID, todo.CreatedAtRecordingID, todo.UpdatedAtRecordingID); err != nil {
-				return db.Block{}, err
-			}
-			return block, nil
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if err != nil {
 			return db.Block{}, err
 		}
-		block.TodoID = pgtype.Int4{}
+		if previous != nil && previous.Text == msg.Text {
+			name = current.Name
+		}
+		if name == current.Name && status == current.Status.String {
+			return block, nil
+		}
+		updated, err := qtx.UpdateInlineTodo(ctx, db.UpdateInlineTodoParams{ID: current.ID, Name: name, Status: statusValue})
+		if err != nil {
+			return db.Block{}, err
+		}
+		if err := createTodoHistoryEntry(ctx, qtx, updated.ID, userID, "update", updated.Name, updated.Desc, updated.Status, updated.UserID, updated.CreatedAtRecordingID, updated.UpdatedAtRecordingID); err != nil {
+			return db.Block{}, err
+		}
+		return block, nil
 	}
 
 	todo, err := qtx.CreateCanonicalTodoForBlock(ctx, db.CreateCanonicalTodoForBlockParams{

@@ -1,6 +1,6 @@
 # Persistence Contract and Writer Inventory
 
-Technical foundation for [Architecture and Persistence Reliability](architecture-reliability-prd.md), Phase 0. Audited against repository source on 2026-09-23. This specifies the implementation target; it is not a description of guarantees already deployed.
+Technical foundation for [Architecture and Persistence Reliability](architecture-reliability-prd.md), Phase 0. Initial audit 2026-09-23; backend writer participation re-audited 2026-09-26. This specifies the implementation target; it is not a description of guarantees already deployed. See the dated implementation evidence below.
 
 ## 1. Current writer inventory
 
@@ -19,8 +19,8 @@ Paths below are relative to the repository root. Generated sqlc methods and migr
 | Standalone TODO mutations | `backend/internal/server/server.go`: `CreateTodo`, `UpdateTodo`, `DeleteTodo` | Shared authorization/transaction owner; discover linked blocks before mutation, including FK-driven clearing on deletion |
 | Move document TODOs to repository | Same file: `MoveDocumentTodosToRepository` | Clears `block.todo_id`, retains block text, changes TODO current location; even stale-link cleanup changes the document |
 | Pull on-deck TODOs into today | Same file: `PullOnDeckTodosToToday` | Finds/creates journal, inserts blocks, attaches TODOs; uniqueness and concurrent pulls must be atomic |
-| AI create note | `backend/internal/server/agent/mutations.go` → `ai_agent_adapter.go` → `ai_tool_mutations.go`: `createDocument` | Currently makes a synthetic `SaveDocument` handler call; replace with shared service, stable tool-operation identity |
-| AI insert/move block | Same adapter → `insertDocumentBlock`, `moveDocumentBlock`, `reindexSiblings` | Currently direct transactional sqlc writes; participate in document locking/revisions/history and receipts |
+| AI create note | `backend/internal/server/agent/mutations.go` → `ai_agent_adapter.go` → `ai_tool_mutations.go`: `createDocument` | Now calls internal transactional save service; durable run/tool-call identity remains outstanding |
+| AI insert/move block | Same adapter → `insertDocumentBlock`, `moveDocumentBlock`, `persistBlockOrder` | Shared locks/revisions plus transactional blocks/history; command receipts remain outstanding |
 | Directory create/update/delete | `backend/internal/server/documents.go`; AI `ensureAIDirectory` also creates directly | Online-only. Serialize destination validation/deletion with document placement; a nonempty directory must not disappear through a race |
 | TODO goals | `backend/internal/server/server.go`: goal CRUD | Does not change current document wire representation; invalidate TODO/goal queries, no body revision required solely for a goal rename |
 | TUI transcript analysis | `tui/services/analysis_service.py` → `tui/db/service.py`: `TodoService.create_todo` | Deferred direct DB exception: inserts recording-derived TODOs with no document/block/workspace links |
@@ -35,17 +35,17 @@ Sources: `backend/sql/schema.sql`, `backend/sql/queries/{documents,todos}.sql`, 
 - A document response includes block `todo_id` and status loaded from `todo`, not just block columns. TODO status changes must advance every referencing document's revision.
 - TODO deletion sets referencing `block.todo_id` to null through a foreign key. Discover all referencing documents, not just `todo.current_document_id`.
 - Deleting a source document cascades deletion of its sourced TODOs. A TODO moved to another journal may still reference the original source document; deleting that source can therefore change the other journal's blocks. Include those surviving documents in revision updates. Preserve current cascade behavior pending any separate product decision.
-- Directory deletion sets `document.directory_id` to null at the database level. The existing empty-directory check is outside a transaction; serialize it with save/move destination validation so the intended nonempty-directory rejection holds.
-- Document saves currently rewrite canonical TODO name, description, assignee, status, current location and completion context. Revision protection must consider fields a save can overwrite, not only fields visibly returned in `Document`.
+- Directory deletion sets `document.directory_id` to null at the database level. Empty-directory validation and deletion now run in one transaction under the same workspace lock as save/move destination validation, preserving nonempty-directory rejection.
+- Snapshot saves now preserve standalone TODO metadata and unchanged canonical names; explicit inline text/status changes remain save-relevant. Revision protection must consider fields a save can overwrite, not only fields visibly returned in `Document`.
 
-### Observed gaps to cover during service extraction
+### Original audit gaps and current disposition
 
 - `SaveDocument` has no expected revision or receipt. An ID-less journal save can find an existing journal and replace its blocks.
-- Client keys are echoed in save responses but not persisted; subsequent reads synthesize `document-<id>` / `block-<id>`.
-- Native stale-block recovery removes invalid server IDs and automatically retries; retire this behavior before revision enforcement. It can turn deleted content into new insertions.
-- Standalone `UpdateTodo` uses request `user_id` as owner/history actor without resource authorization in that handler. Shared services must derive the actor from authentication and check resource access; request ownership is not authorization.
-- `PullOnDeckTodosToToday` inserts a block before a conditional TODO attachment. On a zero-row attachment it currently continues, potentially leaving an extra block. Atomic mutation tests must cover this race.
-- AI `blocksFromPlainText` begins `sort_order` at zero, while document validation requires positive values. AI insertion also passes a pre-insert block map to reindexing without adding the created block. Capture regressions for these existing paths when consolidating services.
+- Persisted immutable keys now exist and are honored by the internal v1 service. Public legacy reads still synthesize identities; initial client baseline/key adoption is outstanding.
+- Native automatic stale-block recreation was removed; invalid identities retain the draft for review.
+- Standalone TODO updates/deletions now derive the history actor from authentication and authorize linked workspaces under the shared lock discipline. Request `user_id` remains the intended assignee, not the actor.
+- Pull-on-deck now locks candidates and rolls back a failed conditional attachment. Real-Postgres race verification remains outstanding.
+- AI creation now uses positive global positions. Insertion includes the created block explicitly; subtree movement preserves unrelated visible order and temporarily vacates sort positions before reindexing. Database-free ordering regressions cover these corrections.
 
 ## 2. Client and toolchain baseline
 
@@ -291,7 +291,16 @@ Next: implement canonical fingerprinting and atomic receipt/revision-aware docum
 - Related-document revisions are conservatively advanced for the discovered/locked dependency set, including source/current/completion relationships. This is intentionally broader than minimal changed-body tracking and can cause extra related-document invalidations.
 - Public List/Get document handlers now use read-only repeatable-read snapshots. Public read identities/revisions and write protocol gating remain legacy until all writers and clients participate. **The internal service is not exposed by RPC and is not evidence of deployed concurrency protection.**
 - `document_persistence_integration_test.go` adds 11 real-Postgres scenarios behind `PERSISTENCE_TEST_DATABASE_URL`; `REQUIRE_PERSISTENCE_DB_TESTS=1` fails if unavailable. Tests compile; runtime DB scenarios await an owner-provided migrated disposable DB/CI target. Unit tests, Go build, sqlc consistency and diff checks pass. No migrations or database writes were performed.
-- Next: execute the dedicated integration suite, route all backend writers through shared locks/revision services, add durable native envelopes and coordinated identity/baseline adoption, then enable capabilities and versioned enforcement. See the PRD's latest handoff for commands and the pending test-infrastructure decision.
+- Subsequent owner decision: do not require a test database as a development dependency. Continue implementation with real-Postgres verification explicitly outstanding.
+
+### Backend writer participation (2026-09-26)
+
+- `persistence_writers.go` supplies sorted workspace/document/TODO locking, linked workspace authorization, and post-lock dependency revalidation to legacy Save/Delete, standalone TODO Update/Delete, repository moves, on-deck pulls, and AI insert/move. Each caller owns the transaction and advances the conservative affected-document set before commit. Dependency changes fail with `unavailable` and roll back; these unreceipted commands are not automatically replayed after ambiguous commit errors.
+- Directory mutations and AI directory creation share workspace locks with destination validation; directory index-only changes do not bump unchanged body snapshots. New unlinked TODO creation and goal CRUD have no document-body effect. Python direct writes remain limited to unlinked TODO creation, as confirmed by the re-audit.
+- AI create uses the internal receipted save service directly. The UUID survives internal transaction retries, but durable tool-call-derived identity and receipts for the remaining command RPCs are not implemented yet.
+- Legacy inline TODO reconciliation now uses the same metadata-preserving path as versioned saves. New AI and pulled blocks use positive global ordering; AI reordering temporarily vacates occupied sibling positions inside its transaction.
+- Database-free tests exercise dependency changes before/after row locking, authorization, lock order, revision advancement/deleted-document exclusion, and AI ordering/identity retention. Go server tests/build, sqlc consistency and diff checks pass. PostgreSQL runtime verification is still unexecuted; no database/dependency was added.
+- Next: native durable envelopes and deliberate baseline/key adoption, remaining command envelopes/receipts, then coordinated activation. Public versioned RPCs remain gated and legacy snapshot writes still lack expected revisions. Shared transport-independent TODO/directory service extraction remains later Phase 3 work.
 
 ### Remaining Phase 0 / release evidence
 
@@ -299,4 +308,4 @@ Next: implement canonical fingerprinting and atomic receipt/revision-aware docum
 - Execute/capture the relevant regression cases; the scenarios above still need executable fixtures.
 - Coordinate the owner's app/server update and capability enforcement; no additional-client compatibility window is needed.
 - Review exact receipt/key/revision DDL and backfill with the active Atlas workflow before applying any migration. No database was accessed for this contract.
-- Supply a dedicated test database in CI/target infrastructure before treating persistence integration coverage as passing.
+- Real-Postgres integration coverage is not passing evidence until executed; the owner declined provisioning test infrastructure as a development prerequisite.
