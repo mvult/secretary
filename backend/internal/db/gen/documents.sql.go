@@ -695,6 +695,80 @@ func (q *Queries) ListDocumentHistoryByDocument(ctx context.Context, documentID 
 	return items, nil
 }
 
+const listDocumentIndex = `-- name: ListDocumentIndex :many
+SELECT d.id, d.workspace_id, d.directory_id, d.kind, d.title, d.journal_date, d.created_at, d.updated_at, d.client_key, d.revision, coalesce((
+  SELECT substring(b.text FROM greatest(1, strpos(lower(b.text), lower($1)) - 60) FOR 240)
+  FROM block b WHERE b.document_id = d.id AND $1::text <> ''
+    AND strpos(lower(b.text), lower($1)) > 0
+  ORDER BY b.sort_order, b.id LIMIT 1
+), '')::text AS snippet
+FROM document d
+WHERE d.workspace_id = $2
+  AND ($3::integer = 0 OR d.id < $3)
+  AND ($1::text = '' OR strpos(lower(d.title), lower($1)) > 0
+    OR EXISTS (SELECT 1 FROM block b WHERE b.document_id = d.id AND strpos(lower(b.text), lower($1)) > 0))
+ORDER BY d.id DESC
+LIMIT $4
+`
+
+type ListDocumentIndexParams struct {
+	Query       string
+	WorkspaceID int32
+	BeforeID    int32
+	PageLimit   int32
+}
+
+type ListDocumentIndexRow struct {
+	ID          int32
+	WorkspaceID int32
+	DirectoryID pgtype.Int4
+	Kind        string
+	Title       string
+	JournalDate pgtype.Date
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ClientKey   string
+	Revision    int64
+	Snippet     string
+}
+
+func (q *Queries) ListDocumentIndex(ctx context.Context, arg ListDocumentIndexParams) ([]ListDocumentIndexRow, error) {
+	rows, err := q.db.Query(ctx, listDocumentIndex,
+		arg.Query,
+		arg.WorkspaceID,
+		arg.BeforeID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListDocumentIndexRow
+	for rows.Next() {
+		var i ListDocumentIndexRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.DirectoryID,
+			&i.Kind,
+			&i.Title,
+			&i.JournalDate,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ClientKey,
+			&i.Revision,
+			&i.Snippet,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDocumentsByWorkspace = `-- name: ListDocumentsByWorkspace :many
 SELECT
   d.id,

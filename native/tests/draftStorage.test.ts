@@ -6,6 +6,7 @@ import { DraftStorage, draftScope, openDraftDatabase } from '../src/lib/draftSto
 import { pageHash } from '../src/app/pagePersistence';
 import { draftConflicts, mergeWorkspace, recoveryCopy, trackDrafts } from '../src/features/session/draftReconciliation';
 import type { OutlinePage } from '../src/features/outline/types';
+import { prepareSave } from '../src/features/session/documentSaveController';
 
 const page: OutlinePage = { id: 'document-1', backendId: 1, workspaceId: 1, kind: 'note', title: 'Draft', date: '',
   nodes: [{ id: 'block-1', backendId: 1, text: 'Original', parentId: null, todoId: 3, todoStatus: 'todo' }] };
@@ -163,4 +164,48 @@ test('both conflict versions survive IndexedDB restart without a network refresh
   assert.equal(conflicts[0].page.nodes[0].text, '');
   assert.equal(conflicts[0].serverCopy?.nodes[0].text, serverJournal.nodes[0].text);
   db.close();
+});
+
+for (const version of [1, 2, 3, 4]) test(`v${version} local storage upgrades without losing drafts and excludes old writers`, async () => {
+  const factory = new IDBFactory();
+  const old = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = factory.open('secretary-drafts', version);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('workspaces'); request.result.createObjectStore('drafts');
+      request.result.createObjectStore('recovery', { autoIncrement: true });
+    };
+    request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
+  });
+  const tx = old.transaction(['workspaces', 'drafts'], 'readwrite');
+  tx.objectStore('workspaces').put({ schemaVersion: version, revision: 1, directories: [] }, scope);
+  tx.objectStore('drafts').put({ page, pending: true }, [...scope, page.id]);
+  await new Promise<void>((resolve) => { tx.oncomplete = () => resolve(); });
+  old.close();
+  const upgraded = await openDraftDatabase(factory);
+  const storage = new DraftStorage(upgraded, scope);
+  assert.equal((await storage.load()).records[0].pending, true);
+  upgraded.close();
+  await assert.rejects(new Promise((resolve, reject) => {
+    const request = factory.open('secretary-drafts', version);
+    request.onerror = () => reject(request.error); request.onsuccess = () => resolve(request.result);
+  }), /version/i);
+});
+
+test('exact serialized request and newer draft survive a real IndexedDB reopen', async () => {
+  const factory = new IDBFactory();
+  const db = await openDraftDatabase(factory);
+  const storage = new DraftStorage(db, scope);
+  await storage.load();
+  const draft = { ...blankJournal, workspaceId: 1 };
+  const envelope = prepareSave({ page: draft, generation: 2 }, scope);
+  await storage.save({ records: [{ page: { ...draft, title: 'Newer title' }, generation: 3, envelope }], directories: [] });
+  db.close();
+  const reopened = await openDraftDatabase(factory);
+  const [record] = (await new DraftStorage(reopened, scope).load()).records;
+  assert.equal(record.envelope?.body, envelope.body);
+  assert.equal(record.envelope?.mutationId, envelope.mutationId);
+  assert.equal(record.envelope?.generation, 2);
+  assert.equal(record.generation, 3);
+  assert.equal(record.page.title, 'Newer title');
+  reopened.close();
 });

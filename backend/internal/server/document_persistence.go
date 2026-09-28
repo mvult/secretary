@@ -18,8 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Internal application-service entry points. Public RPCs remain gated until all
-// writers use this discipline and the coordinated client rollout is ready.
+// Application-service entry points shared by public v1 RPCs and internal writers.
 func (s *Server) saveDocumentMutation(ctx context.Context, actor int64, req *secretaryv1.SaveDocumentRequest) (*secretaryv1.SaveDocumentResponse, error) {
 	if req == nil || req.Document == nil {
 		return nil, invalidIdentity("document is required")
@@ -172,12 +171,15 @@ func (s *Server) deleteDocumentMutation(ctx context.Context, actor int64, req *s
 }
 
 type documentMutation struct {
+	authorize            func(*db.Queries) error
 	actor, workspace, id int32
 	expected             int64
 	mutation             pgtype.UUID
 	name                 string
 	hash                 [32]byte
 	deleting             bool
+	userScoped           bool   // TODO commands on owned, unlinked TODOs only.
+	creationKey          string // Internal AI creation reserves its durable document identity.
 }
 
 var errMutationDependenciesChanged = errors.New("document mutation dependencies changed")

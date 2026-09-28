@@ -15,7 +15,7 @@ RUN go install github.com/bufbuild/buf/cmd/buf@v1.47.2 && \
 # Install Node.js and plugins for frontend generation
 # We use npm here because it's native to Alpine and stable for installing the generator plugins
 RUN apk add --no-cache nodejs npm && \
-    npm install -g @bufbuild/protoc-gen-es@1.10.0 @connectrpc/protoc-gen-connect-es@1.4.0
+    npm install -g @bufbuild/protoc-gen-es@1.10.1 @connectrpc/protoc-gen-connect-es@1.7.0
 
 # Copy necessary files for generation
 COPY buf.gen.frontend.yaml .
@@ -36,21 +36,26 @@ RUN buf generate backend/proto --template buf.gen.frontend.yaml
 # -----------------------------------------------------------------------------
 # Stage 2: Frontend Builder
 # -----------------------------------------------------------------------------
-FROM oven/bun:1 AS frontend_builder
-WORKDIR /app/frontend
+FROM oven/bun:1.3.14 AS frontend_builder
+WORKDIR /app
 
 # Copy frontend source and generated code
-COPY frontend/package.json frontend/bun.lock ./
-RUN bun install
+COPY package.json bun.lock ./
+COPY frontend/package.json frontend/package.json
+COPY native/package.json native/package.json
+COPY packages/api/package.json packages/api/package.json
+RUN bun install --frozen-lockfile
 
-COPY frontend .
+COPY frontend frontend
+COPY packages/api packages/api
 # Copy generated frontend protobuf code from generator stage
-COPY --from=generator /workspace/frontend/src/gen ./src/gen
+COPY --from=generator /workspace/packages/api/src/gen ./packages/api/src/gen
 
 # Build the React app
 # VITE_API_URL can be set to /api since we are serving from the same origin,
 # or left empty if the client automatically uses relative paths.
 ENV NODE_ENV=production
+WORKDIR /app/frontend
 RUN VITE_API_URL="/" bun run build
 
 # -----------------------------------------------------------------------------

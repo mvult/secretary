@@ -74,7 +74,7 @@ export function JournalsView({
 
               {renderConflict?.(journal)}
 
-              {isActive ? (
+               {journal.metadataOnly ? <div className="journal-preview">Not cached</div> : isActive ? (
                 <OutlineEditor
                   page={journal}
                   state={state}

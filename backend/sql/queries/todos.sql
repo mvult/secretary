@@ -130,6 +130,23 @@ SET
 WHERE id = $1
 RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at;
 
+-- name: PatchTodo :one
+UPDATE todo
+SET
+  name = $2,
+  "desc" = $3,
+  status = $4,
+  bucket = $5,
+  priority_rank = $6,
+  deadline_date = $7,
+  goal_id = $8,
+  completed_at = CASE WHEN status IS NOT DISTINCT FROM $4 THEN completed_at WHEN $4 = 'done' THEN now() ELSE NULL END,
+  completed_document_id = CASE WHEN status IS NOT DISTINCT FROM $4 THEN completed_document_id WHEN $4 = 'done' THEN current_document_id ELSE NULL END,
+  completed_block_id = CASE WHEN status IS NOT DISTINCT FROM $4 THEN completed_block_id WHEN $4 = 'done' THEN current_block_id ELSE NULL END,
+  updated_at = now()
+WHERE id = $1
+RETURNING *;
+
 -- name: ListTodoGoalsByUser :many
 SELECT id, user_id, name, description, created_at, updated_at
 FROM todo_goal

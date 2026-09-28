@@ -2,24 +2,45 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { findMatchingNotes, getPageTitle } from '../outline/tree';
 import type { OutlineState } from '../outline/types';
 import { pageMatchesBody, pageMatchesTitle } from '../../app/format';
+import { readDocumentIndex, indexPage } from '../session/documentIndex';
+import type { DocumentMetadata } from '../../lib/backend';
+import type { OutlinePage } from '../outline/types';
 
-export function useSearchView(state: OutlineState) {
+export function useSearchView(state: OutlineState, session?: { backendUrl: string; authToken: string; workspaceId: number | null; syncEnabled: boolean; pagesForPersistence: OutlinePage[] }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'insert' | 'select'>('insert');
   const [searchScope, setSearchScope] = useState<'title' | 'fulltext'>('title');
   const [activeSearchResultId, setActiveSearchResultId] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const lastSearchJPressRef = useRef<number | null>(null);
+  const [remoteSearch, setRemoteSearch] = useState<{ key: string; entries: DocumentMetadata[]; status: string }>({ key: '', entries: [], status: '' });
+  const { backendUrl = '', authToken = '', workspaceId = null, syncEnabled = false } = session ?? {};
+  const searchKey = JSON.stringify([backendUrl, authToken, workspaceId, searchQuery.trim()]);
+  useEffect(() => {
+    let active = true;
+    if (state.activeView !== 'search' || !searchQuery.trim() || !syncEnabled || !workspaceId) return;
+    const timer = window.setTimeout(() => {
+      setRemoteSearch({ key: searchKey, entries: [], status: 'Searching workspace…' });
+      void readDocumentIndex(backendUrl, authToken, workspaceId, () => active, searchQuery.trim()).then(result => {
+        if (active) setRemoteSearch({ key: searchKey, entries: result.entries, status: '' });
+      }).catch(() => { if (active) setRemoteSearch({ key: searchKey, entries: [], status: 'Workspace search unavailable; cached matches only.' }); });
+    }, 200);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [state.activeView, searchKey, backendUrl, authToken, workspaceId, syncEnabled, searchQuery]);
+  const remote = remoteSearch.key === searchKey && syncEnabled ? remoteSearch.entries : [];
 
   const matches = useMemo(() => findMatchingNotes(state.pages, searchQuery), [searchQuery, state.pages]);
   const titleMatches = useMemo(
     () => matches.filter(({ page }) => pageMatchesTitle(page, searchQuery)),
     [matches, searchQuery],
   );
-  const fullTextMatches = useMemo(
-    () => matches.filter(({ page }) => !pageMatchesTitle(page, searchQuery) && pageMatchesBody(page, searchQuery)),
-    [matches, searchQuery],
-  );
+  const fullTextMatches = useMemo(() => {
+    const local = matches.filter(({ page }) => !pageMatchesTitle(page, searchQuery) && pageMatchesBody(page, searchQuery));
+    const loaded = new Set((session?.pagesForPersistence ?? state.pages).map(page => page.backendId));
+    return [...local, ...remote.filter(entry => entry.kind === 'note' && entry.snippet && !loaded.has(entry.id))
+      .map(entry => ({ page: indexPage(entry), rank: 110, snippet: entry.snippet }))
+      .filter(({ page }) => !pageMatchesTitle(page, searchQuery))];
+  }, [matches, searchQuery, remote, session?.pagesForPersistence, state.pages]);
   const searchMatches = searchScope === 'fulltext' ? fullTextMatches : titleMatches;
   const visibleMatches = useMemo(() => searchMatches.slice(0, 8), [searchMatches]);
   const topMatch = useMemo(() => {
@@ -94,6 +115,7 @@ export function useSearchView(state: OutlineState) {
   };
 
   return {
+    searchStatus: !syncEnabled ? 'Cached bodies only while offline.' : remoteSearch.key === searchKey ? remoteSearch.status : searchQuery.trim() ? 'Searching workspace…' : '',
     searchQuery,
     setSearchQuery,
     searchMode,

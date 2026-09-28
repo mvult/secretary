@@ -1,0 +1,17 @@
+{
+  "name": "@secretary/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/client.ts",
+    "./transport": "./src/transport.ts",
+    "./identity": "./src/identity.ts",
+    "./gen/*": "./src/gen/secretary/v1/*.ts"
+  },
+  "dependencies": {
+    "@bufbuild/protobuf": "1.10.1",
+    "@connectrpc/connect": "1.7.0",
+    "@connectrpc/connect-web": "1.7.0"
+  }
+}

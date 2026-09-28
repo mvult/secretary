@@ -27,6 +27,8 @@ export function documentToOutlinePage(document: BackendDocument): OutlinePage {
 
   return {
     id: `document-${document.id}`,
+    clientKey: document.clientKey || undefined,
+    revision: document.revision,
     backendId: document.id,
     workspaceId: document.workspaceId,
     directoryId: document.directoryId || null,
@@ -40,6 +42,7 @@ export function documentToOutlinePage(document: BackendDocument): OutlinePage {
 }
 
 export function outlinePageToDocument(page: OutlinePage, workspaceId: number): BackendDocument {
+  if (page.metadataOnly) throw new Error('Load the document body before saving.');
   const nodeById = new Map(page.nodes.map((node) => [node.id, node]));
 
   return {

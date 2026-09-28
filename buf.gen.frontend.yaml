@@ -1,8 +1,8 @@
 version: v1
 plugins:
   - plugin: es
-    out: frontend/src/gen
+    out: packages/api/src/gen
     opt: target=ts
   - plugin: connect-es
-    out: frontend/src/gen
+    out: packages/api/src/gen
     opt: target=ts

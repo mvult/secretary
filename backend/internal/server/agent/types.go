@@ -70,9 +70,24 @@ type Services interface {
 	ListRecordings(context.Context) ([]Recording, error)
 	GetRecording(context.Context, int64) (Recording, error)
 	CreateSourceRef(context.Context, int64, string, int64, string, string) error
-	CreateDocument(context.Context, int32, string, string) (int64, error)
-	InsertBlock(context.Context, int32, int64, int64, int64, string) (int64, int64, error)
-	MoveBlock(context.Context, int32, int64, int64, int64) (int64, int64, error)
+	ExecuteMutationCall(context.Context, MutationCall) (string, error)
+}
+
+// Provider call identity and exact arguments survive independently of model retries.
+type MutationCall struct {
+	RunID       int64
+	WorkspaceID int32
+	UserID      int32
+	CallID      string
+	Name        string
+	Arguments   string
+}
+
+type toolCallIDKey struct{}
+
+func (s *session) executeMutation(ctx context.Context, name string, raw json.RawMessage) (string, error) {
+	id, _ := ctx.Value(toolCallIDKey{}).(string)
+	return s.services.ExecuteMutationCall(ctx, MutationCall{RunID: s.runID, WorkspaceID: s.workspaceID, UserID: s.userID, CallID: id, Name: name, Arguments: string(raw)})
 }
 
 type session struct {

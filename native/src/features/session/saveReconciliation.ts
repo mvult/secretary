@@ -1,5 +1,6 @@
 import { pageHash } from '../../app/pagePersistence';
 import type { OutlinePage } from '../outline/types';
+import { serverContent } from './draftReconciliation';
 
 function mergeSavedIdentities(requestPage: OutlinePage, latestPage: OutlinePage, savedPage: OutlinePage): OutlinePage {
   const byBackendId = new Map(savedPage.nodes.filter((node) => node.backendId).map((node) => [node.backendId!, node]));
@@ -7,7 +8,7 @@ function mergeSavedIdentities(requestPage: OutlinePage, latestPage: OutlinePage,
   const byId = new Map(savedPage.nodes.map((node) => [node.id, node]));
   const requestToSaved = new Map(requestPage.nodes.map((node) => [
     node.id,
-    node.backendId ? byBackendId.get(node.backendId) : byClientKey.get(node.id) ?? byId.get(node.id),
+    node.backendId ? byBackendId.get(node.backendId) : byClientKey.get(node.clientKey ?? node.id) ?? byId.get(node.id),
   ]));
   for (const [id, saved] of requestToSaved) {
     if (!saved?.backendId) throw new Error(`Save response is missing the identity for block ${id}. Retain the draft and compare the server copy.`);
@@ -16,14 +17,17 @@ function mergeSavedIdentities(requestPage: OutlinePage, latestPage: OutlinePage,
   return {
     ...latestPage,
     backendId: savedPage.backendId,
+    clientKey: savedPage.clientKey,
+    revision: savedPage.revision,
     workspaceId: savedPage.workspaceId,
     createdAt: savedPage.createdAt,
     updatedAt: savedPage.updatedAt,
     nodes: latestPage.nodes.map((node) => {
-      const savedNode = requestToSaved.get(node.id);
+      const savedNode = requestToSaved.get(node.id) ?? (node.backendId ? byBackendId.get(node.backendId) : byClientKey.get(node.clientKey ?? node.id));
       return savedNode ? {
         ...node,
         backendId: savedNode.backendId,
+        clientKey: savedNode.clientKey,
         todoId: savedNode.todoId,
         createdAt: savedNode.createdAt,
         updatedAt: savedNode.updatedAt,
@@ -42,6 +46,11 @@ export function reconcileSavedPage(requestPage: OutlinePage, latestPage: Outline
 
   // Only the request was persisted. Preserve newer edits, but never mark them saved.
   const page = mergeSavedIdentities(requestPage, latestPage, savedPage);
+  // A replay after failed local acknowledgment may already have the allocated
+  // identities in memory. Identity-only differences are not newer user edits.
+  if (serverContent(page) === serverContent(submitted)) {
+    return { page, savedHash: pageHash(page), needsSave: false };
+  }
   const savedHash = pageHash(submitted);
   return { page, savedHash, needsSave: pageHash(page) !== savedHash };
 }

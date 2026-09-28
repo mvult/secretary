@@ -1,4 +1,4 @@
-import { TodoStatus } from '../gen/secretary/v1/todos_pb';
+import { TodoStatus } from '@secretary/api/gen/todos_pb';
 
 export const TODO_STATUS_CONFIG: Record<number, { label: string; color: string }> = {
   [TodoStatus.UNSPECIFIED]: { label: 'Unknown', color: 'gray' },

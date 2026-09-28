@@ -18,7 +18,12 @@ export interface OutlineNode {
 }
 
 export interface OutlinePage {
+  // Navigation projection only; never an editable body or persistence baseline.
+  metadataOnly?: true;
   id: string;
+  clientKey?: string;
+  // Decimal int64; transport metadata is never an editor-owned baseline.
+  revision?: string;
   backendId?: number;
   workspaceId?: number;
   directoryId?: number | null;
@@ -58,6 +63,7 @@ export interface OutlineState {
   mode: EditorMode;
   yankBuffer: YankBuffer | null;
   history: OutlineSnapshot[];
+  collapsedNodeIds?: string[];
 }
 
 export interface OutlineSnapshot {

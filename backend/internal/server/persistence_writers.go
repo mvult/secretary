@@ -11,8 +11,8 @@ import (
 	db "github.com/mvult/secretary/backend/internal/db/gen"
 )
 
-// These writers do not accept snapshot baselines or issue retry receipts. They
-// still participate in the same workspace -> document -> TODO lock order and
+// Command writers do not accept snapshot baselines; their caller may own a
+// retry receipt. They participate in the workspace -> document -> TODO lock order and
 // advance revisions atomically so a versioned snapshot cannot undo their work.
 type persistenceWriterScope struct {
 	workspace, document, todo int32

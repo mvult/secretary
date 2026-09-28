@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch } from
 import {
   createDirectory,
   deleteDirectory,
-  updateDirectory,
+  patchDirectory,
   type BackendDirectory,
 } from '../../lib/backend';
 import { getPageTitle } from '../outline/tree';
@@ -11,6 +11,8 @@ import type { OutlinePage, OutlineState } from '../outline/types';
 import type { DirectoryClipboard, DirectoryEntry, DirectoryPrompt } from '../../app/types';
 
 interface UseDirectoryBrowserOptions {
+  availablePages?: OutlinePage[];
+  ensurePageLoaded?: (id: string) => Promise<OutlinePage>;
   state: OutlineState;
   stateRef: React.MutableRefObject<OutlineState>;
   dispatch: Dispatch<OutlineAction>;
@@ -18,13 +20,14 @@ interface UseDirectoryBrowserOptions {
   authToken: string;
   workspaceId: number | null;
   syncEnabled: boolean;
-  flushDirtyPages: () => Promise<void>;
+  runDocumentCommand: <T>(command: () => Promise<T>) => Promise<T>;
   directories: BackendDirectory[];
-  setDirectories: Dispatch<React.SetStateAction<BackendDirectory[]>>;
   setSyncMessage: Dispatch<React.SetStateAction<string>>;
 }
 
 export function useDirectoryBrowser({
+  availablePages,
+  ensurePageLoaded,
   state,
   stateRef,
   dispatch,
@@ -32,9 +35,8 @@ export function useDirectoryBrowser({
   authToken,
   workspaceId,
   syncEnabled,
-  flushDirtyPages,
+  runDocumentCommand,
   directories,
-  setDirectories,
   setSyncMessage,
 }: UseDirectoryBrowserOptions) {
   const [activeDirectoryId, setActiveDirectoryId] = useState<number | null>(null);
@@ -46,8 +48,49 @@ export function useDirectoryBrowser({
   const directoryPromptInputRef = useRef<HTMLInputElement | null>(null);
   const lastDirectoryDPressRef = useRef<number | null>(null);
   const pendingDirectoryMoveTimerRef = useRef<number | null>(null);
+  const scope = useMemo(() => ({}), [backendUrl, authToken, workspaceId]);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const directoryFlightRef = useRef<object | null>(null);
+  const isCurrent = useCallback(() => scopeRef.current === scope, [scope]);
+  const checkScope = useCallback(() => {
+    // Readiness is checked by the session barrier's live refs. The rendered
+    // syncEnabled value can still be false just after its refresh completes.
+    if (!isCurrent() || !authToken || !workspaceId) throw new Error('Connect to the workspace before changing directories.');
+  }, [authToken, isCurrent, workspaceId]);
+  const runDirectoryRequest = useCallback(async <T,>(request: () => Promise<T>) => {
+    checkScope();
+    const result = await runDocumentCommand(async () => {
+      checkScope();
+      return request();
+    });
+    checkScope();
+    // The barrier reconciles live directories. Never replace that live cache
+    // with the historical response returned by the mutation.
+    return result;
+  }, [checkScope, runDocumentCommand]);
+  const runDirectoryAction = useCallback(async (action: () => Promise<void>) => {
+    if (directoryFlightRef.current || !isCurrent()) return;
+    const ticket = {};
+    directoryFlightRef.current = ticket;
+    try { await action(); }
+    finally { if (directoryFlightRef.current === ticket) directoryFlightRef.current = null; }
+  }, [isCurrent]);
 
-  const notes = useMemo(() => state.pages.filter((entry) => entry.kind === 'note'), [state.pages]);
+  useEffect(() => {
+    setActiveDirectoryId(null);
+    setActiveDirectoryEntryKey(null);
+    setDirectoryClipboard(null);
+    setDirectoryPrompt(null);
+    setDirectoryPromptValue('');
+    setIsSubmittingDirectoryPrompt(false);
+    directoryFlightRef.current = null;
+    if (pendingDirectoryMoveTimerRef.current) window.clearTimeout(pendingDirectoryMoveTimerRef.current);
+    pendingDirectoryMoveTimerRef.current = null;
+    lastDirectoryDPressRef.current = null;
+  }, [scope]);
+
+  const notes = useMemo(() => (availablePages ?? state.pages).filter((entry) => entry.kind === 'note'), [state.pages, availablePages]);
   const directoryMap = useMemo(() => new Map(directories.map((directory) => [directory.id, directory])), [directories]);
   const currentDirectory = activeDirectoryId ? directoryMap.get(activeDirectoryId) ?? null : null;
   const directoryPath = useMemo(() => {
@@ -106,9 +149,9 @@ export function useDirectoryBrowser({
 
   const directoryClipboardPage = useMemo(
     () => directoryClipboard?.kind === 'note'
-      ? state.pages.find((entry) => entry.id === directoryClipboard.pageId && entry.kind === 'note') ?? null
+      ? notes.find((entry) => entry.id === directoryClipboard.pageId) ?? null
       : null,
-    [directoryClipboard, state.pages],
+    [directoryClipboard, notes],
   );
   const directoryClipboardDirectory = useMemo(
     () => directoryClipboard?.kind === 'directory'
@@ -169,16 +212,6 @@ export function useDirectoryBrowser({
     setDirectoryPromptValue(entryPage.title);
   }, []);
 
-  const upsertDirectory = useCallback((directory: BackendDirectory) => {
-    setDirectories((current) => {
-      const existingIndex = current.findIndex((entry) => entry.id === directory.id);
-      if (existingIndex === -1) {
-        return [...current, directory];
-      }
-      return current.map((entry, index) => (index === existingIndex ? directory : entry));
-    });
-  }, [setDirectories]);
-
   const renameDirectoryEntry = useCallback(async () => {
     if (!activeDirectoryEntry) {
       return;
@@ -193,8 +226,11 @@ export function useDirectoryBrowser({
     if (!activeDirectoryEntry.page) {
       return;
     }
-    openRenameNotePrompt(activeDirectoryEntry.page);
-  }, [activeDirectoryEntry, openRenameDirectoryPrompt, openRenameNotePrompt]);
+    try {
+      const page = ensurePageLoaded ? await ensurePageLoaded(activeDirectoryEntry.page.id) : activeDirectoryEntry.page;
+      if (isCurrent()) openRenameNotePrompt(page);
+    } catch (error) { if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Document load failed.'); }
+  }, [activeDirectoryEntry, openRenameDirectoryPrompt, openRenameNotePrompt, ensurePageLoaded, isCurrent, setSyncMessage]);
 
   const clearPendingDirectoryMove = useCallback(() => {
     if (pendingDirectoryMoveTimerRef.current) {
@@ -225,18 +261,17 @@ export function useDirectoryBrowser({
     }
     setIsSubmittingDirectoryPrompt(true);
     try {
-      const savedDirectory = await createDirectory(backendUrl, authToken, workspaceId, activeDirectoryId ?? 0, name);
-      upsertDirectory(savedDirectory);
+      const savedDirectory = await runDirectoryRequest(() => createDirectory(backendUrl, authToken, workspaceId, activeDirectoryId ?? 0, name));
       setActiveDirectoryEntryKey(`directory-${savedDirectory.id}`);
       setDirectoryPrompt(null);
       setDirectoryPromptValue('');
       setSyncMessage(`Created ${savedDirectory.name}.`);
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Directory create failed.');
+      if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Directory create failed.');
     } finally {
-      setIsSubmittingDirectoryPrompt(false);
+      if (isCurrent()) setIsSubmittingDirectoryPrompt(false);
     }
-  }, [activeDirectoryId, authToken, backendUrl, directoryPromptValue, isSubmittingDirectoryPrompt, setSyncMessage, upsertDirectory, workspaceId]);
+  }, [activeDirectoryId, authToken, backendUrl, directoryPromptValue, isSubmittingDirectoryPrompt, setSyncMessage, runDirectoryRequest, isCurrent, workspaceId]);
 
   const submitDirectoryPrompt = useCallback(async () => {
     if (!directoryPrompt || isSubmittingDirectoryPrompt) {
@@ -259,15 +294,14 @@ export function useDirectoryBrowser({
       }
       setIsSubmittingDirectoryPrompt(true);
       try {
-        const savedDirectory = await updateDirectory(backendUrl, authToken, target.id, nextName, target.parentId);
-        upsertDirectory(savedDirectory);
+        const savedDirectory = await runDirectoryRequest(() => patchDirectory(backendUrl, authToken, target.id, { name: nextName }));
         setDirectoryPrompt(null);
         setDirectoryPromptValue('');
         setSyncMessage(`Renamed directory to ${savedDirectory.name}.`);
       } catch (error) {
-        setSyncMessage(error instanceof Error ? error.message : 'Directory rename failed.');
+        if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Directory rename failed.');
       } finally {
-        setIsSubmittingDirectoryPrompt(false);
+        if (isCurrent()) setIsSubmittingDirectoryPrompt(false);
       }
       return;
     }
@@ -282,17 +316,18 @@ export function useDirectoryBrowser({
     setIsSubmittingDirectoryPrompt(true);
     try {
       if (syncEnabled) {
-        await flushDirtyPages();
+        await runDirectoryRequest(async () => undefined);
       }
+      if (!isCurrent()) return;
       setDirectoryPrompt(null);
       setDirectoryPromptValue('');
       setSyncMessage(`Renamed note to ${nextTitle}.`);
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Note rename failed.');
+      if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Note rename failed.');
     } finally {
-      setIsSubmittingDirectoryPrompt(false);
+      if (isCurrent()) setIsSubmittingDirectoryPrompt(false);
     }
-  }, [authToken, backendUrl, createDirectoryHere, directories, directoryPrompt, directoryPromptValue, dispatch, flushDirtyPages, isSubmittingDirectoryPrompt, setSyncMessage, stateRef, syncEnabled, upsertDirectory, workspaceId]);
+  }, [authToken, backendUrl, createDirectoryHere, directories, directoryPrompt, directoryPromptValue, dispatch, isSubmittingDirectoryPrompt, setSyncMessage, stateRef, syncEnabled, runDirectoryRequest, isCurrent, workspaceId]);
 
   const deleteSelectedDirectory = useCallback(async () => {
     if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'directory' || !activeDirectoryEntry.directory) {
@@ -303,16 +338,18 @@ export function useDirectoryBrowser({
       return;
     }
     try {
-      await deleteDirectory(backendUrl, authToken, activeDirectoryEntry.directory.id);
-      setDirectories((current) => current.filter((entry) => entry.id !== activeDirectoryEntry.directory?.id));
+      const id = activeDirectoryEntry.directory.id;
+      await runDirectoryRequest(() => deleteDirectory(backendUrl, authToken, id));
       setActiveDirectoryEntryKey(null);
       setSyncMessage(`Deleted ${activeDirectoryEntry.directory.name}.`);
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Directory delete failed.');
+      if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Directory delete failed.');
     }
-  }, [activeDirectoryEntry, authToken, backendUrl, setDirectories, setSyncMessage]);
+  }, [activeDirectoryEntry, authToken, backendUrl, runDirectoryRequest, isCurrent, setSyncMessage]);
 
   const duplicateNoteIntoDirectory = useCallback(async (sourcePage: OutlinePage, targetDirectoryId: number | null) => {
+    if (ensurePageLoaded) sourcePage = await ensurePageLoaded(sourcePage.id);
+    checkScope();
     if (!authToken || !workspaceId) {
       throw new Error('Log in first to copy directories.');
     }
@@ -326,6 +363,8 @@ export function useDirectoryBrowser({
       ...sourcePage,
       id: `note-${crypto.randomUUID()}`,
       backendId: undefined,
+      clientKey: undefined,
+      revision: undefined,
       workspaceId,
       directoryId: targetDirectoryId,
       createdAt: undefined,
@@ -334,6 +373,7 @@ export function useDirectoryBrowser({
         ...node,
         id: nodeIdMap.get(node.id) ?? `node-${crypto.randomUUID()}`,
         backendId: undefined,
+        clientKey: undefined,
         todoId: null,
         createdAt: undefined,
         updatedAt: undefined,
@@ -342,19 +382,19 @@ export function useDirectoryBrowser({
     };
 
     dispatch({ type: 'mergeRemotePage', page: duplicatedPage, source: 'directory:duplicateLocal' });
-    await flushDirtyPages();
+    await runDirectoryRequest(async () => undefined);
+    checkScope();
     return duplicatedPage;
-  }, [authToken, dispatch, flushDirtyPages, workspaceId]);
+  }, [authToken, checkScope, dispatch, runDirectoryRequest, workspaceId, ensurePageLoaded]);
 
   const duplicateDirectoryIntoParent = useCallback(async (sourceDirectory: BackendDirectory, targetParentId: number | null): Promise<BackendDirectory> => {
     if (!authToken || !workspaceId) {
       throw new Error('Log in first to copy directories.');
     }
 
-    const savedDirectory = await createDirectory(backendUrl, authToken, workspaceId, targetParentId ?? 0, sourceDirectory.name);
-    upsertDirectory(savedDirectory);
+    const savedDirectory = await runDirectoryRequest(() => createDirectory(backendUrl, authToken, workspaceId, targetParentId ?? 0, sourceDirectory.name));
 
-    const childNotes = stateRef.current.pages
+    const childNotes = (availablePages ?? stateRef.current.pages)
       .filter((entry) => entry.kind === 'note' && (entry.directoryId ?? 0) === sourceDirectory.id)
       .sort((left, right) => getPageTitle(left).localeCompare(getPageTitle(right)) || left.id.localeCompare(right.id));
     for (const childNote of childNotes) {
@@ -369,7 +409,7 @@ export function useDirectoryBrowser({
     }
 
     return savedDirectory;
-  }, [authToken, backendUrl, directories, duplicateNoteIntoDirectory, stateRef, upsertDirectory, workspaceId]);
+  }, [authToken, backendUrl, directories, duplicateNoteIntoDirectory, stateRef, runDirectoryRequest, workspaceId, availablePages]);
 
   const pasteClipboardHere = useCallback(async () => {
     if (!syncEnabled) {
@@ -382,6 +422,10 @@ export function useDirectoryBrowser({
     }
 
     if (directoryClipboard.kind === 'note') {
+      try {
+        if (ensurePageLoaded) await ensurePageLoaded(directoryClipboard.pageId);
+        checkScope();
+      } catch (error) { if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Document load failed.'); return; }
       const clipboardPage = stateRef.current.pages.find((entry) => entry.id === directoryClipboard.pageId && entry.kind === 'note');
       if (!clipboardPage) {
         setSyncMessage('Clipboard note is no longer available.');
@@ -391,13 +435,14 @@ export function useDirectoryBrowser({
       dispatch({ type: 'mergeRemotePage', page: movedPage, previousPageId: clipboardPage.id, source: 'directory:moveLocal' });
       try {
         if (syncEnabled) {
-          await flushDirtyPages();
+          await runDirectoryRequest(async () => undefined);
         }
+        if (!isCurrent()) return;
         setActiveDirectoryEntryKey(`note-${movedPage.id}`);
         setDirectoryClipboard(null);
         setSyncMessage(`Moved ${getPageTitle(movedPage)}.`);
       } catch (error) {
-        setSyncMessage(error instanceof Error ? error.message : 'Move failed.');
+        if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Move failed.');
       }
       return;
     }
@@ -414,19 +459,17 @@ export function useDirectoryBrowser({
         return;
       }
       try {
-        const savedDirectory = await updateDirectory(
+        const savedDirectory = await runDirectoryRequest(() => patchDirectory(
           backendUrl,
           authToken,
           sourceDirectory.id,
-          sourceDirectory.name,
-          activeDirectoryId ?? 0,
-        );
-        upsertDirectory(savedDirectory);
+          { parentId: activeDirectoryId ?? 0 },
+        ));
         setDirectoryClipboard(null);
         setActiveDirectoryEntryKey(`directory-${savedDirectory.id}`);
         setSyncMessage(`Moved ${savedDirectory.name}.`);
       } catch (error) {
-        setSyncMessage(error instanceof Error ? error.message : 'Directory move failed.');
+        if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Directory move failed.');
       }
       return;
     }
@@ -436,9 +479,9 @@ export function useDirectoryBrowser({
       setActiveDirectoryEntryKey(`directory-${savedDirectory.id}`);
       setSyncMessage(`Copied ${sourceDirectory.name}.`);
     } catch (error) {
-      setSyncMessage(error instanceof Error ? error.message : 'Directory copy failed.');
+      if (isCurrent()) setSyncMessage(error instanceof Error ? error.message : 'Directory copy failed.');
     }
-  }, [activeDirectoryId, authToken, backendUrl, directories, directoryClipboard, dispatch, duplicateDirectoryIntoParent, flushDirtyPages, setSyncMessage, stateRef, syncEnabled, upsertDirectory, workspaceId]);
+  }, [activeDirectoryId, authToken, backendUrl, directories, directoryClipboard, dispatch, duplicateDirectoryIntoParent, setSyncMessage, stateRef, syncEnabled, runDirectoryRequest, isCurrent, workspaceId, ensurePageLoaded, checkScope]);
 
   const cutSelectedNoteToClipboard = useCallback(() => {
     if (!activeDirectoryEntry || activeDirectoryEntry.kind !== 'note' || !activeDirectoryEntry.page) {
@@ -495,9 +538,9 @@ export function useDirectoryBrowser({
     openCreateDirectoryPrompt,
     renameDirectoryEntry,
     clearPendingDirectoryMove,
-    submitDirectoryPrompt,
-    deleteSelectedDirectory,
-    pasteClipboardHere,
+    submitDirectoryPrompt: () => runDirectoryAction(submitDirectoryPrompt),
+    deleteSelectedDirectory: () => runDirectoryAction(deleteSelectedDirectory),
+    pasteClipboardHere: () => runDirectoryAction(pasteClipboardHere),
     cutSelectedNoteToClipboard,
     copySelectedDirectoryToClipboard,
     moveSelectedDirectoryToClipboard,

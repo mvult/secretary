@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Container, Title, Loader, List, ThemeIcon, Alert, Text, Anchor } from '@mantine/core';
 import { Mic, AlertCircle } from 'lucide-react';
 import { recordingsClient } from '../lib/client';
-import type { Recording, ListRecordingsResponse } from '../gen/secretary/v1/recordings_pb';
+import type { Recording, ListRecordingsResponse } from '@secretary/api/gen/recordings_pb';
 
 export function DashboardPage() {
   const { data, isLoading, error } = useQuery({

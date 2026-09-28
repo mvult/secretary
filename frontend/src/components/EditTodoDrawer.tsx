@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Drawer, Select, Textarea, Button, Group, Stack, Timeline, Text, Loader, ActionIcon, Menu, Collapse, Anchor } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
@@ -6,8 +6,10 @@ import { Trash, MoreVertical, ChevronDown, ChevronRight } from 'lucide-react';
 import { todosClient, usersClient } from '../lib/client';
 import { getUser } from '../lib/auth';
 import { getStatusConfig, TODO_STATUS_OPTIONS } from '../lib/status';
-import { Todo, TodoStatus, ListTodoHistoryResponse } from '../gen/secretary/v1/todos_pb';
-import { ListUsersResponse } from '../gen/secretary/v1/users_pb';
+import { Todo, TodoStatus, ListTodoHistoryResponse, UpdateTodoRequest, DeleteTodoRequest } from '@secretary/api/gen/todos_pb';
+import { todoEditPatch } from '../lib/retainedTodoCommand';
+import { hasRetainedTodoCommand, runTodoCommand, todoRecoveredEvent } from '../lib/todoCommandRecovery';
+import { ListUsersResponse } from '@secretary/api/gen/users_pb';
 
 interface EditTodoDrawerProps {
   opened: boolean;
@@ -22,6 +24,17 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
   const [status, setStatus] = useState<string>('1');
   const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
   const user = getUser();
+  const submitted = useRef<{ id: string; form: string } | null>(null);
+  const form = JSON.stringify([String(todo?.id), name, desc, status]);
+  useEffect(() => {
+    const recovered = (event: Event) => {
+      if (!submitted.current || (event as CustomEvent).detail.mutationId !== submitted.current.id) return;
+      if (submitted.current.form === form) onClose();
+      submitted.current = null;
+    };
+    window.addEventListener(todoRecoveredEvent, recovered);
+    return () => window.removeEventListener(todoRecoveredEvent, recovered);
+  }, [form, onClose]);
 
   const toggleExpand = (id: string) => {
     setExpandedItems(prev => ({ ...prev, [id]: !prev[id] }));
@@ -68,19 +81,20 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
   const updateMutation = useMutation({
     mutationFn: async () => {
       if (!todo) return;
-      await todosClient.updateTodo({
-        id: todo.id,
-        userId: todo.userId, // Required by backend
-        name,
-        desc,
-        status: Number(status) as TodoStatus,
-      });
+      const patch = todoEditPatch(todo, { name, desc, status: Number(status) as TodoStatus });
+      if (patch.name === undefined && patch.desc === undefined && patch.status === undefined) { onClose(); return; }
+      if (hasRetainedTodoCommand()) throw new Error('Recover the retained TODO command first.');
+      const mutationId = crypto.randomUUID();
+      submitted.current = { id: mutationId, form };
+      await runTodoCommand(queryClient, { operation: 'update', request: new UpdateTodoRequest({
+        id: todo.id, workspaceId: todo.workspaceId, protocolVersion: 1,
+        mutationId, patch,
+      }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['todos'] });
       queryClient.invalidateQueries({ queryKey: ['todoHistory'] });
       notifications.show({ title: 'Success', message: 'Todo updated', color: 'green' });
-      onClose();
     },
     onError: (err: any) => {
       notifications.show({ title: 'Error', message: err.message, color: 'red' });
@@ -91,12 +105,16 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
   const deleteMutation = useMutation({
     mutationFn: async () => {
       if (!todo) return;
-      await todosClient.deleteTodo({ id: todo.id });
+      if (hasRetainedTodoCommand()) throw new Error('Recover the retained TODO command first.');
+      const mutationId = crypto.randomUUID();
+      submitted.current = { id: mutationId, form };
+      await runTodoCommand(queryClient, { operation: 'delete', request: new DeleteTodoRequest({
+        id: todo.id, workspaceId: todo.workspaceId, protocolVersion: 1, mutationId,
+      }) });
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['todos'] });
       notifications.show({ title: 'Deleted', message: 'Todo deleted', color: 'blue' });
-      onClose();
     },
     onError: (err: any) => {
       notifications.show({ title: 'Error', message: err.message, color: 'red' });
@@ -139,6 +157,7 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
 
         <Textarea
           label="Task Name"
+          disabled={updateMutation.isPending}
           value={name}
           onChange={(e) => setName(e.currentTarget.value)}
           required
@@ -148,6 +167,7 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
         
         <Select
           label="Status"
+          disabled={updateMutation.isPending}
           data={TODO_STATUS_OPTIONS}
           value={status}
           onChange={(v) => setStatus(v || '1')}
@@ -156,6 +176,7 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
 
         <Textarea
           label="Description"
+          disabled={updateMutation.isPending}
           autosize
           minRows={12}
           value={desc}
@@ -166,6 +187,7 @@ export function EditTodoDrawer({ opened, onClose, todo }: EditTodoDrawerProps) {
           fullWidth 
           onClick={() => updateMutation.mutate()} 
           loading={updateMutation.isPending}
+          disabled={!name.trim() || deleteMutation.isPending}
         >
           Save Changes
         </Button>

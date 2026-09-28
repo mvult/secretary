@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject } from 'react';
-import { BackendError, createWorkspace, getDocument, listDocuments, listWorkspaces, login, onAuthFailure, saveDocument, type BackendDirectory } from '../../lib/backend';
-import { backendIdentity, draftScope, DraftStorage, openDraftDatabase, type DraftRecord } from '../../lib/draftStorage';
+import { BackendError, createWorkspace, deleteDocument, getDocument, listTodos, listWorkspaces, login, moveDocumentTodosToRepository, pullOnDeckTodosToToday, onAuthFailure, saveDocument, updateTodo, type BackendDirectory, type TodoPatch, type DocumentMetadata } from '../../lib/backend';
+import { loadIndexedWorkspace, navigationPages } from './documentIndex';
+import { getCurrentJournalDate, getDateKey } from '../outline/sampleData';
+import { backendIdentity, draftScope, DraftStorage, openDraftDatabase, type DraftRecord, type TodoCommandEnvelope } from '../../lib/draftStorage';
 import { documentToOutlinePage, outlinePageToDocument } from '../outline/remote';
 import { getPageTitle, getPagesForPersistence } from '../outline/tree';
 import { reduceOutlineState, type OutlineAction } from '../outline/state';
@@ -9,7 +11,9 @@ import { findPageForPersistence, normalizePageForSave, pageHash, pagePersistence
 import { SETTINGS_STORAGE_KEY, type PageSaveIndicator, type StoredSettings } from '../../app/types';
 import { reconcileSavedPage } from './saveReconciliation';
 import { useSaveStatus } from './useSaveStatus';
-import { draftConflicts, mergeWorkspace, recoveryCopy, trackDrafts } from './draftReconciliation';
+import { adoptSnapshotIdentity, draftConflicts, isDraftDirty, mergeWorkspace, recoveryCopy, trackDrafts } from './draftReconciliation';
+import { assertVersionedPage, DocumentSaveController, draftId, prepareDelete, sendRetainedDelete, sendRetainedSave } from './documentSaveController';
+import { getCommandDate, prepareTodoCommand, prepareTodoUpdate, sendTodoCommand } from './todoCommandController';
 
 type SessionStatus = 'restoring' | 'signed-out' | 'validating' | 'loading' | 'ready' | 'reauth-required' | 'unavailable';
 type LoadStage = 'restoring' | 'authenticating' | 'documents' | 'merging' | 'persisting';
@@ -22,6 +26,7 @@ interface Options {
   state: OutlineState;
   dispatch: Dispatch<OutlineAction>;
   onPagesSavedRef?: MutableRefObject<(() => Promise<void>) | null>;
+  loadWorkspace?: typeof loadIndexedWorkspace;
 }
 
 function readSettings(): StoredSettings {
@@ -40,7 +45,7 @@ function tokenUser(token: string) {
   return Number(JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))).sub);
 }
 
-export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }: Options) {
+export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, loadWorkspace = loadIndexedWorkspace }: Options) {
   const [settings] = useState(readSettings);
   const [backendUrl, updateBackendUrl] = useState(settings.backendUrl ?? 'http://localhost:8091');
   const [email, setEmail] = useState(settings.email ?? '');
@@ -58,6 +63,9 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
   const [persistedHashes, setPersistedHashes] = useState<Record<string, string>>({});
   const [syncMessage, setSyncMessage] = useState('');
   const [directories, setDirectories] = useState<BackendDirectory[]>([]);
+  const [documentIndex, setDocumentIndex] = useState<DocumentMetadata[]>([]);
+  const bodyLoads = useRef(new Map<number, Promise<OutlinePage>>());
+  const selectionTicket = useRef(0);
   const [pageSaveIndicators, setPageSaveIndicators] = useState<Record<string, PageSaveIndicator>>({});
   const [saveFailureAlert, setSaveFailureAlert] = useState<{ pageTitle: string; message: string } | null>(null);
   const [refresh, setRefresh] = useState(0);
@@ -75,6 +83,9 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
   const scopeReadyRef = useRef(false);
   const refreshWaiters = useRef<(() => void)[]>([]);
   const persistRequestRef = useRef(0);
+  const controllerRef = useRef<DocumentSaveController | null>(null);
+  const commandRef = useRef<object | null>(null);
+  const retainedCommandRef = useRef<TodoCommandEnvelope | undefined>(undefined);
 
   const apply = useCallback((action: OutlineAction) => {
     stateRef.current = reduceOutlineState(stateRef.current, action);
@@ -100,7 +111,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     const epoch = epochRef.current;
     const request = ++persistRequestRef.current;
     try {
-      await storage.save({ records, directories: directoriesRef.current });
+      await storage.save({ records, directories: directoriesRef.current, command: retainedCommandRef.current });
       if (epoch === epochRef.current && request === persistRequestRef.current) {
         setPersistedHashes(Object.fromEntries(records.map((record) => [record.page.id, pageHash(record.page)])));
         setLocalError('');
@@ -123,6 +134,72 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     setSyncMessage(message(error));
   }, []);
 
+  const removeDraft = useCallback(async (id: string) => {
+    const epoch = epochRef.current;
+    const records = currentRecords();
+    const record = records.find((entry) => draftId(entry) === id);
+    if (!record) return;
+    const remaining = records.filter((entry) => entry !== record);
+    writableRef.current = false;
+    try { await persist(remaining); }
+    finally { if (epoch === epochRef.current) writableRef.current = true; }
+    if (epoch !== epochRef.current) return;
+    recordsRef.current = remaining;
+    apply({ type: 'deleteNote', pageId: record.page.id });
+  }, [apply, currentRecords, persist]);
+
+  const createSaveController = useCallback((epoch: number) => {
+    const scope = draftScope(backendUrl, userId!, workspaceId!);
+    const active = () => epoch === epochRef.current && JSON.stringify(storageRef.current?.scope) === JSON.stringify(scope);
+    const getServer = async (id: number) => {
+      try { return documentToOutlinePage(await getDocument(backendUrl, authToken, id)); }
+      catch (error) { if (error instanceof BackendError && error.status === 404) return null; throw error; }
+    };
+    return new DocumentSaveController({ scope, active, canSend: () => syncRef.current,
+      read: (id) => currentRecords().find((record) => draftId(record) === id),
+      change: (id, update) => {
+        if (!active()) return;
+        const records = currentRecords();
+        const previous = records.find((record) => draftId(record) === id);
+        if (!previous) return;
+        const next = update(previous);
+        recordsRef.current = records.map((record) => record === previous ? next : record);
+        if (next.page !== previous.page) apply({ type: 'mergeRemotePage', page: next.page, previousPageId: previous.page.id, source: 'session:versionedSave' });
+      },
+      persist: () => persist(),
+      send: (body) => sendRetainedSave(backendUrl, authToken, body),
+      sendDelete: (body) => sendRetainedDelete(backendUrl, authToken, body),
+      remove: removeDraft,
+      getServer,
+      effects: async (ids, primary) => {
+        for (const id of new Set(ids.filter((id) => id !== primary))) {
+          if (!active()) return;
+          recordsRef.current = currentRecords().map((record) => record.page.backendId === id ? { ...record, needsRefresh: true } : record);
+          await persist();
+          const remote = await getServer(id);
+          if (!active()) return;
+          if (remote) assertVersionedPage(remote);
+          const records = currentRecords();
+          const related = records.find((record) => record.page.backendId === id);
+          if (!related) continue;
+          recordsRef.current = [...records.filter((record) => record !== related), ...mergeWorkspace([related], remote ? [remote] : [])];
+          apply({ type: 'refreshPages', pages: recordsRef.current.map((record) => record.page) });
+          await persist();
+        }
+      },
+      status: (id, status, text) => {
+        if (!active()) return;
+        const record = currentRecords().find((record) => draftId(record) === id);
+        if (!record) return;
+        setPageSaveIndicators((value) => ({ ...value, [pagePersistenceKey(record.page)]: {
+          status, message: text, hash: status === 'saved' ? record.savedHash ?? '' : pageHash(record.page),
+        } }));
+        if (status === 'failed') setSaveFailureAlert({ pageTitle: getPageTitle(record.page), message: text });
+      },
+      failure: (error) => { if (active() && error instanceof BackendError && [401, 403].includes(error.status)) failSession(error); },
+    });
+  }, [apply, authToken, backendUrl, currentRecords, failSession, persist, removeDraft, userId, workspaceId]);
+
   useEffect(() => onAuthFailure((failure) => {
     if (failure.baseUrl === backendUrl && failure.token === authToken && authToken) {
       failSession(new BackendError('Session expired. Log in to resume saving; local drafts are retained.', 401));
@@ -143,6 +220,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     scopeReadyRef.current = false;
     writableRef.current = false;
     syncRef.current = false;
+    controllerRef.current = null;
     setLocalReady(false);
     setLoadStatus('restoring');
     setSessionStatus('restoring');
@@ -176,6 +254,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
             if (!active()) { db.close(); return; }
             storageRef.current = storage;
             recordsRef.current = cached.records;
+            retainedCommandRef.current = cached.command;
             directoriesRef.current = cached.directories;
             setDirectories(cached.directories);
             apply({ type: 'hydrate', pages: cached.records.map((entry) => entry.page), source: 'session:restoreDrafts' });
@@ -203,22 +282,61 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
         if (!workspaces.some((workspace) => workspace.id === workspaceId)) throw new BackendError('Workspace access denied. Local drafts are retained.', 403);
         setSessionStatus('loading');
         beginStage('documents');
-        const remote = await listDocuments(backendUrl, authToken, workspaceId);
+        let remote = await loadWorkspace(backendUrl, authToken, workspaceId, currentRecords, active);
         if (!active()) return;
+        if (![0, 1].includes(remote.persistenceProtocolVersion)) throw new Error('Unsupported server persistence protocol. Drafts are retained.');
+        if (remote.persistenceProtocolVersion !== 1 && (retainedCommandRef.current || currentRecords().some((record) => record.envelope || (record.baseline?.revision && record.baseline.revision !== '0')))) {
+          throw new Error('The server does not support the retained versioned drafts. Automatic downgrade is paused.');
+        }
+        const retainedCommand = retainedCommandRef.current;
+        let rejectedCommand = '';
+        if (retainedCommand) {
+          // A crash may have interrupted local retention, the response, or cache refresh.
+          // Replay exact bytes only after authenticated membership/capability checks.
+          await persist();
+          if (!active()) return;
+          try { await sendTodoCommand(backendUrl, authToken, draftScope(backendUrl, userId, workspaceId), retainedCommand); }
+          catch (error) {
+            // Receipt lookup precedes target existence checks: a typed not_found
+            // proves this command did not commit. Still refresh before releasing it.
+            if (!(error instanceof BackendError) || error.status !== 404 || error.code !== 'not_found') throw error;
+            rejectedCommand = message(error);
+          }
+          if (!active()) return;
+          remote = await loadWorkspace(backendUrl, authToken, workspaceId, currentRecords, active);
+          if (!active()) return;
+          if (remote.persistenceProtocolVersion !== 1) throw new Error('Command recovery requires versioned live snapshots.');
+        }
+        const remotePages = [...remote.documents.map(documentToOutlinePage), ...remote.unchangedPages];
+        if (remote.persistenceProtocolVersion === 1) remotePages.forEach(assertVersionedPage);
         beginStage('merging');
-        const records = mergeWorkspace(currentRecords(), remote.documents.map(documentToOutlinePage));
+        setDocumentIndex(remote.entries);
+        const records = mergeWorkspace(currentRecords(), remotePages);
         recordsRef.current = records;
         directoriesRef.current = remote.directories;
         setDirectories(remote.directories);
         apply({ type: 'refreshPages', pages: records.map((entry) => entry.page) });
         beginStage('persisting');
-        await persist(records);
+        retainedCommandRef.current = undefined;
+        try { await persist(records); }
+        catch (error) { if (active()) retainedCommandRef.current = retainedCommand; throw error; }
         if (!active()) return;
         syncRef.current = true;
+        controllerRef.current = remote.persistenceProtocolVersion === 1 ? createSaveController(epoch) : null;
         setSessionStatus('ready');
         setLoadStatus('ready');
-        setSyncMessage(`Loaded ${remote.documents.length} documents${records.some((entry) => entry.conflict) ? '; local conflicts retained' : ''}.`);
+        setSyncMessage(rejectedCommand ? `Command rejected: ${rejectedCommand}` : `Indexed ${remote.entries.length} documents; loaded ${remote.documents.length} bodies${records.some((entry) => entry.conflict) ? '; local conflicts retained' : ''}.`);
         if (!pagesRef.current.length) apply({ type: 'createTodayJournal' });
+        if (retainedCommand) await onPagesSavedRef?.current?.().catch(() => undefined);
+        if (!active()) return;
+        const controller = controllerRef.current;
+        if (controller && records.some((record) => record.envelope && !record.conflict)) {
+          setSaving(true);
+          const replay = Promise.all(records.filter((record) => record.envelope && !record.conflict).map((record) => controller.flush(draftId(record), true))).then(() => undefined);
+          savingRef.current = replay;
+          try { await replay; }
+          finally { if (savingRef.current === replay) savingRef.current = null; if (active()) setSaving(false); }
+        }
       } catch (error) {
         if (!active()) return;
         if (!storageRef.current && userId && workspaceId) setLocalError(message(error));
@@ -234,7 +352,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
       syncRef.current = false;
       if (epochRef.current === epoch) ++epochRef.current;
     };
-  }, [backendUrl, userId, workspaceId, authToken, refresh, apply, currentRecords, persist, failSession]);
+  }, [backendUrl, userId, workspaceId, authToken, refresh, apply, currentRecords, persist, failSession, createSaveController, onPagesSavedRef, loadWorkspace]);
 
   // No network debounce here: retain every editor snapshot, including active draft text.
   useEffect(() => {
@@ -242,10 +360,26 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     void persist().catch(() => undefined);
   }, [pagesForPersistence, directories, localReady, persist]);
 
-  const flushDirtyPages = useCallback(async (snapshotOverride?: OutlinePage[]) => {
+  const flushDirtyPages = useCallback(async (snapshotOverride?: OutlinePage[], commandFlush = false) => {
+    if (retainedCommandRef.current) return;
+    if (commandRef.current && !commandFlush) return;
     if (!userId || !workspaceId || JSON.stringify(storageRef.current?.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId))) return;
     if (savingRef.current) return savingRef.current;
     if (!syncRef.current || !scopeReadyRef.current) return;
+    const controller = controllerRef.current;
+    if (controller) {
+      const epoch = epochRef.current;
+      const records = currentRecords().filter((record) => !snapshotOverride || record.envelope || snapshotOverride.some((page) => pagePersistenceKey(page) === pagePersistenceKey(record.page)));
+      setSaving(true);
+      const promise = Promise.all(records.map((record) => controller.flush(draftId(record)))).then(async () => {
+        if (epoch === epochRef.current) await onPagesSavedRef?.current?.().catch(() => undefined);
+      }).finally(() => {
+        if (savingRef.current === promise) savingRef.current = null;
+        if (epoch === epochRef.current) setSaving(false);
+      });
+      savingRef.current = promise;
+      return promise;
+    }
     if (!currentRecords().some((entry) => !entry.pending && !entry.conflict && entry.savedHash !== pageHash(entry.page))) return;
     const epoch = epochRef.current;
     const run = async () => {
@@ -255,7 +389,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
         const page = findPageForPersistence(pagesRef.current, candidate);
         if (!page) continue;
         const record = currentRecords().find((entry) => entry.page.id === page.id)!;
-        if (record.pending || record.conflict || record.savedHash === pageHash(page)) continue;
+        if (record.pending || record.envelope || record.conflict || record.needsRefresh || record.savedHash === pageHash(page)) continue;
         const requestPage = normalizePageForSave(page);
         const validation = validatePageForSave(requestPage);
         if (validation) { setSaveFailureAlert({ pageTitle: getPageTitle(page), message: validation }); continue; }
@@ -310,7 +444,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     return () => window.clearTimeout(timer);
   }, [pagesForPersistence, syncEnabled, saving, flushDirtyPages]);
 
-  const runSync = useCallback(async () => {
+  const refreshWorkspace = useCallback(async () => {
     if (savingRef.current) await savingRef.current;
     if (storageRef.current) {
       try { await persist(); } catch { return; }
@@ -320,6 +454,139 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
       setRefresh((value) => value + 1);
     });
   }, [persist]);
+
+  const runSync = useCallback(async () => {
+    if (commandRef.current) { setSyncMessage('A document command is still running.'); return; }
+    await refreshWorkspace();
+  }, [refreshWorkspace]);
+
+  const runDocumentCommand = useCallback(async <T,>(command: () => Promise<T>): Promise<T> => {
+    if (retainedCommandRef.current) throw new Error('Sync to recover the retained command before starting another.');
+    if (commandRef.current) throw new Error('A document command is already running.');
+    const epoch = epochRef.current;
+    const ticket = {};
+    const storage = storageRef.current;
+    const check = () => {
+      if (epoch !== epochRef.current || !syncRef.current || !scopeReadyRef.current) throw new Error('Connect to the workspace before running this command.');
+    };
+    check();
+    commandRef.current = ticket;
+    let invalidated = false;
+    try {
+      // Await the current flight, then drain edits that arrived during that flight.
+      // Autosave's best-effort completion is not proof that a command may proceed.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await flushDirtyPages(undefined, true);
+        check();
+        const blocked = currentRecords().filter((record) => isDraftDirty(record) || record.needsRefresh);
+        if (!blocked.length) break;
+        if (attempt === 2 || blocked.some((record) => record.pending || record.envelope || record.conflict || record.retry || record.needsRefresh)) {
+          throw new Error('Resolve pending saves or refresh conflicts before running this command.');
+        }
+      }
+      // Commands can affect linked TODOs in other documents. Retain invalidation
+      // before sending, and keep snapshot saves paused through the body refresh.
+      recordsRef.current = currentRecords().map((record) => record.page.backendId ? { ...record, needsRefresh: true } : record);
+      invalidated = true;
+      await persist();
+      check();
+      if (currentRecords().some(isDraftDirty)) throw new Error('New edits arrived before the command. Save them and retry.');
+      const result = await command();
+      check();
+      return result;
+    } finally {
+      try {
+        if (invalidated && epoch === epochRef.current && syncRef.current) await refreshWorkspace();
+      } finally {
+        if (commandRef.current === ticket) commandRef.current = null;
+      }
+      if (storageRef.current !== storage || (invalidated && !syncRef.current)) throw new Error('Command outcome needs a workspace refresh; retained drafts were preserved.');
+    }
+  }, [currentRecords, flushDirtyPages, persist, refreshWorkspace]);
+
+  const runTodoCommand = useCallback(async (operation: 'repository' | 'pull', documentId?: number) => {
+    const epoch = epochRef.current;
+    return runDocumentCommand(async () => {
+      if (!controllerRef.current) {
+        return operation === 'repository'
+          ? { movedCount: await moveDocumentTodosToRepository(backendUrl, authToken, documentId!), pulledCount: 0, documentId: 0 }
+          : { ...await pullOnDeckTodosToToday(backendUrl, authToken, workspaceId!), movedCount: 0 };
+      }
+      const scope = draftScope(backendUrl, userId!, workspaceId!);
+      const target = operation === 'repository' ? documentId! : await getCommandDate(backendUrl, authToken, scope[2]);
+      if (epoch !== epochRef.current || !syncRef.current) throw new Error('The session changed before command preparation.');
+      if (currentRecords().some(isDraftDirty)) throw new Error('New edits arrived during command preparation. Save them and retry.');
+      const envelope = prepareTodoCommand(scope, operation, target);
+      retainedCommandRef.current = envelope;
+      await persist();
+      if (epoch !== epochRef.current || !syncRef.current) throw new Error('Command retained; reconnect to recover it.');
+      return sendTodoCommand(backendUrl, authToken, scope, envelope);
+    });
+  }, [authToken, backendUrl, currentRecords, persist, runDocumentCommand, userId, workspaceId]);
+
+  const runTodoUpdate = useCallback(async (id: number, input: TodoPatch) => {
+    const patch = structuredClone(input);
+    const storage = storageRef.current;
+    const epoch = epochRef.current;
+    await runDocumentCommand(async () => {
+      const current = (await listTodos(backendUrl, authToken, userId!)).find((todo) => todo.id === id);
+      if (epoch !== epochRef.current || !syncRef.current) throw new Error('The session changed during TODO preparation.');
+      if (!current) throw new Error('This TODO no longer exists. Refresh the list.');
+      if (currentRecords().some(isDraftDirty)) throw new Error('New edits arrived during TODO preparation. Save them and retry.');
+      if (!controllerRef.current) {
+        const legacy = { ...current, ...patch };
+        if (patch.status && patch.bucket === undefined) legacy.bucket = patch.status === 'done' ? 'done' : patch.status === 'blocked' ? 'blocked'
+          : (current.bucket === 'done' || current.bucket === 'blocked' ? '' : current.bucket);
+        await updateTodo(backendUrl, authToken, legacy);
+        return;
+      }
+      const scope = draftScope(backendUrl, userId!, workspaceId!);
+      const envelope = prepareTodoUpdate(scope, current, patch);
+      retainedCommandRef.current = envelope;
+      await persist();
+      if (epoch !== epochRef.current || !syncRef.current) throw new Error('TODO update retained; reconnect to recover it.');
+      await sendTodoCommand(backendUrl, authToken, scope, envelope);
+    });
+    // The receipt is historical. Fetch the live TODO instead of installing it in the UI.
+    if (storageRef.current !== storage) throw new Error('The TODO session changed.');
+    const current = (await listTodos(backendUrl, authToken, userId!)).find((todo) => todo.id === id);
+    if (storageRef.current !== storage) throw new Error('The TODO session changed.');
+    if (!current) throw new Error('The TODO was deleted after this command.');
+    return current;
+  }, [authToken, backendUrl, currentRecords, persist, runDocumentCommand, userId, workspaceId]);
+
+  const deleteNote = useCallback(async (pageId: string) => {
+    const epoch = epochRef.current;
+    const original = currentRecords().find((record) => record.page.id === pageId);
+    if (!original || original.page.kind !== 'note') throw new Error('Open a note to delete it.');
+    const id = draftId(original);
+    if (!original.page.backendId) {
+      if (savingRef.current || original.pending || original.envelope || commandRef.current) throw new Error('Resolve the pending save before deleting this local note.');
+      await removeDraft(id);
+      return;
+    }
+    await runDocumentCommand(async () => {
+      const record = currentRecords().find((entry) => draftId(entry) === id);
+      if (!record?.page.backendId) throw new Error('Refresh the note before deleting it.');
+      const controller = controllerRef.current;
+      if (controller) {
+        // This flag was set by this command's invalidation, after the strict barrier.
+        const envelope = prepareDelete({ ...record, needsRefresh: false }, draftScope(backendUrl, userId!, workspaceId!));
+        recordsRef.current = currentRecords().map((entry) => draftId(entry) === id ? { ...entry, envelope } : entry);
+        await controller.flush(id, true);
+        if (currentRecords().some((entry) => draftId(entry) === id)) throw new Error('Deletion is unresolved or newer edits were retained. Sync or review the retained draft.');
+      } else {
+        await deleteDocument(backendUrl, authToken, record.page.backendId);
+        if (epoch !== epochRef.current) throw new Error('The session changed while deleting the note.');
+        const latest = currentRecords().find((entry) => draftId(entry) === id);
+        if (latest && pageHash(latest.page) !== pageHash(record.page)) {
+          recordsRef.current = currentRecords().map((entry) => draftId(entry) === id ? { ...entry, conflict: 'The note was deleted; newer local edits are retained for recovery.', serverCopy: null } : entry);
+          await persist();
+          throw new Error('The note was deleted; newer local edits are retained for recovery.');
+        } else await removeDraft(id);
+      }
+    });
+  }, [authToken, backendUrl, currentRecords, persist, removeDraft, runDocumentCommand, userId, workspaceId]);
 
   useEffect(() => {
     const reconnect = () => { void runSync(); };
@@ -339,7 +606,12 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     savingRef.current = null;
     refreshWaiters.current.splice(0).forEach((resolve) => resolve());
     storageRef.current = null;
+    controllerRef.current = null;
+    commandRef.current = null;
+    retainedCommandRef.current = undefined;
     recordsRef.current = [];
+    setDocumentIndex([]);
+    bodyLoads.current.clear();
     setLocalReady(false);
     setLocalError('');
     setPersistedHashes({});
@@ -392,11 +664,52 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     })();
   }, [backendUrl, detach]);
 
+  const ensurePageLoaded = useCallback(async (pageId: string): Promise<OutlinePage> => {
+    const existing = pagesRef.current.find(page => page.id === pageId);
+    if (existing) return existing;
+    const metadata = documentIndex.find(entry => `document-${entry.id}` === pageId);
+    const id = metadata?.id ?? (/^document-[1-9][0-9]*$/.test(pageId) ? Number(pageId.slice(9)) : 0);
+    if (!Number.isSafeInteger(id) || !id || !syncRef.current || !workspaceId) throw new Error('Document is not cached. Connect and Sync to open it.');
+    const prior = bodyLoads.current.get(id);
+    if (prior) return prior;
+    const epoch = epochRef.current;
+    const request = (async () => {
+      const document = await getDocument(backendUrl, authToken, id);
+      if (epoch !== epochRef.current || !syncRef.current) throw new Error('Document loading scope changed.');
+      if (document.id !== id || document.workspaceId !== workspaceId) throw new Error('Document identity does not match this workspace.');
+      const remote = documentToOutlinePage(document);
+      assertVersionedPage(remote);
+      const records = currentRecords();
+      const related = records.filter(record => record.page.backendId === id || record.page.clientKey === remote.clientKey);
+      const merged = mergeWorkspace(related, [remote]);
+      recordsRef.current = [...records.filter(record => !related.includes(record)), ...merged];
+      apply({ type: 'refreshPages', pages: recordsRef.current.map(record => record.page) });
+      await persist();
+      if (epoch !== epochRef.current) throw new Error('Document loading scope changed.');
+      return pagesRef.current.find(page => page.backendId === id)!;
+    })();
+    bodyLoads.current.set(id, request);
+    try { return await request; }
+    finally { if (bodyLoads.current.get(id) === request) bodyLoads.current.delete(id); }
+  }, [documentIndex, workspaceId, backendUrl, authToken, currentRecords, apply, persist]);
+
   const dispatch = useCallback((action: OutlineAction) => {
     if (!writableRef.current && !['openSettings', 'openAI', 'openPomodoro'].includes(action.type)) return;
     if (storageRef.current && (!userId || !workspaceId || JSON.stringify(storageRef.current.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId)))) return;
+    const ticket = ++selectionTicket.current;
+    const target = action.type === 'selectNote' || action.type === 'selectJournalPage' ? action.pageId
+      : action.type === 'selectJournal' || action.type === 'createTodayJournal'
+        ? documentIndex.find(entry => entry.kind === 'journal' && entry.journalDate === getDateKey(getCurrentJournalDate()))?.id : undefined;
+    const targetId = typeof target === 'number' ? `document-${target}` : target;
+    if (targetId && !pagesRef.current.some(page => page.id === targetId)) {
+      const epoch = epochRef.current;
+      void ensurePageLoaded(targetId).then(() => {
+        if (epoch === epochRef.current && ticket === selectionTicket.current && writableRef.current) apply(action);
+      }).catch(error => { if (epoch === epochRef.current && ticket === selectionTicket.current) setSyncMessage(message(error)); });
+      return;
+    }
     apply(action);
-  }, [apply, backendUrl, userId, workspaceId]);
+  }, [apply, backendUrl, userId, workspaceId, documentIndex, ensurePageLoaded]);
 
   const updateDirectories: Dispatch<React.SetStateAction<BackendDirectory[]>> = useCallback((value) => {
     if (!userId || !workspaceId || JSON.stringify(storageRef.current?.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId))) return;
@@ -409,12 +722,14 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     void flushDirtyPages();
   }, [dispatch, flushDirtyPages, persist]);
 
-  const resolveConflict = useCallback(async (pageId: string, resolution: 'reload' | 'copy') => {
+  const resolveConflict = useCallback(async (pageId: string, resolution: 'reload' | 'copy' | 'save', reviewed?: OutlinePage) => {
+    if (commandRef.current) throw new Error('Wait for the document command before resolving this draft.');
     if (!authToken || savingRef.current) return;
     const epoch = epochRef.current;
     try {
       const record = currentRecords().find((entry) => entry.page.id === pageId);
       if (!record) return;
+      if (record.envelope && !record.conflict) throw new Error('Resolve the retained save request before discarding or copying this draft.');
       const serverId = record.serverCopy?.backendId ?? record.page.backendId;
       const document = serverId
         ? await getDocument(backendUrl, authToken, serverId).catch((error) => {
@@ -423,8 +738,31 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
         })
         : null;
       const remote = document ? documentToOutlinePage(document) : null;
+      if (remote && controllerRef.current) assertVersionedPage(remote);
       if (epoch !== epochRef.current) return;
       const latest = currentRecords().find((entry) => entry.page.id === pageId)!;
+      if (resolution === 'save') {
+        const compared = reviewed ?? record.serverCopy;
+        if (!controllerRef.current || !compared?.revision || !remote) throw new Error('A versioned server copy must be reviewed before saving.');
+        if (remote.backendId !== compared.backendId || remote.revision !== compared.revision) {
+          recordsRef.current = currentRecords().map((entry) => entry.page.id === pageId ? { ...entry, serverCopy: remote,
+            conflict: 'The server changed again. Review the refreshed server copy before saving.' } : entry);
+          await persist();
+          throw new Error('The server changed again. Review the refreshed server copy before saving.');
+        }
+        const resolved = { ...latest, page: adoptSnapshotIdentity(latest.page, remote), baseline: remote, savedHash: pageHash(remote),
+          acknowledgedGeneration: undefined,
+          envelope: undefined, pending: false, conflict: undefined, serverCopy: undefined, retry: undefined, needsRefresh: false };
+        const records = currentRecords().map((entry) => entry.page.id === pageId ? resolved : entry);
+        writableRef.current = false;
+        try { await persist(records); }
+        finally { if (epoch === epochRef.current) writableRef.current = true; }
+        if (epoch !== epochRef.current) return;
+        recordsRef.current = records;
+        apply({ type: 'mergeRemotePage', page: resolved.page, previousPageId: pageId, source: 'session:reviewedResolution' });
+        await flushDirtyPages();
+        return;
+      }
       let records = currentRecords().filter((entry) => entry.page.id !== pageId);
       if (resolution === 'copy') records.push({ page: recoveryCopy(latest.page) });
       if (remote) records.push({ page: remote, baseline: remote, savedHash: pageHash(remote) });
@@ -436,13 +774,13 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
       if (epoch !== epochRef.current) return;
       recordsRef.current = records;
       apply({ type: 'hydrate', pages: records.map((entry) => entry.page), source: 'session:resolveConflict' });
-    } catch (error) { setSyncMessage(message(error)); throw error; }
-  }, [apply, authToken, backendUrl, currentRecords, persist]);
+    } catch (error) { if (epoch === epochRef.current) setSyncMessage(message(error)); throw error; }
+  }, [apply, authToken, backendUrl, currentRecords, persist, flushDirtyPages]);
 
   const page = pagesForPersistence.find((entry) => entry.id === state.activePageId);
   const conflicts = draftConflicts(currentRecords(), saving);
   const record = page ? currentRecords().find((entry) => entry.page.id === page.id) : undefined;
-  const activePageIsDirty = Boolean(page && pageHash(page) !== record?.savedHash);
+  const activePageIsDirty = Boolean(record && isDraftDirty(record));
   const indicator = page ? pageSaveIndicators[pagePersistenceKey(page)] : undefined;
   const localMessage = localError ? `Local storage failed: ${localError}`
     : page && persistedHashes[page.id] !== pageHash(page) ? 'Retaining locally…' : 'Retained locally';
@@ -454,6 +792,9 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
   const loadTimingMessage = Object.entries(loadTimings).map(([key, ms]) =>
     `${key === 'total' ? 'Total' : loadLabels[key as LoadStage]}: ${Math.round(ms!)} ms`).join(' · ');
   const saveMessage = hasActiveConflict ? `${localMessage} · conflict`
+    : record?.envelope?.operation === 'delete' ? `${localMessage} · ${record.retry ? 'deletion unresolved; Sync now to retry' : 'deletion pending'}`
+    : record?.needsRefresh ? `${localMessage} · refresh required; Sync now`
+    : activePageIsDirty && record?.retry && sessionStatus === 'ready' ? `${localMessage} · ${record.retry.attempts >= 3 ? 'retry paused; Sync now to retry' : 'save failed; retry pending'}`
     : activePageIsDirty ? `${localMessage} · ${indicator?.status === 'saving' ? 'saving…' : sessionStatus === 'ready' ? 'pending save' : sessionLabel.toLowerCase()}`
       : localError ? localMessage : 'Saved';
   const activePageSaveMessage = useSaveStatus(
@@ -461,7 +802,9 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     Boolean(localError || hasActiveConflict || indicator?.status === 'failed' || sessionStatus !== 'ready'),
   );
 
+  const availablePages = useMemo(() => navigationPages(documentIndex, pagesForPersistence), [documentIndex, pagesForPersistence]);
   return {
+    documentIndex, navigationPages: availablePages, ensurePageLoaded,
     backendUrl, setBackendUrl, email, setEmail, password, setPassword, authToken, userId, workspaceId,
     centerColumn, setCenterColumn, editorFontScale, setEditorFontScale, syncMessage, setSyncMessage,
     directories, setDirectories: updateDirectories, stateRef, pagesRef, pagesForPersistence, pageSaveIndicators,
@@ -472,6 +815,6 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef }
     bootstrapped: sessionStatus !== 'restoring', initialLoadResolved: loadStatus === 'ready', syncEnabled,
     activePageSaveMessage, activePageIsDirty, activePageHasNewerEdits: Boolean(page && indicator?.hash !== pageHash(page)),
     saveFailureAlert, dismissSaveFailureAlert: () => setSaveFailureAlert(null),
-    flushDirtyPages, dispatchAfterFlush, runLogin, runSync, handleLogout,
+    flushDirtyPages, runDocumentCommand, runTodoCommand, runTodoUpdate, deleteNote, dispatchAfterFlush, runLogin, runSync, handleLogout,
   };
 }

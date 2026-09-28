@@ -1600,6 +1600,19 @@ button {
   line-height: 1.4;
 }
 
+.row-fold-toggle {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(203, 215, 238, 0.7);
+  cursor: pointer;
+}
+
+.row-fold-toggle:hover,
+.row-fold-toggle[aria-expanded='false'] {
+  color: #edf2ff;
+}
+
 .status-chip {
   min-width: 0;
   display: inline-flex;

@@ -53,10 +53,46 @@ message ListDocumentsRequest {
 message ListDocumentsResponse {
   repeated Document documents = 1;
   repeated Directory directories = 2;
+  // Zero until coordinated activation. A client must not infer support from
+  // database revisions or attempt to downgrade a retained versioned request.
+  uint32 persistence_protocol_version = 3;
 }
 
 message GetDocumentRequest {
   int64 id = 1;
+}
+
+// Metadata is deliberately not a Document: it cannot be submitted as a body.
+message DocumentIndexEntry {
+  int64 id = 1;
+  string client_key = 2;
+  int64 workspace_id = 3;
+  string kind = 4;
+  string title = 5;
+  string journal_date = 6;
+  string created_at = 7;
+  string updated_at = 8;
+  int64 directory_id = 9;
+  int64 revision = 10;
+  // Only populated for a search; plain text, at most 240 characters.
+  string snippet = 11;
+}
+
+message ListDocumentIndexRequest {
+  int64 workspace_id = 1;
+  // Descending immutable ID keyset; zero starts a new traversal.
+  int64 before_id = 2;
+  int32 page_size = 3;
+  // Literal case-insensitive title/body search, preserving native search semantics.
+  string query = 4;
+}
+
+message ListDocumentIndexResponse {
+  repeated DocumentIndexEntry entries = 1;
+  int64 next_before_id = 2;
+  // Returned on the first page only.
+  repeated Directory directories = 3;
+  uint32 persistence_protocol_version = 4;
 }
 
 message GetDocumentResponse {
@@ -136,6 +172,14 @@ message UpdateDirectoryRequest {
   int64 id = 1;
   string name = 2;
   int64 parent_id = 3;
+  // When present, omitted fields preserve locked current values. Legacy fields
+  // must be empty. Explicit parent_id=0 moves the directory to root.
+  DirectoryPatch patch = 4;
+}
+
+message DirectoryPatch {
+  optional string name = 1;
+  optional int64 parent_id = 2;
 }
 
 message UpdateDirectoryResponse {
@@ -149,6 +193,7 @@ message DeleteDirectoryRequest {
 message DeleteDirectoryResponse {}
 
 service DocumentsService {
+  rpc ListDocumentIndex(ListDocumentIndexRequest) returns (ListDocumentIndexResponse);
   rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
   rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
   rpc SaveDocument(SaveDocumentRequest) returns (SaveDocumentResponse);

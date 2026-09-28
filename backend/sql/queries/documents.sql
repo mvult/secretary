@@ -1,3 +1,18 @@
+-- name: ListDocumentIndex :many
+SELECT d.*, coalesce((
+  SELECT substring(b.text FROM greatest(1, strpos(lower(b.text), lower(sqlc.arg(query))) - 60) FOR 240)
+  FROM block b WHERE b.document_id = d.id AND sqlc.arg(query)::text <> ''
+    AND strpos(lower(b.text), lower(sqlc.arg(query))) > 0
+  ORDER BY b.sort_order, b.id LIMIT 1
+), '')::text AS snippet
+FROM document d
+WHERE d.workspace_id = sqlc.arg(workspace_id)
+  AND (sqlc.arg(before_id)::integer = 0 OR d.id < sqlc.arg(before_id))
+  AND (sqlc.arg(query)::text = '' OR strpos(lower(d.title), lower(sqlc.arg(query))) > 0
+    OR EXISTS (SELECT 1 FROM block b WHERE b.document_id = d.id AND strpos(lower(b.text), lower(sqlc.arg(query))) > 0))
+ORDER BY d.id DESC
+LIMIT sqlc.arg(page_limit);
+
 -- name: ListDocumentsByWorkspace :many
 SELECT
   d.id,

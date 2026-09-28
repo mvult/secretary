@@ -67,28 +67,13 @@ func (s *session) buildToolbox() (*toolbox, error) {
 			return marshalToolResult(resp, err)
 		}},
 		{name: "create_document", description: "Create a new note, usually in the AI subtree for memories or working notes.", parameters: schemaObject(schemaString("title", "Title for the new note."), schemaString("content", "Plaintext outline content for the note.")), execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var req createDocumentRequest
-			if err := decodeToolArgs(raw, &req); err != nil {
-				return "", err
-			}
-			resp, err := s.createDocument(req)
-			return marshalToolResult(resp, err)
+			return s.executeMutation(ctx, "create_document", raw)
 		}},
 		{name: "insert_block", description: "Insert a new block into an existing document without replacing other content.", parameters: schemaObject(schemaInteger("document_id", "Document ID to insert into."), schemaInteger("parent_block_id", "Optional parent block ID for nested insertion. Use 0 for root."), schemaInteger("after_block_id", "Optional sibling block ID to insert after. Use 0 to insert at the start."), schemaString("text", "Block text to insert.")), execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var req insertBlockRequest
-			if err := decodeToolArgs(raw, &req); err != nil {
-				return "", err
-			}
-			resp, err := s.insertBlock(req)
-			return marshalToolResult(resp, err)
+			return s.executeMutation(ctx, "insert_block", raw)
 		}},
 		{name: "move_block", description: "Move an existing block to a new parent or sibling position without deleting content.", parameters: schemaObject(schemaInteger("block_id", "Block ID to move."), schemaInteger("parent_block_id", "Optional new parent block ID. Use 0 for root."), schemaInteger("after_block_id", "Optional sibling block ID to move after. Use 0 to move to the start.")), execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
-			var req moveBlockRequest
-			if err := decodeToolArgs(raw, &req); err != nil {
-				return "", err
-			}
-			resp, err := s.moveBlock(req)
-			return marshalToolResult(resp, err)
+			return s.executeMutation(ctx, "move_block", raw)
 		}},
 		{name: "list_skills", description: "List workspace skills from the AI/skills directory.", parameters: schemaObject(), execute: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			resp := listSkillsResponse{Skills: s.skillSummaries()}

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { updateTodo, listTodoGoals, listTodos, type BackendTodo, type BackendTodoGoal } from '../../lib/backend';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { listTodoGoals, listTodos, type BackendTodo, type BackendTodoGoal, type TodoPatch } from '../../lib/backend';
 import type { TodoFilter } from '../../app/types';
 import { matchesTodoFilter } from '../../app/format';
 
@@ -8,10 +8,13 @@ interface UseTodosOptions {
   authToken: string;
   userId: number | null;
   syncMessageSetter: (message: string) => void;
-  syncTodoIntoPages: (todo: BackendTodo) => void;
+  runTodoUpdate: (id: number, patch: TodoPatch) => Promise<BackendTodo>;
 }
 
-export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syncTodoIntoPages }: UseTodosOptions) {
+export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, runTodoUpdate }: UseTodosOptions) {
+  const scope = JSON.stringify([backendUrl, authToken, userId]);
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
   const [todos, setTodos] = useState<BackendTodo[]>([]);
   const [todoGoals, setTodoGoals] = useState<BackendTodoGoal[]>([]);
   const [todoFilter, setTodoFilter] = useState<TodoFilter>('all');
@@ -35,14 +38,16 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
         listTodos(backendUrl, nextToken, nextUserId),
         listTodoGoals(backendUrl, nextToken, nextUserId),
       ]);
+      if (scopeRef.current !== scope) return;
       setTodos(nextTodos);
       setTodoGoals(nextGoals);
     } catch (error) {
+      if (scopeRef.current !== scope) return;
       syncMessageSetter(error instanceof Error ? error.message : 'Todo refresh failed.');
     } finally {
-      setIsLoadingTodos(false);
+      if (scopeRef.current === scope) setIsLoadingTodos(false);
     }
-  }, [authToken, backendUrl, syncMessageSetter, userId]);
+  }, [authToken, backendUrl, syncMessageSetter, userId, scope]);
 
   const filteredTodos = useMemo(() => todos.filter((todo) => {
     if (!matchesTodoFilter(todo, todoFilter)) {
@@ -85,33 +90,33 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, syn
     }
     setUpdatingTodoId(todo.id);
     try {
-      const nextBucket = nextStatus === 'done' ? 'done' : nextStatus === 'blocked' ? 'blocked' : (todo.bucket === 'done' || todo.bucket === 'blocked' ? '' : todo.bucket);
-      const savedTodo = await updateTodo(backendUrl, authToken, { ...todo, status: nextStatus, bucket: nextBucket, userId });
+      const savedTodo = await runTodoUpdate(todo.id, { status: nextStatus });
+      if (scopeRef.current !== scope) return;
       setTodos((current) => current.map((entry) => (entry.id === savedTodo.id ? savedTodo : entry)));
-      syncTodoIntoPages(savedTodo);
     } catch (error) {
+      if (scopeRef.current !== scope) return;
       syncMessageSetter(error instanceof Error ? error.message : 'Todo update failed.');
     } finally {
-      setUpdatingTodoId(null);
+      if (scopeRef.current === scope) setUpdatingTodoId(null);
     }
-  }, [authToken, backendUrl, syncMessageSetter, syncTodoIntoPages, userId]);
+  }, [authToken, runTodoUpdate, syncMessageSetter, userId, scope]);
 
   const handleTodoChange = useCallback(async (todo: BackendTodo, patch: Partial<BackendTodo>) => {
     if (!authToken || !userId) {
       return;
     }
-    const nextTodo = { ...todo, ...patch, userId };
     setUpdatingTodoId(todo.id);
     try {
-      const savedTodo = await updateTodo(backendUrl, authToken, nextTodo);
+      const savedTodo = await runTodoUpdate(todo.id, patch);
+      if (scopeRef.current !== scope) return;
       setTodos((current) => current.map((entry) => (entry.id === savedTodo.id ? savedTodo : entry)));
-      syncTodoIntoPages(savedTodo);
     } catch (error) {
+      if (scopeRef.current !== scope) return;
       syncMessageSetter(error instanceof Error ? error.message : 'Todo update failed.');
     } finally {
-      setUpdatingTodoId(null);
+      if (scopeRef.current === scope) setUpdatingTodoId(null);
     }
-  }, [authToken, backendUrl, syncMessageSetter, syncTodoIntoPages, userId]);
+  }, [authToken, runTodoUpdate, syncMessageSetter, userId, scope]);
 
   const clearTodos = useCallback(() => {
     setTodos([]);

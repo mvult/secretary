@@ -24,13 +24,12 @@ import { SettingsView } from './features/settings/SettingsView';
 import { NoteHistoryDialog } from './features/history/NoteHistoryDialog';
 import { PomodoroView } from './features/pomodoro/PomodoroView';
 import { usePomodoro } from './features/pomodoro/usePomodoro';
-import { getDocumentHistoryEntry, listDocumentHistory, listPendingWhatsAppNotifications, markWhatsAppNotificationsNotified, type BackendDocumentHistoryEntry, type BackendTodo, type WhatsAppMessageNotification } from './lib/backend';
+import { getDocumentHistoryEntry, listDocumentHistory, listPendingWhatsAppNotifications, markWhatsAppNotificationsNotified, type BackendDocumentHistoryEntry, type WhatsAppMessageNotification } from './lib/backend';
 
 function App() {
   const [state, rawDispatch] = useOutlineState();
   const page = useMemo(() => getCurrentPage(state), [state.activePageId, state.pages]);
   const journalPage = useMemo(() => getJournalPage(state), [state.pages]);
-  const journals = useMemo(() => getJournalPages(state), [state.pages]);
   const refreshTodosRef = useRef<(() => Promise<void>) | null>(null);
   const [isToolbarMenuOpen, setIsToolbarMenuOpen] = useState(false);
   const [isNoteHistoryOpen, setIsNoteHistoryOpen] = useState(false);
@@ -44,34 +43,20 @@ function App() {
   const lastTodoGPressRef = useRef<number | null>(null);
 
   const session = useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef: refreshTodosRef });
+  const navigationState = useMemo(() => ({ ...state, pages: session.navigationPages }), [state, session.navigationPages]);
+  const journals = useMemo(() => getJournalPages(navigationState), [navigationState]);
   const dispatch = session.dispatch;
   const editorFontScaleStyle = { '--editor-font-scale': session.editorFontScale } as CSSProperties;
 
-  const search = useSearchView(state);
-  const documentLinks = useDocumentLinkPicker(state);
-
-  const syncTodoIntoPages = useCallback((todo: BackendTodo) => {
-    const documentId = todo.currentDocumentId || todo.sourceDocumentId;
-    const blockId = todo.currentBlockId || todo.sourceBlockId;
-    if (!documentId || !blockId) {
-      return;
-    }
-    dispatch({
-      type: 'syncRemoteTodo',
-      sourceDocumentId: documentId,
-      sourceBlockId: blockId,
-      todoId: todo.id,
-      status: todo.status,
-      updatedAt: todo.updatedAt || undefined,
-    });
-  }, [dispatch]);
+  const search = useSearchView(navigationState, session);
+  const documentLinks = useDocumentLinkPicker(navigationState);
 
   const todos = useTodos({
     backendUrl: session.backendUrl,
     authToken: session.authToken,
     userId: session.userId,
     syncMessageSetter: session.setSyncMessage,
-    syncTodoIntoPages,
+    runTodoUpdate: session.runTodoUpdate,
   });
 
   refreshTodosRef.current = async () => {
@@ -87,31 +72,34 @@ function App() {
   });
 
   const directory = useDirectoryBrowser({
+    availablePages: session.navigationPages,
+    ensurePageLoaded: session.ensurePageLoaded,
     state,
     stateRef: session.stateRef,
-    dispatch,
+    dispatch: session.dispatch,
     backendUrl: session.backendUrl,
     authToken: session.authToken,
     workspaceId: session.workspaceId,
     syncEnabled: session.syncEnabled,
     directories: session.directories,
-    flushDirtyPages: session.flushDirtyPages,
-    setDirectories: session.setDirectories,
+    runDocumentCommand: session.runDocumentCommand,
     setSyncMessage: session.setSyncMessage,
   });
 
   const commands = useAppCommands({
+    availablePages: session.navigationPages,
+    ensurePageLoaded: session.ensurePageLoaded,
     state,
     stateRef: session.stateRef,
     dispatch,
     dispatchAfterFlush: session.dispatchAfterFlush,
-    flushDirtyPages: () => session.flushDirtyPages(),
+    runTodoCommand: session.runTodoCommand,
+    deleteNote: session.deleteNote,
     backendUrl: session.backendUrl,
     authToken: session.authToken,
     workspaceId: session.workspaceId,
     syncEnabled: session.syncEnabled,
     setSyncMessage: session.setSyncMessage,
-    runSync: session.runSync,
     refreshTodos: () => todos.loadTodoList(),
     resetSearch: search.resetSearch,
     searchQuery: search.searchQuery,
@@ -369,8 +357,8 @@ function App() {
   });
 
   const pagesByBackendId = useMemo(
-    () => new Map(state.pages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
-    [state.pages],
+    () => new Map(session.navigationPages.filter((entry) => entry.backendId).map((entry) => [entry.backendId!, entry])),
+    [session.navigationPages],
   );
 
   const modalOverlays = (
@@ -612,6 +600,7 @@ function App() {
 
           {state.activeView === 'search' ? (
             <SearchView
+              searchStatus={search.searchStatus}
               searchQuery={search.searchQuery}
               searchScope={search.searchScope}
               searchMode={search.searchMode}

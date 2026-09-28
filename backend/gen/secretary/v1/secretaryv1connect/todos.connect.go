@@ -33,6 +33,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// TodosServiceGetTodoCommandContextProcedure is the fully-qualified name of the TodosService's
+	// GetTodoCommandContext RPC.
+	TodosServiceGetTodoCommandContextProcedure = "/secretary.v1.TodosService/GetTodoCommandContext"
 	// TodosServiceListTodosProcedure is the fully-qualified name of the TodosService's ListTodos RPC.
 	TodosServiceListTodosProcedure = "/secretary.v1.TodosService/ListTodos"
 	// TodosServiceGetTodoProcedure is the fully-qualified name of the TodosService's GetTodo RPC.
@@ -68,6 +71,7 @@ const (
 
 // TodosServiceClient is a client for the secretary.v1.TodosService service.
 type TodosServiceClient interface {
+	GetTodoCommandContext(context.Context, *connect.Request[v1.GetTodoCommandContextRequest]) (*connect.Response[v1.GetTodoCommandContextResponse], error)
 	ListTodos(context.Context, *connect.Request[v1.ListTodosRequest]) (*connect.Response[v1.ListTodosResponse], error)
 	GetTodo(context.Context, *connect.Request[v1.GetTodoRequest]) (*connect.Response[v1.GetTodoResponse], error)
 	CreateTodo(context.Context, *connect.Request[v1.CreateTodoRequest]) (*connect.Response[v1.CreateTodoResponse], error)
@@ -93,6 +97,12 @@ func NewTodosServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 	baseURL = strings.TrimRight(baseURL, "/")
 	todosServiceMethods := v1.File_secretary_v1_todos_proto.Services().ByName("TodosService").Methods()
 	return &todosServiceClient{
+		getTodoCommandContext: connect.NewClient[v1.GetTodoCommandContextRequest, v1.GetTodoCommandContextResponse](
+			httpClient,
+			baseURL+TodosServiceGetTodoCommandContextProcedure,
+			connect.WithSchema(todosServiceMethods.ByName("GetTodoCommandContext")),
+			connect.WithClientOptions(opts...),
+		),
 		listTodos: connect.NewClient[v1.ListTodosRequest, v1.ListTodosResponse](
 			httpClient,
 			baseURL+TodosServiceListTodosProcedure,
@@ -170,6 +180,7 @@ func NewTodosServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 
 // todosServiceClient implements TodosServiceClient.
 type todosServiceClient struct {
+	getTodoCommandContext         *connect.Client[v1.GetTodoCommandContextRequest, v1.GetTodoCommandContextResponse]
 	listTodos                     *connect.Client[v1.ListTodosRequest, v1.ListTodosResponse]
 	getTodo                       *connect.Client[v1.GetTodoRequest, v1.GetTodoResponse]
 	createTodo                    *connect.Client[v1.CreateTodoRequest, v1.CreateTodoResponse]
@@ -182,6 +193,11 @@ type todosServiceClient struct {
 	deleteTodoGoal                *connect.Client[v1.DeleteTodoGoalRequest, v1.DeleteTodoGoalResponse]
 	moveDocumentTodosToRepository *connect.Client[v1.MoveDocumentTodosToRepositoryRequest, v1.MoveDocumentTodosToRepositoryResponse]
 	pullOnDeckTodosToToday        *connect.Client[v1.PullOnDeckTodosToTodayRequest, v1.PullOnDeckTodosToTodayResponse]
+}
+
+// GetTodoCommandContext calls secretary.v1.TodosService.GetTodoCommandContext.
+func (c *todosServiceClient) GetTodoCommandContext(ctx context.Context, req *connect.Request[v1.GetTodoCommandContextRequest]) (*connect.Response[v1.GetTodoCommandContextResponse], error) {
+	return c.getTodoCommandContext.CallUnary(ctx, req)
 }
 
 // ListTodos calls secretary.v1.TodosService.ListTodos.
@@ -246,6 +262,7 @@ func (c *todosServiceClient) PullOnDeckTodosToToday(ctx context.Context, req *co
 
 // TodosServiceHandler is an implementation of the secretary.v1.TodosService service.
 type TodosServiceHandler interface {
+	GetTodoCommandContext(context.Context, *connect.Request[v1.GetTodoCommandContextRequest]) (*connect.Response[v1.GetTodoCommandContextResponse], error)
 	ListTodos(context.Context, *connect.Request[v1.ListTodosRequest]) (*connect.Response[v1.ListTodosResponse], error)
 	GetTodo(context.Context, *connect.Request[v1.GetTodoRequest]) (*connect.Response[v1.GetTodoResponse], error)
 	CreateTodo(context.Context, *connect.Request[v1.CreateTodoRequest]) (*connect.Response[v1.CreateTodoResponse], error)
@@ -267,6 +284,12 @@ type TodosServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewTodosServiceHandler(svc TodosServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	todosServiceMethods := v1.File_secretary_v1_todos_proto.Services().ByName("TodosService").Methods()
+	todosServiceGetTodoCommandContextHandler := connect.NewUnaryHandler(
+		TodosServiceGetTodoCommandContextProcedure,
+		svc.GetTodoCommandContext,
+		connect.WithSchema(todosServiceMethods.ByName("GetTodoCommandContext")),
+		connect.WithHandlerOptions(opts...),
+	)
 	todosServiceListTodosHandler := connect.NewUnaryHandler(
 		TodosServiceListTodosProcedure,
 		svc.ListTodos,
@@ -341,6 +364,8 @@ func NewTodosServiceHandler(svc TodosServiceHandler, opts ...connect.HandlerOpti
 	)
 	return "/secretary.v1.TodosService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case TodosServiceGetTodoCommandContextProcedure:
+			todosServiceGetTodoCommandContextHandler.ServeHTTP(w, r)
 		case TodosServiceListTodosProcedure:
 			todosServiceListTodosHandler.ServeHTTP(w, r)
 		case TodosServiceGetTodoProcedure:
@@ -373,6 +398,10 @@ func NewTodosServiceHandler(svc TodosServiceHandler, opts ...connect.HandlerOpti
 
 // UnimplementedTodosServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedTodosServiceHandler struct{}
+
+func (UnimplementedTodosServiceHandler) GetTodoCommandContext(context.Context, *connect.Request[v1.GetTodoCommandContextRequest]) (*connect.Response[v1.GetTodoCommandContextResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.GetTodoCommandContext is not implemented"))
+}
 
 func (UnimplementedTodosServiceHandler) ListTodos(context.Context, *connect.Request[v1.ListTodosRequest]) (*connect.Response[v1.ListTodosResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.TodosService.ListTodos is not implemented"))

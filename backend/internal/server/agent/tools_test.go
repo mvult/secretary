@@ -115,9 +115,9 @@ func TestListDirectoriesTool(t *testing.T) {
 }
 
 func TestMutationTools(t *testing.T) {
-	ctx := context.Background()
+	ctx := context.WithValue(context.Background(), toolCallIDKey{}, "provider-call-1")
 	svc := newFakeServices()
-	s := &session{ctx: ctx, services: svc, workspaceID: 7, userID: 9, mode: "ask"}
+	s := &session{ctx: ctx, services: svc, workspaceID: 7, userID: 9, runID: 12, mode: "ask"}
 	tools, err := s.buildToolbox()
 	if err != nil {
 		t.Fatalf("buildToolbox: %v", err)
@@ -155,9 +155,16 @@ func TestMutationTools(t *testing.T) {
 	if moved.BlockID != inserted.BlockID || svc.movedBlockID != inserted.BlockID {
 		t.Fatalf("unexpected move_block result: %#v", moved)
 	}
+	for _, call := range svc.mutationCalls {
+		if call.RunID != 12 || call.CallID != "provider-call-1" || call.UserID != 9 || call.WorkspaceID != 7 {
+			t.Fatalf("lost call identity: %+v", call)
+		}
+	}
 }
 
 type fakeServices struct {
+	mutationCalls        []MutationCall
+	mutationError        error
 	directories          []db.Directory
 	documents            []db.Document
 	blocks               map[int32][]db.Block
@@ -171,6 +178,36 @@ type fakeServices struct {
 	movedBlockID         int64
 	nextDocumentID       int64
 	nextBlockID          int64
+}
+
+func (s *fakeServices) ExecuteMutationCall(ctx context.Context, call MutationCall) (string, error) {
+	s.mutationCalls = append(s.mutationCalls, call)
+	if s.mutationError != nil {
+		return "", s.mutationError
+	}
+	switch call.Name {
+	case "create_document":
+		var req createDocumentRequest
+		if err := json.Unmarshal([]byte(call.Arguments), &req); err != nil {
+			return "", err
+		}
+		id, err := s.CreateDocument(ctx, call.WorkspaceID, req.Title, req.Content)
+		return marshalToolResult(mutateBlockResponse{DocumentID: id, Applied: true}, err)
+	case "insert_block":
+		var req insertBlockRequest
+		if err := json.Unmarshal([]byte(call.Arguments), &req); err != nil {
+			return "", err
+		}
+		doc, block, err := s.InsertBlock(ctx, call.UserID, req.DocumentID, req.ParentBlockID, req.AfterBlockID, req.Text)
+		return marshalToolResult(mutateBlockResponse{DocumentID: doc, BlockID: block, Applied: true}, err)
+	default:
+		var req moveBlockRequest
+		if err := json.Unmarshal([]byte(call.Arguments), &req); err != nil {
+			return "", err
+		}
+		doc, block, err := s.MoveBlock(ctx, call.UserID, req.BlockID, req.ParentBlockID, req.AfterBlockID)
+		return marshalToolResult(mutateBlockResponse{DocumentID: doc, BlockID: block, Applied: true}, err)
+	}
 }
 
 func newFakeServices() *fakeServices {

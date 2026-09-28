@@ -8,9 +8,9 @@ import { AlertCircle, Calendar, Clock, Trash } from 'lucide-react';
 import { recordingsClient, todosClient, usersClient } from '../lib/client';
 import { getUser } from '../lib/auth';
 import { getStatusConfig } from '../lib/status';
-import type { GetRecordingResponse, Recording } from '../gen/secretary/v1/recordings_pb';
-import type { ListTodosResponse, Todo } from '../gen/secretary/v1/todos_pb';
-import type { ListUsersResponse } from '../gen/secretary/v1/users_pb';
+import type { GetRecordingResponse, Recording } from '@secretary/api/gen/recordings_pb';
+import type { ListTodosResponse, Todo } from '@secretary/api/gen/todos_pb';
+import type { ListUsersResponse } from '@secretary/api/gen/users_pb';
 import { EditTodoDrawer } from '../components/EditTodoDrawer';
 
 export function RecordingDetailPage() {

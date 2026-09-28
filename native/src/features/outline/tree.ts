@@ -1,4 +1,5 @@
 import { cycleStatus } from './keymap';
+import { getVisibleNodes } from './folding';
 import { createJournalPage, formatPageDate, getAvailableJournalDates, getCurrentJournalDate, getDateKey } from './sampleData';
 import type { CursorPlacement, OutlineNode, OutlinePage, OutlineSnapshot, OutlineState, YankBuffer, YankedOutlineNode } from './types';
 
@@ -378,7 +379,7 @@ export function getNodeDepths(nodes: OutlineNode[]) {
 }
 
 function getSelectionIds(state: OutlineState): string[] {
-  const ids = getActiveNodes(state).map((node) => node.id);
+  const ids = getVisibleNodes(getActiveNodes(state), state.collapsedNodeIds).map((node) => node.id);
   if (!state.anchorId) {
     return state.focusedId ? [state.focusedId] : [];
   }
@@ -590,7 +591,7 @@ function buildNodeIdMap(previousPage: OutlinePage, nextPage: OutlinePage) {
   const result = new Map<string, string>();
 
   previousPage.nodes.forEach((node) => {
-    const nextId = node.backendId ? byBackendId.get(node.backendId) : byClientKey.get(node.id) ?? byId.get(node.id);
+    const nextId = node.backendId ? byBackendId.get(node.backendId) : byClientKey.get(node.clientKey ?? node.id) ?? byId.get(node.id);
     if (nextId) {
       result.set(node.id, nextId);
     }
@@ -654,6 +655,7 @@ export function mergeRemotePage(state: OutlineState, page: OutlinePage, previous
     focusedId: activePage.nodes.some((node) => node.id === focusedId) ? focusedId : getSafeFocusedId(activePage.nodes),
     anchorId: remapNodeId(state.anchorId, nodeIdMap),
     editingId: remapNodeId(state.editingId, nodeIdMap),
+    collapsedNodeIds: state.collapsedNodeIds?.map((id) => nodeIdMap.get(id) ?? id),
   };
 }
 
@@ -711,7 +713,8 @@ function selectJournalBoundary(state: OutlineState, pageId: string, position: 's
     return state;
   }
 
-  const targetNode = position === 'start' ? page.nodes[0] : page.nodes[page.nodes.length - 1];
+  const visibleNodes = getVisibleNodes(page.nodes, state.collapsedNodeIds);
+  const targetNode = position === 'start' ? visibleNodes[0] : visibleNodes[visibleNodes.length - 1];
   const cursor = position === 'start' ? 0 : targetNode.text.length;
 
   return {
@@ -965,7 +968,7 @@ export function createNotePage(state: OutlineState, title = '', directoryId: num
 }
 
 export function moveFocus(state: OutlineState, direction: 1 | -1, extendSelection: boolean): OutlineState {
-  const nodes = getActiveNodes(state);
+  const nodes = getVisibleNodes(getActiveNodes(state), state.collapsedNodeIds);
   const currentIndex = nodes.findIndex((node) => node.id === state.focusedId);
   if (currentIndex === -1) {
     return state;
@@ -1022,7 +1025,7 @@ export function toggleVisualMode(state: OutlineState): OutlineState {
 }
 
 export function jumpFocusInPage(state: OutlineState, position: 'start' | 'end'): OutlineState {
-  const nodes = getActiveNodes(state);
+  const nodes = getVisibleNodes(getActiveNodes(state), state.collapsedNodeIds);
   if (nodes.length === 0) {
     return state;
   }

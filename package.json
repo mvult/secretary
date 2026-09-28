@@ -1,0 +1,14 @@
+{
+  "name": "secretary",
+  "private": true,
+  "workspaces": ["frontend", "native", "packages/*"],
+  "scripts": {
+    "api:generate": "buf generate backend/proto --template buf.gen.frontend.yaml",
+    "api:check": "bun scripts/check-api-generation.ts",
+    "api:test": "bun test packages/api/tests"
+  },
+  "devDependencies": {
+    "@bufbuild/protoc-gen-es": "1.10.1",
+    "@connectrpc/protoc-gen-connect-es": "1.7.0"
+  }
+}

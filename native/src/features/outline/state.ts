@@ -1,4 +1,5 @@
 import { useReducer } from 'react';
+import { revealFocusedNode } from './folding';
 import {
   commitEdit,
   createNotePage,
@@ -45,6 +46,7 @@ import {
 import type { OutlineState } from './types';
 
 export type OutlineAction =
+  | { type: 'toggleFold'; nodeId?: string }
   | { type: 'applySessionState'; state: OutlineState }
   | { type: 'focus'; nodeId: string }
   | { type: 'moveCaret'; motion: 'left' | 'right' | 'wordForward' | 'wordBackward' | 'wordEnd' | 'lineStart' | 'lineEnd' }
@@ -135,9 +137,26 @@ function sameEditablePages(left: OutlineState['pages'], right: OutlineState['pag
 }
 
 export function reduceOutlineState(state: OutlineState, action: OutlineAction): OutlineState {
+  return revealFocusedNode(reduceAction(state, action));
+}
+
+function reduceAction(state: OutlineState, action: OutlineAction): OutlineState {
   const currentState = state;
 
   switch (action.type) {
+    case 'toggleFold': {
+      if (state.editingId || state.mode !== 'normal') return state;
+      const nodeId = action.nodeId ?? state.focusedId;
+      const page = state.pages.find((entry) => entry.id === state.activePageId);
+      if (!page?.nodes.some((node) => node.parentId === nodeId)) return state;
+      const collapsed = state.collapsedNodeIds ?? [];
+      return {
+        ...state,
+        focusedId: nodeId,
+        anchorId: null,
+        collapsedNodeIds: collapsed.includes(nodeId) ? collapsed.filter((id) => id !== nodeId) : [...collapsed, nodeId],
+      };
+    }
     case 'applySessionState':
       return action.state;
     case 'focus':

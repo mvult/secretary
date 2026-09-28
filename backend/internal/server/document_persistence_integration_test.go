@@ -366,8 +366,22 @@ func TestDocumentPersistenceIntegration(t *testing.T) {
 		}
 	})
 	t.Run("replay requires current scope access", func(t *testing.T) {
+		authCtx := context.WithValue(ctx, userIdKey, actor)
+		contextReq := connect.NewRequest(&secretaryv1.GetTodoCommandContextRequest{WorkspaceId: int64(workspace.ID)})
+		before := time.Now().Format(time.DateOnly)
+		commandContext, err := s.GetTodoCommandContext(authCtx, contextReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if date := commandContext.Msg.JournalDate; date != before && date != time.Now().Format(time.DateOnly) {
+			t.Fatalf("context date is not server-local today: %s", date)
+		}
 		req := newRequest()
-		save(t, req)
+		saved := save(t, req)
+		command := &secretaryv1.MoveDocumentTodosToRepositoryRequest{DocumentId: saved.Document.Id, WorkspaceId: int64(workspace.ID), ProtocolVersion: 1, MutationId: uuid.NewString()}
+		if _, err := s.moveDocumentTodosCommand(ctx, actor, command); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := pool.Exec(ctx, `DELETE FROM workspace_user_rel WHERE workspace_id=$1 AND user_id=$2`, workspace.ID, actor); err != nil {
 			t.Fatal(err)
 		}
@@ -376,9 +390,211 @@ func TestDocumentPersistenceIntegration(t *testing.T) {
 				t.Error(err)
 			}
 		}()
-		_, err := s.saveDocumentMutation(ctx, actor, req)
+		_, err = s.saveDocumentMutation(ctx, actor, req)
 		if connect.CodeOf(err) != connect.CodePermissionDenied {
 			t.Fatalf("receipt exposed after membership removal: %v", err)
+		}
+		if _, err := s.moveDocumentTodosCommand(ctx, actor, command); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("command receipt exposed after membership removal: %v", err)
+		}
+		if _, err := s.GetTodoCommandContext(authCtx, contextReq); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("command context exposed after membership removal: %v", err)
+		}
+	})
+
+	t.Run("TODO patches merge current fields and duplicate retries advance once", func(t *testing.T) {
+		saved := save(t, newRequest())
+		id := saved.Document.Blocks[1].TodoId
+		metadata := &secretaryv1.UpdateTodoRequest{Id: id, WorkspaceId: int64(workspace.ID), ProtocolVersion: 1, MutationId: uuid.NewString(),
+			Patch: &secretaryv1.TodoPatch{Name: proto.String("Latest inline name"), Desc: proto.String("Preserve me"), PriorityRank: proto.Int64(8)}}
+		if _, err := s.updateTodoCommand(ctx, actor, metadata); err != nil {
+			t.Fatal(err)
+		}
+		req := &secretaryv1.UpdateTodoRequest{Id: id, WorkspaceId: int64(workspace.ID), ProtocolVersion: 1, MutationId: uuid.NewString(),
+			Patch: &secretaryv1.TodoPatch{Status: secretaryv1.TodoStatus_TODO_STATUS_DONE.Enum()}}
+		results := make(chan *secretaryv1.UpdateTodoResponse, 2)
+		errs := make(chan error, 2)
+		for i := 0; i < 2; i++ {
+			go func() { result, err := s.updateTodoCommand(ctx, actor, req); results <- result; errs <- err }()
+		}
+		first, second := <-results, <-results
+		for i := 0; i < 2; i++ {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !proto.Equal(first, second) || first.Todo.Name != "Latest inline name" || first.Todo.Desc != "Preserve me" || first.Todo.PriorityRank != 8 || first.Todo.Bucket != "done" {
+			t.Fatalf("incorrect merged/replayed result: %v", first)
+		}
+		doc, err := s.queries.GetDocument(ctx, int32(saved.Document.Id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if doc.Revision != saved.Document.Revision+2 {
+			t.Fatalf("duplicate revision bump: %d", doc.Revision)
+		}
+		history, err := s.queries.ListTodoHistory(ctx, int32(id))
+		if err != nil {
+			t.Fatal(err)
+		}
+		updates := 0
+		for _, entry := range history {
+			if entry.ChangeType == "update" {
+				updates++
+			}
+		}
+		if updates != 2 {
+			t.Fatalf("duplicate history: %d", updates)
+		}
+		metadata.MutationId = uuid.NewString()
+		metadata.Patch = &secretaryv1.TodoPatch{Desc: proto.String("")}
+		cleared, err := s.updateTodoCommand(ctx, actor, metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cleared.Todo.Desc != "" || cleared.Todo.CompletedAt != first.Todo.CompletedAt || cleared.Todo.CompletedBlockId != first.Todo.CompletedBlockId {
+			t.Fatal("metadata patch changed completion state")
+		}
+		replay, err := s.updateTodoCommand(ctx, actor, req)
+		if err != nil || !proto.Equal(replay, first) {
+			t.Fatalf("receipt not historical: %v", err)
+		}
+		if _, err := s.updateTodoCommand(ctx, actor, &secretaryv1.UpdateTodoRequest{Id: id, ProtocolVersion: 1, MutationId: uuid.NewString(), Patch: req.Patch}); connect.CodeOf(err) != connect.CodePermissionDenied {
+			t.Fatalf("user scope accepted linked TODO: %v", err)
+		}
+	})
+
+	t.Run("unlinked TODO update receipts use actor scope", func(t *testing.T) {
+		row, err := s.queries.CreateTodo(ctx, db.CreateTodoParams{Name: "Unlinked", UserID: pgtype.Int4{Int32: int32(actor), Valid: true}, Status: pgtype.Text{String: "todo", Valid: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			_, _ = pool.Exec(ctx, `DELETE FROM mutation_receipt WHERE actor_user_id=$1 AND scope_kind='user'`, actor)
+			_ = s.queries.DeleteTodo(ctx, row.ID)
+		}()
+		req := &secretaryv1.UpdateTodoRequest{Id: int64(row.ID), ProtocolVersion: 1, MutationId: uuid.NewString(), Patch: &secretaryv1.TodoPatch{Desc: proto.String("Owned update")}}
+		first, err := s.updateTodoCommand(ctx, actor, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.queries.DeleteTodo(ctx, row.ID); err != nil {
+			t.Fatal(err)
+		}
+		replay, err := s.updateTodoCommand(ctx, actor, req)
+		if err != nil || !proto.Equal(first, replay) {
+			t.Fatalf("deleted TODO receipt replay: %v", err)
+		}
+	})
+
+	t.Run("concurrent repository retry advances once and replays after deletion", func(t *testing.T) {
+		saved := save(t, newRequest())
+		req := &secretaryv1.MoveDocumentTodosToRepositoryRequest{DocumentId: saved.Document.Id, WorkspaceId: int64(workspace.ID), ProtocolVersion: 1, MutationId: uuid.NewString()}
+		results := make(chan *secretaryv1.MoveDocumentTodosToRepositoryResponse, 2)
+		errs := make(chan error, 2)
+		start := make(chan struct{})
+		for range 2 {
+			go func() {
+				<-start
+				result, err := s.moveDocumentTodosCommand(ctx, actor, req)
+				results <- result
+				errs <- err
+			}()
+		}
+		close(start)
+		first, second := <-results, <-results
+		for range 2 {
+			if err := <-errs; err != nil {
+				t.Fatal(err)
+			}
+		}
+		if first.MovedCount != 1 || !proto.Equal(first, second) {
+			t.Fatal("duplicate move did not replay the original result")
+		}
+		doc, err := s.queries.GetDocument(ctx, int32(saved.Document.Id))
+		if err != nil || doc.Revision != saved.Document.Revision+1 {
+			t.Fatalf("move bumped revision more than once: %v", err)
+		}
+		_, err = s.saveDocumentMutation(ctx, actor, updateRequest(saved.Document))
+		assertReason(t, err, secretaryv1.PersistenceErrorReason_PERSISTENCE_ERROR_REASON_REVISION_CONFLICT)
+		_, err = s.deleteDocumentMutation(ctx, actor, &secretaryv1.DeleteDocumentRequest{Id: saved.Document.Id, WorkspaceId: int64(workspace.ID), ProtocolVersion: 1, MutationId: uuid.NewString(), ExpectedRevision: proto.Int64(doc.Revision)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		replay, err := s.moveDocumentTodosCommand(ctx, actor, req)
+		if err != nil || !proto.Equal(first, replay) {
+			t.Fatalf("move did not replay after deletion: %v", err)
+		}
+		changed := proto.Clone(req).(*secretaryv1.MoveDocumentTodosToRepositoryRequest)
+		changed.DocumentId++
+		_, err = s.moveDocumentTodosCommand(ctx, actor, changed)
+		assertReason(t, err, secretaryv1.PersistenceErrorReason_PERSISTENCE_ERROR_REASON_MUTATION_ID_REUSED)
+	})
+
+	t.Run("pull replay does not consume newly eligible todos or recreate a deleted journal", func(t *testing.T) {
+		req := &secretaryv1.PullOnDeckTodosToTodayRequest{WorkspaceId: int64(workspace.ID), ProtocolVersion: 1, MutationId: uuid.NewString(), JournalDate: "2029-01-02"}
+		first, err := s.pullOnDeckTodosCommand(ctx, actor, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, effect := range first.Effects.UpdatedDocuments {
+			if effect.DocumentId == first.DocumentId && effect.Revision == 1 {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("new journal revision missing from effects")
+		}
+		later := save(t, newRequest())
+		todoID := later.Document.Blocks[1].TodoId
+		if _, err := s.moveDocumentTodosCommand(ctx, actor, &secretaryv1.MoveDocumentTodosToRepositoryRequest{DocumentId: later.Document.Id}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(ctx, `UPDATE todo SET bucket='on_deck' WHERE id=$1`, todoID); err != nil {
+			t.Fatal(err)
+		}
+		replay, err := s.pullOnDeckTodosCommand(ctx, actor, req)
+		if err != nil || !proto.Equal(first, replay) {
+			t.Fatalf("pull result changed on retry: %v", err)
+		}
+		todo, err := s.queries.GetTodo(ctx, int32(todoID))
+		if err != nil || todo.CurrentBlockID.Valid {
+			t.Fatalf("replay consumed a later todo: %v", err)
+		}
+		changed := proto.Clone(req).(*secretaryv1.PullOnDeckTodosToTodayRequest)
+		changed.JournalDate = "2029-01-03"
+		_, err = s.pullOnDeckTodosCommand(ctx, actor, changed)
+		assertReason(t, err, secretaryv1.PersistenceErrorReason_PERSISTENCE_ERROR_REASON_MUTATION_ID_REUSED)
+		// Simulate external deletion; the normal note-delete API rejects journals.
+		if err := s.queries.DeleteDocument(ctx, int32(first.DocumentId)); err != nil {
+			t.Fatal(err)
+		}
+		replay, err = s.pullOnDeckTodosCommand(ctx, actor, req)
+		if err != nil || !proto.Equal(first, replay) {
+			t.Fatalf("historical pull replay failed: %v", err)
+		}
+		if _, err := s.queries.GetDocument(ctx, int32(first.DocumentId)); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal("receipt resurrected deleted journal")
+		}
+	})
+
+	t.Run("command receipt failure rolls back domain writes", func(t *testing.T) {
+		op, err := commandEnvelope(actor, int64(workspace.ID), 1, uuid.NewString(), "todo.move_to_repository", map[string]any{"document_id": "0"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := uuid.NewString()
+		// Empty protobuf result deliberately violates receipt result_payload CHECK.
+		err = s.runTodoCommand(ctx, op, &secretaryv1.MoveDocumentTodosToRepositoryResponse{}, func(q *db.Queries) error {
+			_, err := q.CreateDocumentWithClientKey(ctx, db.CreateDocumentWithClientKeyParams{WorkspaceID: workspace.ID, Kind: "note", Title: "Must roll back", ClientKey: key})
+			return err
+		})
+		if err == nil {
+			t.Fatal("expected receipt insertion failure")
+		}
+		if _, err := s.queries.GetDocumentByClientKey(ctx, db.GetDocumentByClientKeyParams{WorkspaceID: workspace.ID, ClientKey: key}); !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatal("failed command receipt committed domain data")
 		}
 	})
 }

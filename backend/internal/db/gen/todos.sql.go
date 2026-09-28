@@ -716,6 +716,74 @@ func (q *Queries) MoveTodoToRepository(ctx context.Context, id int32) (Todo, err
 	return i, err
 }
 
+const patchTodo = `-- name: PatchTodo :one
+UPDATE todo
+SET
+  name = $2,
+  "desc" = $3,
+  status = $4,
+  bucket = $5,
+  priority_rank = $6,
+  deadline_date = $7,
+  goal_id = $8,
+  completed_at = CASE WHEN status IS NOT DISTINCT FROM $4 THEN completed_at WHEN $4 = 'done' THEN now() ELSE NULL END,
+  completed_document_id = CASE WHEN status IS NOT DISTINCT FROM $4 THEN completed_document_id WHEN $4 = 'done' THEN current_document_id ELSE NULL END,
+  completed_block_id = CASE WHEN status IS NOT DISTINCT FROM $4 THEN completed_block_id WHEN $4 = 'done' THEN current_block_id ELSE NULL END,
+  updated_at = now()
+WHERE id = $1
+RETURNING id, name, "desc", status, user_id, workspace_id, bucket, priority_rank, deadline_date, goal_id, source_kind, source_document_id, source_block_id, current_document_id, current_block_id, completed_at, completed_document_id, completed_block_id, created_at_recording_id, updated_at_recording_id, created_at, updated_at
+`
+
+type PatchTodoParams struct {
+	ID           int32
+	Name         string
+	Desc         pgtype.Text
+	Status       pgtype.Text
+	Bucket       pgtype.Text
+	PriorityRank pgtype.Int4
+	DeadlineDate pgtype.Date
+	GoalID       pgtype.Int4
+}
+
+func (q *Queries) PatchTodo(ctx context.Context, arg PatchTodoParams) (Todo, error) {
+	row := q.db.QueryRow(ctx, patchTodo,
+		arg.ID,
+		arg.Name,
+		arg.Desc,
+		arg.Status,
+		arg.Bucket,
+		arg.PriorityRank,
+		arg.DeadlineDate,
+		arg.GoalID,
+	)
+	var i Todo
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Desc,
+		&i.Status,
+		&i.UserID,
+		&i.WorkspaceID,
+		&i.Bucket,
+		&i.PriorityRank,
+		&i.DeadlineDate,
+		&i.GoalID,
+		&i.SourceKind,
+		&i.SourceDocumentID,
+		&i.SourceBlockID,
+		&i.CurrentDocumentID,
+		&i.CurrentBlockID,
+		&i.CompletedAt,
+		&i.CompletedDocumentID,
+		&i.CompletedBlockID,
+		&i.CreatedAtRecordingID,
+		&i.UpdatedAtRecordingID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateTodo = `-- name: UpdateTodo :one
 UPDATE todo
 SET

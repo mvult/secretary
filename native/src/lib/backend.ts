@@ -1,3 +1,8 @@
+import { rpcJson } from '@secretary/api';
+import { BackendError, postJsonBody as sharedPostJsonBody, readError as sharedReadError } from '@secretary/api/transport';
+import { safeInteger, decimalRevision } from '@secretary/api/identity';
+export { BackendError, decimalRevision };
+
 export interface BackendUser {
   id: number;
   firstName: string;
@@ -15,6 +20,7 @@ export type BackendTodoBucket = 'inbox' | 'on_deck' | 'blocked' | 'done' | '';
 
 export interface BackendTodo {
   id: number;
+  workspaceId?: number;
   name: string;
   desc: string;
   status: BackendTodoStatus;
@@ -49,7 +55,9 @@ export interface BackendTodoGoal {
   updatedAt: string;
 }
 
-function todoStatusToProto(status: BackendTodoStatus) {
+export type TodoPatch = Partial<Pick<BackendTodo, 'name' | 'desc' | 'status' | 'bucket' | 'priorityRank' | 'deadlineDate' | 'goalId'>>;
+
+export function todoStatusToProto(status: BackendTodoStatus) {
   switch (status) {
     case 'done':
       return 'TODO_STATUS_DONE';
@@ -207,6 +215,7 @@ export interface BackendBlock {
 
 export interface BackendDocument {
   id: number;
+  revision?: string;
   clientKey: string;
   workspaceId: number;
   directoryId: number;
@@ -221,6 +230,7 @@ export interface BackendDocument {
 export interface BackendDocumentIndex {
   documents: BackendDocument[];
   directories: BackendDirectory[];
+  persistenceProtocolVersion?: number;
 }
 
 export interface BackendDocumentHistoryEntry {
@@ -237,13 +247,7 @@ function normalizeBaseUrl(baseUrl: string) {
 }
 
 function toNumber(value: unknown) {
-  if (typeof value === 'number') {
-    return value;
-  }
-  if (typeof value === 'string' && value.trim() !== '') {
-    return Number(value);
-  }
-  return 0;
+  return safeInteger(value);
 }
 
 function normalizeWorkspace(value: any): BackendWorkspace {
@@ -390,10 +394,11 @@ function normalizeBlockTodoStatus(value: unknown): BackendTodoStatus | null {
   return normalizeTodoStatus(value);
 }
 
-function normalizeTodo(value: any): BackendTodo {
+export function normalizeTodo(value: any): BackendTodo {
   const bucket = value?.bucket === 'inbox' || value?.bucket === 'on_deck' || value?.bucket === 'blocked' || value?.bucket === 'done' ? value.bucket : '';
   return {
     id: toNumber(value?.id),
+    workspaceId: toNumber(value?.workspaceId),
     name: typeof value?.name === 'string' ? value.name : '',
     desc: typeof value?.desc === 'string' ? value.desc : '',
     status: normalizeTodoStatus(value?.status),
@@ -447,9 +452,10 @@ function normalizeBlock(value: any): BackendBlock {
   };
 }
 
-function normalizeDocument(value: any): BackendDocument {
+export function normalizeDocument(value: any): BackendDocument {
   return {
     id: toNumber(value?.id),
+    revision: value?.revision == null ? undefined : decimalRevision(value.revision),
     clientKey: typeof value?.clientKey === 'string' ? value.clientKey : '',
     workspaceId: toNumber(value?.workspaceId),
     directoryId: toNumber(value?.directoryId),
@@ -462,13 +468,6 @@ function normalizeDocument(value: any): BackendDocument {
   };
 }
 
-export class BackendError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
-    super(message);
-    this.name = 'BackendError';
-  }
-}
-
 type AuthFailure = { baseUrl: string; token?: string };
 const authFailureListeners = new Set<(failure: AuthFailure) => void>();
 export function onAuthFailure(listener: (failure: AuthFailure) => void) {
@@ -477,37 +476,22 @@ export function onAuthFailure(listener: (failure: AuthFailure) => void) {
 }
 
 async function readError(response: Response, baseUrl: string, token?: string) {
-  if (response.status === 401) for (const listener of authFailureListeners) listener({ baseUrl, token });
-  try {
-    const payload = await response.json();
-    if (typeof payload?.message === 'string') {
-      return new BackendError(payload.message, response.status, payload.code);
-    }
-    if (typeof payload?.error === 'string') {
-      return new BackendError(payload.error, response.status, payload.code);
-    }
-  } catch {
-    // Ignore JSON parsing failures for error bodies.
-  }
+  return sharedReadError(response, baseUrl, { token, onAuthFailure: notifyAuthFailure });
+}
 
-  return new BackendError(`${response.status} ${response.statusText}`, response.status);
+function notifyAuthFailure(failure: AuthFailure) {
+  for (const listener of authFailureListeners) listener(failure);
 }
 
 async function postJson<TResponse>(baseUrl: string, path: string, body: unknown, token?: string) {
-  const response = await fetch(`${normalizeBaseUrl(baseUrl)}${path}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
+  if (path.startsWith('/secretary.v1.')) return rpcJson<TResponse>(baseUrl, path, body, { token, onAuthFailure: notifyAuthFailure });
+  return postJsonBody<TResponse>(baseUrl, path, JSON.stringify(body), token);
+}
 
-  if (!response.ok) {
-    throw await readError(response, baseUrl, token);
-  }
-
-  return response.json() as Promise<TResponse>;
+// Replay the retained serialized request, rather than reconstructing it from
+// the latest editor draft. Authentication remains outside the durable payload.
+export async function postJsonBody<TResponse>(baseUrl: string, path: string, body: string, token?: string, signal?: AbortSignal) {
+  return sharedPostJsonBody<TResponse>(baseUrl, path, body, { token, signal, onAuthFailure: notifyAuthFailure });
 }
 
 async function getJson<TResponse>(baseUrl: string, path: string, token?: string) {
@@ -657,7 +641,7 @@ export async function createWorkspace(baseUrl: string, token: string, name: stri
 }
 
 export async function listDocuments(baseUrl: string, token: string, workspaceId: number) {
-  const payload = await postJson<{ documents?: BackendDocument[]; directories?: BackendDirectory[] }>(
+  const payload = await postJson<{ documents?: BackendDocument[]; directories?: BackendDirectory[]; persistenceProtocolVersion?: number }>(
     baseUrl,
     '/secretary.v1.DocumentsService/ListDocuments',
     { workspaceId },
@@ -666,7 +650,24 @@ export async function listDocuments(baseUrl: string, token: string, workspaceId:
   return {
     documents: Array.isArray(payload.documents) ? payload.documents.map(normalizeDocument) : [],
     directories: Array.isArray(payload.directories) ? payload.directories.map(normalizeDirectory) : [],
+    persistenceProtocolVersion: payload.persistenceProtocolVersion ?? 0,
   } satisfies BackendDocumentIndex;
+}
+
+export type DocumentMetadata = Omit<BackendDocument, 'blocks'> & { snippet?: string };
+
+export async function listDocumentIndex(baseUrl: string, token: string, workspaceId: number, beforeId = 0, query = '') {
+  const payload = await postJson<{ entries?: DocumentMetadata[]; directories?: BackendDirectory[]; nextBeforeId?: string; persistenceProtocolVersion?: number }>(
+    baseUrl, '/secretary.v1.DocumentsService/ListDocumentIndex', { workspaceId, beforeId, pageSize: 100, query }, token);
+  return {
+    entries: (payload.entries ?? []).map(value => {
+      const { blocks: _, ...metadata } = normalizeDocument(value);
+      return { ...metadata, snippet: value.snippet ?? '' };
+    }),
+    directories: (payload.directories ?? []).map(normalizeDirectory),
+    nextBeforeId: safeInteger(payload.nextBeforeId),
+    persistenceProtocolVersion: payload.persistenceProtocolVersion ?? 0,
+  };
 }
 
 export async function getDocument(baseUrl: string, token: string, id: number) {
@@ -750,6 +751,17 @@ export async function updateDirectory(baseUrl: string, token: string, id: number
   if (!payload.directory) {
     throw new Error('Directory was not returned by the server.');
   }
+  return normalizeDirectory(payload.directory);
+}
+
+export async function patchDirectory(baseUrl: string, token: string, id: number, patch: { name?: string; parentId?: number }) {
+  const payload = await postJson<{ directory?: BackendDirectory }>(
+    baseUrl,
+    '/secretary.v1.DocumentsService/UpdateDirectory',
+    { id, patch },
+    token,
+  );
+  if (!payload.directory) throw new Error('Directory was not returned by the server.');
   return normalizeDirectory(payload.directory);
 }
 

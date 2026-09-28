@@ -3,6 +3,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { LogOut, Mic, CheckSquare, Settings, Menu } from 'lucide-react';
 import { removeToken, removeUser } from '../lib/auth';
+import { TodoCommandRecovery } from './TodoCommandRecovery';
 
 interface NavItemProps {
   label: string;
@@ -89,6 +90,7 @@ export function Layout() {
       </AppShell.Navbar>
 
       <AppShell.Main>
+        <TodoCommandRecovery />
         <Outlet />
       </AppShell.Main>
     </AppShell>

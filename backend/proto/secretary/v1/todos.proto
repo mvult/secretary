@@ -4,6 +4,8 @@ package secretary.v1;
 
 option go_package = "github.com/mvult/secretary/backend/gen/secretary/v1;secretaryv1";
 
+import "secretary/v1/persistence.proto";
+
 enum TodoStatus {
   TODO_STATUS_UNSPECIFIED = 0;
   TODO_STATUS_TODO = 1;
@@ -38,6 +40,7 @@ message Todo {
   string completed_at = 22;
   int64 completed_document_id = 23;
   int64 completed_block_id = 24;
+  int64 workspace_id = 25;
 }
 
 message TodoGoal {
@@ -91,10 +94,14 @@ message CreateTodoRequest {
   int64 priority_rank = 8;
   string deadline_date = 9;
   int64 goal_id = 10;
+  uint32 protocol_version = 11;
+  string mutation_id = 12;
 }
 
 message CreateTodoResponse {
   Todo todo = 1;
+  string mutation_id = 2;
+  DocumentMutationEffects effects = 3;
 }
 
 message UpdateTodoRequest {
@@ -108,17 +115,41 @@ message UpdateTodoRequest {
   int64 priority_rank = 8;
   string deadline_date = 9;
   int64 goal_id = 10;
+  uint32 protocol_version = 11;
+  string mutation_id = 12;
+  // Zero selects the authenticated user's receipt scope for an unlinked TODO.
+  int64 workspace_id = 13;
+  TodoPatch patch = 14;
+}
+
+message TodoPatch {
+  optional string name = 1;
+  optional string desc = 2;
+  optional TodoStatus status = 3;
+  optional string bucket = 4;
+  optional int64 priority_rank = 5;
+  optional string deadline_date = 6;
+  optional int64 goal_id = 7;
 }
 
 message UpdateTodoResponse {
   Todo todo = 1;
+  string mutation_id = 2;
+  DocumentMutationEffects effects = 3;
 }
 
 message DeleteTodoRequest {
   int64 id = 1;
+  uint32 protocol_version = 2;
+  string mutation_id = 3;
+  // Zero selects the authenticated admin's scope for an unlinked TODO.
+  int64 workspace_id = 4;
 }
 
-message DeleteTodoResponse {}
+message DeleteTodoResponse {
+  string mutation_id = 1;
+  DocumentMutationEffects effects = 2;
+}
 
 message ListTodoHistoryRequest {
   int64 todo_id = 1;
@@ -166,22 +197,43 @@ message DeleteTodoGoalResponse {}
 
 message MoveDocumentTodosToRepositoryRequest {
   int64 document_id = 1;
+  int64 workspace_id = 2;
+  uint32 protocol_version = 3;
+  string mutation_id = 4;
 }
 
 message MoveDocumentTodosToRepositoryResponse {
   int64 moved_count = 1;
+  string mutation_id = 2;
+  DocumentMutationEffects effects = 3;
 }
 
 message PullOnDeckTodosToTodayRequest {
   int64 workspace_id = 1;
+  uint32 protocol_version = 2;
+  string mutation_id = 3;
+  // Required for v1: retain the intended date across retries and midnight.
+  string journal_date = 4;
 }
 
 message PullOnDeckTodosToTodayResponse {
   int64 pulled_count = 1;
   int64 document_id = 2;
+  string mutation_id = 3;
+  DocumentMutationEffects effects = 4;
+}
+
+message GetTodoCommandContextRequest {
+  int64 workspace_id = 1;
+}
+
+message GetTodoCommandContextResponse {
+  // Server-local calendar date, resolved before retaining a pull request.
+  string journal_date = 1;
 }
 
 service TodosService {
+  rpc GetTodoCommandContext(GetTodoCommandContextRequest) returns (GetTodoCommandContextResponse);
   rpc ListTodos(ListTodosRequest) returns (ListTodosResponse);
   rpc GetTodo(GetTodoRequest) returns (GetTodoResponse);
   rpc CreateTodo(CreateTodoRequest) returns (CreateTodoResponse);

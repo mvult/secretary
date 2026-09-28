@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Container, Title, Loader, Alert, Table, Badge } from '@mantine/core';
 import { AlertCircle } from 'lucide-react';
 import { usersClient } from '../lib/client';
-import type { ListUsersResponse, User } from '../gen/secretary/v1/users_pb';
+import type { ListUsersResponse, User } from '@secretary/api/gen/users_pb';
 
 export function UsersPage() {
   const { data, isLoading, error } = useQuery({

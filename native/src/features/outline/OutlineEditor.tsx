@@ -1,6 +1,7 @@
 import { useMemo, useRef } from 'react';
 import type { Dispatch } from 'react';
 import { OutlineRow } from './OutlineRow';
+import { getVisibleNodes } from './folding';
 import type { OutlineAction } from './state';
 import { getNodeDepths, getSelectedInfo, getSelectionClipboardText } from './tree';
 import type { OutlinePage, OutlineState } from './types';
@@ -41,6 +42,8 @@ export function OutlineEditor({ page, state, dispatch, pagesByBackendId, onOpenD
     [state.activePageId, state.anchorId, state.focusedId, state.pages],
   );
   const nodeDepths = useMemo(() => getNodeDepths(page.nodes), [page.nodes]);
+  const visibleNodes = useMemo(() => getVisibleNodes(page.nodes, state.collapsedNodeIds), [page.nodes, state.collapsedNodeIds]);
+  const parentIds = useMemo(() => new Set(page.nodes.map((node) => node.parentId)), [page.nodes]);
 
   return (
     <div
@@ -102,6 +105,16 @@ export function OutlineEditor({ page, state, dispatch, pagesByBackendId, onOpenD
         }
 
         if (!event.metaKey && !event.ctrlKey && !event.altKey) {
+          if (key === 'Enter' && !event.shiftKey && state.mode === 'normal') {
+            event.preventDefault();
+            lastDPressRef.current = null;
+            lastGPressRef.current = null;
+            lastBracketPressRef.current = null;
+            lastYPressRef.current = null;
+            dispatch({ type: 'toggleFold' });
+            return;
+          }
+
           if (key === 'u') {
             event.preventDefault();
             lastDPressRef.current = null;
@@ -422,12 +435,15 @@ export function OutlineEditor({ page, state, dispatch, pagesByBackendId, onOpenD
       }}
     >
       <div className="rows">
-        {page.nodes.map((node) => (
+        {visibleNodes.map((node) => (
           <OutlineRow
             key={node.id}
             node={node}
             state={state}
             depth={nodeDepths.get(node.id) ?? 0}
+            hasChildren={parentIds.has(node.id)}
+            isCollapsed={state.collapsedNodeIds?.includes(node.id) ?? false}
+            onToggleFold={() => dispatch({ type: 'toggleFold', nodeId: node.id })}
             pagesByBackendId={pagesByBackendId}
             isFocused={state.focusedId === node.id}
             isSelected={selectedIds.has(node.id)}

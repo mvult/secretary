@@ -110,8 +110,12 @@ func (r *runner) RunThreadTurn(ctx context.Context, req Request) (*Result, error
 		messages = append(messages, assistantMessage)
 		toolOutputs := make([]map[string]any, 0, len(choice.Message.ToolCalls))
 		for _, call := range choice.Message.ToolCalls {
-			output, toolErr := tools.execute(ctx, call.Function.Name, json.RawMessage(call.Function.Arguments))
+			callCtx := context.WithValue(ctx, toolCallIDKey{}, call.ID)
+			output, toolErr := tools.execute(callCtx, call.Function.Name, json.RawMessage(call.Function.Arguments))
 			if toolErr != nil {
+				if call.Function.Name == "create_document" || call.Function.Name == "insert_block" || call.Function.Name == "move_block" {
+					return nil, fmt.Errorf("AI mutation %s (%s) failed; stopping turn to avoid retrying under a new call ID: %w", call.Function.Name, call.ID, toolErr)
+				}
 				output = fmt.Sprintf(`{"error":%q}`, toolErr.Error())
 			}
 			toolOutputs = append(toolOutputs, map[string]any{"id": call.ID, "name": call.Function.Name, "output": clampString(output, maxDebugContentChars)})

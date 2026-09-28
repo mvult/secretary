@@ -7,6 +7,9 @@ interface OutlineRowProps {
   node: OutlineNode;
   state: OutlineState;
   depth: number;
+  hasChildren: boolean;
+  isCollapsed: boolean;
+  onToggleFold: () => void;
   pagesByBackendId: Map<number, OutlinePage>;
   isFocused: boolean;
   isSelected: boolean;
@@ -45,6 +48,9 @@ export function OutlineRow({
   node,
   state,
   depth,
+  hasChildren,
+  isCollapsed,
+  onToggleFold,
   pagesByBackendId,
   isFocused,
   isSelected,
@@ -101,9 +107,21 @@ export function OutlineRow({
       data-editing={isEditing}
       style={{ paddingLeft: `${12 + depth * 24}px` }}
     >
-      <span className="row-gutter" aria-hidden="true">
-        •
-      </span>
+      {hasChildren ? (
+        <button
+          type="button"
+          className="row-gutter row-fold-toggle"
+          tabIndex={-1}
+          aria-expanded={!isCollapsed}
+          aria-label={isCollapsed ? 'Expand nested nodes' : 'Collapse nested nodes'}
+          title={`${isCollapsed ? 'Expand' : 'Collapse'} nested nodes (Enter)`}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={onToggleFold}
+          onKeyDown={(event) => event.stopPropagation()}
+        >
+          {isCollapsed ? '▸' : '▾'}
+        </button>
+      ) : <span className="row-gutter" aria-hidden="true">•</span>}
 
       {node.todoStatus ? (
         <span
@@ -115,6 +133,7 @@ export function OutlineRow({
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
+              event.stopPropagation();
               onToggleStatus(node.id);
             }
           }}

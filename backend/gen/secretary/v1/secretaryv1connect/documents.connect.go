@@ -33,6 +33,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// DocumentsServiceListDocumentIndexProcedure is the fully-qualified name of the DocumentsService's
+	// ListDocumentIndex RPC.
+	DocumentsServiceListDocumentIndexProcedure = "/secretary.v1.DocumentsService/ListDocumentIndex"
 	// DocumentsServiceListDocumentsProcedure is the fully-qualified name of the DocumentsService's
 	// ListDocuments RPC.
 	DocumentsServiceListDocumentsProcedure = "/secretary.v1.DocumentsService/ListDocuments"
@@ -64,6 +67,7 @@ const (
 
 // DocumentsServiceClient is a client for the secretary.v1.DocumentsService service.
 type DocumentsServiceClient interface {
+	ListDocumentIndex(context.Context, *connect.Request[v1.ListDocumentIndexRequest]) (*connect.Response[v1.ListDocumentIndexResponse], error)
 	ListDocuments(context.Context, *connect.Request[v1.ListDocumentsRequest]) (*connect.Response[v1.ListDocumentsResponse], error)
 	GetDocument(context.Context, *connect.Request[v1.GetDocumentRequest]) (*connect.Response[v1.GetDocumentResponse], error)
 	SaveDocument(context.Context, *connect.Request[v1.SaveDocumentRequest]) (*connect.Response[v1.SaveDocumentResponse], error)
@@ -86,6 +90,12 @@ func NewDocumentsServiceClient(httpClient connect.HTTPClient, baseURL string, op
 	baseURL = strings.TrimRight(baseURL, "/")
 	documentsServiceMethods := v1.File_secretary_v1_documents_proto.Services().ByName("DocumentsService").Methods()
 	return &documentsServiceClient{
+		listDocumentIndex: connect.NewClient[v1.ListDocumentIndexRequest, v1.ListDocumentIndexResponse](
+			httpClient,
+			baseURL+DocumentsServiceListDocumentIndexProcedure,
+			connect.WithSchema(documentsServiceMethods.ByName("ListDocumentIndex")),
+			connect.WithClientOptions(opts...),
+		),
 		listDocuments: connect.NewClient[v1.ListDocumentsRequest, v1.ListDocumentsResponse](
 			httpClient,
 			baseURL+DocumentsServiceListDocumentsProcedure,
@@ -145,6 +155,7 @@ func NewDocumentsServiceClient(httpClient connect.HTTPClient, baseURL string, op
 
 // documentsServiceClient implements DocumentsServiceClient.
 type documentsServiceClient struct {
+	listDocumentIndex       *connect.Client[v1.ListDocumentIndexRequest, v1.ListDocumentIndexResponse]
 	listDocuments           *connect.Client[v1.ListDocumentsRequest, v1.ListDocumentsResponse]
 	getDocument             *connect.Client[v1.GetDocumentRequest, v1.GetDocumentResponse]
 	saveDocument            *connect.Client[v1.SaveDocumentRequest, v1.SaveDocumentResponse]
@@ -154,6 +165,11 @@ type documentsServiceClient struct {
 	createDirectory         *connect.Client[v1.CreateDirectoryRequest, v1.CreateDirectoryResponse]
 	updateDirectory         *connect.Client[v1.UpdateDirectoryRequest, v1.UpdateDirectoryResponse]
 	deleteDirectory         *connect.Client[v1.DeleteDirectoryRequest, v1.DeleteDirectoryResponse]
+}
+
+// ListDocumentIndex calls secretary.v1.DocumentsService.ListDocumentIndex.
+func (c *documentsServiceClient) ListDocumentIndex(ctx context.Context, req *connect.Request[v1.ListDocumentIndexRequest]) (*connect.Response[v1.ListDocumentIndexResponse], error) {
+	return c.listDocumentIndex.CallUnary(ctx, req)
 }
 
 // ListDocuments calls secretary.v1.DocumentsService.ListDocuments.
@@ -203,6 +219,7 @@ func (c *documentsServiceClient) DeleteDirectory(ctx context.Context, req *conne
 
 // DocumentsServiceHandler is an implementation of the secretary.v1.DocumentsService service.
 type DocumentsServiceHandler interface {
+	ListDocumentIndex(context.Context, *connect.Request[v1.ListDocumentIndexRequest]) (*connect.Response[v1.ListDocumentIndexResponse], error)
 	ListDocuments(context.Context, *connect.Request[v1.ListDocumentsRequest]) (*connect.Response[v1.ListDocumentsResponse], error)
 	GetDocument(context.Context, *connect.Request[v1.GetDocumentRequest]) (*connect.Response[v1.GetDocumentResponse], error)
 	SaveDocument(context.Context, *connect.Request[v1.SaveDocumentRequest]) (*connect.Response[v1.SaveDocumentResponse], error)
@@ -221,6 +238,12 @@ type DocumentsServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewDocumentsServiceHandler(svc DocumentsServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	documentsServiceMethods := v1.File_secretary_v1_documents_proto.Services().ByName("DocumentsService").Methods()
+	documentsServiceListDocumentIndexHandler := connect.NewUnaryHandler(
+		DocumentsServiceListDocumentIndexProcedure,
+		svc.ListDocumentIndex,
+		connect.WithSchema(documentsServiceMethods.ByName("ListDocumentIndex")),
+		connect.WithHandlerOptions(opts...),
+	)
 	documentsServiceListDocumentsHandler := connect.NewUnaryHandler(
 		DocumentsServiceListDocumentsProcedure,
 		svc.ListDocuments,
@@ -277,6 +300,8 @@ func NewDocumentsServiceHandler(svc DocumentsServiceHandler, opts ...connect.Han
 	)
 	return "/secretary.v1.DocumentsService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case DocumentsServiceListDocumentIndexProcedure:
+			documentsServiceListDocumentIndexHandler.ServeHTTP(w, r)
 		case DocumentsServiceListDocumentsProcedure:
 			documentsServiceListDocumentsHandler.ServeHTTP(w, r)
 		case DocumentsServiceGetDocumentProcedure:
@@ -303,6 +328,10 @@ func NewDocumentsServiceHandler(svc DocumentsServiceHandler, opts ...connect.Han
 
 // UnimplementedDocumentsServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedDocumentsServiceHandler struct{}
+
+func (UnimplementedDocumentsServiceHandler) ListDocumentIndex(context.Context, *connect.Request[v1.ListDocumentIndexRequest]) (*connect.Response[v1.ListDocumentIndexResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.DocumentsService.ListDocumentIndex is not implemented"))
+}
 
 func (UnimplementedDocumentsServiceHandler) ListDocuments(context.Context, *connect.Request[v1.ListDocumentsRequest]) (*connect.Response[v1.ListDocumentsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("secretary.v1.DocumentsService.ListDocuments is not implemented"))

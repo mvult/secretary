@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, type Dispatch } from 'react';
-import { deleteDocument, moveDocumentTodosToRepository, pullOnDeckTodosToToday, type BackendTodo } from '../lib/backend';
+import type { BackendTodo } from '../lib/backend';
 import { findDocumentLinkAtCursor } from '../features/outline/documentLinks';
 import type { OutlineAction } from '../features/outline/state';
 import type { OutlinePage, OutlineState } from '../features/outline/types';
@@ -7,17 +7,19 @@ import { getPageTitle } from '../features/outline/tree';
 import { JUMPLIST_LIMIT, type DirectoryEntry, type JumpLocation } from './types';
 
 interface UseAppCommandsOptions {
+  availablePages?: OutlinePage[];
+  ensurePageLoaded?: (id: string) => Promise<OutlinePage>;
   state: OutlineState;
   stateRef: React.MutableRefObject<OutlineState>;
   dispatch: Dispatch<OutlineAction>;
   dispatchAfterFlush: (action: OutlineAction) => void;
-  flushDirtyPages: () => Promise<void>;
+  runTodoCommand: (operation: 'repository' | 'pull', documentId?: number) => Promise<{ movedCount: number; pulledCount: number; documentId: number }>;
+  deleteNote: (pageId: string) => Promise<void>;
   backendUrl: string;
   authToken: string;
   workspaceId: number | null;
   syncEnabled: boolean;
   setSyncMessage: Dispatch<React.SetStateAction<string>>;
-  runSync: () => Promise<void>;
   refreshTodos: () => Promise<void>;
   resetSearch: () => void;
   searchQuery: string;
@@ -32,17 +34,19 @@ interface UseAppCommandsOptions {
 }
 
 export function useAppCommands({
+  availablePages,
+  ensurePageLoaded,
   state,
   stateRef,
   dispatch,
   dispatchAfterFlush,
-  flushDirtyPages,
+  runTodoCommand,
+  deleteNote,
   backendUrl,
   authToken,
   workspaceId,
   syncEnabled,
   setSyncMessage,
-  runSync,
   refreshTodos,
   resetSearch,
   searchQuery,
@@ -147,7 +151,19 @@ export function useAppCommands({
     navigateToJumpLocation(destination);
   }, [getCurrentJumpLocation, navigateToJumpLocation, pushJumpBack]);
 
-  const navigateToPage = useCallback((targetPage: OutlinePage, options?: { focusNodeId?: string; recordJump?: boolean }) => {
+  const navigationTicket = useRef(0);
+  const navigateToPage = useCallback(async (targetPage: OutlinePage, options?: { focusNodeId?: string; recordJump?: boolean; blockId?: number }) => {
+    const ticket = ++navigationTicket.current;
+    const originView = stateRef.current.activeView;
+    const originPage = stateRef.current.activePageId;
+    try {
+      if (ensurePageLoaded) targetPage = await ensurePageLoaded(targetPage.id);
+      if (ticket !== navigationTicket.current || stateRef.current.activeView !== originView || stateRef.current.activePageId !== originPage) return;
+    } catch (error) {
+      if (ticket === navigationTicket.current) setSyncMessage(error instanceof Error ? error.message : 'Document load failed.');
+      return;
+    }
+    if (options?.blockId) options = { ...options, focusNodeId: targetPage.nodes.find(node => node.backendId === options?.blockId)?.id };
     if (options?.recordJump) {
       pushJumpBack(getCurrentJumpLocation());
       jumpForwardRef.current = [];
@@ -173,7 +189,7 @@ export function useAppCommands({
       dispatch({ type: 'focus', nodeId: node.id });
       document.querySelector<HTMLElement>(`[data-node-id="${node.id}"]`)?.scrollIntoView({ block: 'center' });
     }, 0);
-  }, [dispatch, dispatchAfterFlush, getCurrentJumpLocation, pushJumpBack, stateRef]);
+  }, [dispatch, dispatchAfterFlush, getCurrentJumpLocation, pushJumpBack, stateRef, ensurePageLoaded, setSyncMessage]);
 
   const openDirectoryBrowser = useCallback(() => {
     const activeNote = currentPage?.kind === 'note' ? currentPage : null;
@@ -197,20 +213,24 @@ export function useAppCommands({
   }, [navigateToPage, setActiveDirectoryEntryKey, setActiveDirectoryId]);
 
   const openSearchResult = useCallback((pageId: string) => {
-    const targetPage = state.pages.find((entry) => entry.id === pageId) ?? null;
+    const targetPage = (availablePages ?? state.pages).find((entry) => entry.id === pageId) ?? (activeSearchMatch?.id === pageId ? activeSearchMatch : null);
     if (targetPage) {
       navigateToPage(targetPage, { recordJump: true });
+    } else if (ensurePageLoaded) {
+      void ensurePageLoaded(pageId).then(page => {
+        if (stateRef.current.activeView === 'search') void navigateToPage(page, { recordJump: true });
+      }).catch(error => setSyncMessage(error instanceof Error ? error.message : 'Document load failed.'));
     }
     resetSearch();
-  }, [navigateToPage, resetSearch, state.pages]);
+  }, [navigateToPage, resetSearch, state.pages, availablePages, activeSearchMatch, ensurePageLoaded, stateRef, setSyncMessage]);
 
   const openJournalPage = useCallback((pageId: string, options?: { recordJump?: boolean }) => {
-    const targetPage = stateRef.current.pages.find((entry) => entry.id === pageId && entry.kind === 'journal') ?? null;
+    const targetPage = (availablePages ?? stateRef.current.pages).find((entry) => entry.id === pageId && entry.kind === 'journal') ?? null;
     if (!targetPage) {
       return;
     }
     navigateToPage(targetPage, { recordJump: options?.recordJump });
-  }, [navigateToPage, stateRef]);
+  }, [navigateToPage, stateRef, availablePages]);
 
   const openTodayJournal = useCallback(() => {
     pushJumpBack(getCurrentJumpLocation());
@@ -234,13 +254,13 @@ export function useAppCommands({
   }, [activeSearchMatch, dispatch, openSearchResult, resetSearch, searchQuery]);
 
   const openDocumentLinkTarget = useCallback((targetDocumentId: number) => {
-    const targetPage = stateRef.current.pages.find((entry) => entry.backendId === targetDocumentId) ?? null;
+    const targetPage = (availablePages ?? stateRef.current.pages).find((entry) => entry.backendId === targetDocumentId) ?? null;
     if (!targetPage) {
       setSyncMessage('Linked document is not loaded locally yet. Sync to refresh documents.');
       return;
     }
     navigateToPage(targetPage, { recordJump: true });
-  }, [navigateToPage, setSyncMessage, stateRef]);
+  }, [navigateToPage, setSyncMessage, stateRef, availablePages]);
 
   const insertDocumentLink = useCallback((targetPage: OutlinePage | null) => {
     if (!targetPage || !targetPage.backendId) {
@@ -276,7 +296,7 @@ export function useAppCommands({
       }
       return;
     }
-    const sourcePage = state.pages.find((entry) => entry.backendId === documentId);
+    const sourcePage = (availablePages ?? state.pages).find((entry) => entry.backendId === documentId);
     if (!sourcePage) {
       setSyncMessage('Source page is not loaded locally yet. Sync to refresh documents.');
       return;
@@ -288,8 +308,8 @@ export function useAppCommands({
     }
 
     const node = sourcePage.nodes.find((entry) => entry.backendId === blockId || entry.todoId === todo.id);
-    navigateToPage(sourcePage, { focusNodeId: node?.id, recordJump: true });
-  }, [navigateToPage, setSyncMessage, state.pages]);
+    navigateToPage(sourcePage, { focusNodeId: node?.id, blockId, recordJump: true });
+  }, [navigateToPage, setSyncMessage, state.pages, availablePages]);
 
   const handleDeleteNote = useCallback(() => {
     if (!activeNotePage || state.activeView !== 'note') {
@@ -312,23 +332,10 @@ export function useAppCommands({
       return;
     }
 
-    if (pendingDeleteNote.backendId && syncEnabled) {
-      void (async () => {
-        try {
-          await flushDirtyPages();
-          await deleteDocument(backendUrl, authToken, pendingDeleteNote.backendId!);
-          dispatch({ type: 'deleteNote', pageId: pendingDeleteNote.id });
-          setSyncMessage(`Deleted ${pendingDeleteNote.title}.`);
-        } catch (error) {
-          setSyncMessage(error instanceof Error ? error.message : 'Delete failed.');
-        }
-      })();
-      return;
-    }
-
-    dispatch({ type: 'deleteNote', pageId: pendingDeleteNote.id });
-    setSyncMessage(`Deleted ${pendingDeleteNote.title}.`);
-  }, [authToken, backendUrl, dispatch, flushDirtyPages, pendingDeleteNote, setSyncMessage, syncEnabled]);
+    void deleteNote(pendingDeleteNote.id).then(() => {
+      setSyncMessage(`Deleted ${pendingDeleteNote.title}.`);
+    }).catch((error) => setSyncMessage(error instanceof Error ? error.message : 'Delete failed.'));
+  }, [deleteNote, pendingDeleteNote, setSyncMessage, syncEnabled]);
 
   const moveCurrentDocumentTodosToRepository = useCallback(() => {
     const page = currentPage;
@@ -339,16 +346,14 @@ export function useAppCommands({
 
     void (async () => {
       try {
-        await flushDirtyPages();
-        const movedCount = await moveDocumentTodosToRepository(backendUrl, authToken, page.backendId!);
-        await runSync();
+        const { movedCount } = await runTodoCommand('repository', page.backendId!);
         await refreshTodos();
         setSyncMessage(`Moved ${movedCount} todo${movedCount === 1 ? '' : 's'} to the repository.`);
       } catch (error) {
         setSyncMessage(error instanceof Error ? error.message : 'Move todos failed.');
       }
     })();
-  }, [authToken, backendUrl, currentPage, flushDirtyPages, refreshTodos, runSync, setSyncMessage, syncEnabled]);
+  }, [authToken, backendUrl, currentPage, runTodoCommand, refreshTodos, setSyncMessage, syncEnabled]);
 
   const pullOnDeckTodosIntoToday = useCallback(() => {
     if (!syncEnabled || !authToken || !workspaceId) {
@@ -358,11 +363,10 @@ export function useAppCommands({
 
     void (async () => {
       try {
-        await flushDirtyPages();
-        const result = await pullOnDeckTodosToToday(backendUrl, authToken, workspaceId);
-        await runSync();
+        const result = await runTodoCommand('pull');
         await refreshTodos();
-        const todayPage = stateRef.current.pages.find((entry) => entry.backendId === result.documentId) ?? null;
+        const todayPage = stateRef.current.pages.find((entry) => entry.backendId === result.documentId)
+          ?? (result.documentId && ensurePageLoaded ? await ensurePageLoaded(`document-${result.documentId}`) : null);
         if (todayPage) {
           navigateToPage(todayPage, { recordJump: true });
         }
@@ -371,7 +375,7 @@ export function useAppCommands({
         setSyncMessage(error instanceof Error ? error.message : 'Pull on-deck todos failed.');
       }
     })();
-  }, [authToken, backendUrl, flushDirtyPages, navigateToPage, refreshTodos, runSync, setSyncMessage, stateRef, syncEnabled, workspaceId]);
+  }, [authToken, backendUrl, runTodoCommand, navigateToPage, refreshTodos, setSyncMessage, stateRef, syncEnabled, workspaceId, ensurePageLoaded]);
 
   const resetSearchView = useCallback(() => {
     resetSearch();

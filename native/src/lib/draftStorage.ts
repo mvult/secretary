@@ -4,6 +4,12 @@ import type { BackendDirectory } from './backend';
 export type DraftScope = [backend: string, user: string, workspace: string];
 export type DraftRecord = {
   page: OutlinePage;
+  draftId?: string;
+  generation?: number;
+  acknowledgedGeneration?: number;
+  envelope?: SaveEnvelope;
+  retry?: { attempts: number; nextAt: number; message: string };
+  needsRefresh?: boolean;
   baseline?: OutlinePage;
   savedHash?: string;
   pending?: boolean;
@@ -12,7 +18,25 @@ export type DraftRecord = {
   // Set only when the editor generates a journal; permanently cleared on editing.
   placeholderHash?: string;
 };
-export type LocalWorkspace = { records: DraftRecord[]; directories: BackendDirectory[] };
+export type SaveEnvelope = {
+  // v2 adds online deletion; v1 remains an exact snapshot-save request.
+  version: 1 | 2;
+  operation?: 'delete';
+  scope: DraftScope;
+  mutationId: string;
+  body: string;
+  submitted: OutlinePage;
+  generation: number;
+  untouchedJournal: boolean;
+};
+export type TodoCommandEnvelope = {
+  version: 1 | 2;
+  operation: 'repository' | 'pull' | 'update';
+  scope: DraftScope;
+  mutationId: string;
+  body: string;
+};
+export type LocalWorkspace = { records: DraftRecord[]; directories: BackendDirectory[]; command?: TodoCommandEnvelope };
 
 export function backendIdentity(value: string) {
   const url = new URL(value);
@@ -47,11 +71,11 @@ function result<T>(request: IDBRequest<T>) {
 // No destructive upgrade fallback: a failed/open-newer database stays intact.
 export function openDraftDatabase(factory: IDBFactory = indexedDB): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = factory.open('secretary-drafts', 1);
+    const request = factory.open('secretary-drafts', 5);
     request.onupgradeneeded = () => {
-      request.result.createObjectStore('workspaces');
-      request.result.createObjectStore('drafts');
-      request.result.createObjectStore('recovery', { autoIncrement: true });
+      if (!request.result.objectStoreNames.contains('workspaces')) request.result.createObjectStore('workspaces');
+      if (!request.result.objectStoreNames.contains('drafts')) request.result.createObjectStore('drafts');
+      if (!request.result.objectStoreNames.contains('recovery')) request.result.createObjectStore('recovery', { autoIncrement: true });
     };
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error('Close other Secretary windows to open local draft storage.'));
@@ -78,11 +102,18 @@ export class DraftStorage {
     const metaRequest = result(tx.objectStore('workspaces').get(this.scope));
     const recordsRequest = result(tx.objectStore('drafts').getAll(IDBKeyRange.bound([...this.scope, ''], [...this.scope, '\uffff'])));
     const [meta, records] = await Promise.all([metaRequest, recordsRequest, done]);
-    if (meta && meta.schemaVersion !== 1) throw new Error('Unsupported local draft format; retained data was not changed.');
+    if (meta && ![1, 2, 3, 4, 5].includes(meta.schemaVersion)) throw new Error('Unsupported local draft format; retained data was not changed.');
+    if (meta?.command && !((meta.command.version === 1 && ['repository', 'pull'].includes(meta.command.operation)) || (meta.command.version === 2 && meta.command.operation === 'update'))) {
+      throw new Error('Unsupported retained command; retained data was not changed.');
+    }
+    if (records.some((record: DraftRecord) => record.envelope && !(
+      (record.envelope.version === 1 && !record.envelope.operation) || (record.envelope.version === 2 && record.envelope.operation === 'delete')))) {
+      throw new Error('Unsupported retained save request; retained data was not changed.');
+    }
     this.revision = meta?.revision ?? 0;
     this.keys = records.map((record: DraftRecord) => record.page.id);
     this.loaded = true;
-    return { records, directories: meta?.directories ?? [] };
+    return { records, directories: meta?.directories ?? [], command: meta?.command };
   }
 
   save(workspace: LocalWorkspace): Promise<void> {
@@ -110,7 +141,7 @@ export class DraftStorage {
       const keys = new Set(workspace.records.map((record) => record.page.id));
       for (const key of this.keys) if (!keys.has(key)) store.delete([...this.scope, key]);
       for (const record of workspace.records) store.put(record, [...this.scope, record.page.id]);
-      metadata.put({ schemaVersion: 1, revision: this.revision + 1, directories: workspace.directories }, this.scope);
+      metadata.put({ schemaVersion: 5, revision: this.revision + 1, directories: workspace.directories, command: workspace.command }, this.scope);
     };
     await done;
     if (conflict) throw new Error('Another window changed these drafts. This window’s snapshot was retained in local recovery storage; keep it open and resolve the other window before continuing.');

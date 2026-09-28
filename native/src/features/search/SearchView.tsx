@@ -2,11 +2,12 @@ import { getPageDateLabel, getPageTitle } from '../outline/tree';
 import type { OutlinePage } from '../outline/types';
 
 interface SearchViewProps {
+  searchStatus?: string;
   searchQuery: string;
   searchScope: 'title' | 'fulltext';
   searchMode: 'insert' | 'select';
   searchInputRef: React.RefObject<HTMLInputElement | null>;
-  visibleMatches: { page: OutlinePage }[];
+  visibleMatches: { page: OutlinePage; snippet?: string }[];
   activeSearchMatch: OutlinePage | null;
   lastSearchJPressRef: React.MutableRefObject<number | null>;
   onChangeQuery: (value: string) => void;
@@ -19,6 +20,7 @@ interface SearchViewProps {
 }
 
 export function SearchView({
+  searchStatus,
   searchQuery,
   searchScope,
   searchMode,
@@ -113,8 +115,9 @@ export function SearchView({
       </header>
 
       <div className="search-results">
+        {searchScope === 'fulltext' && searchStatus ? <div className="search-empty" role="status">{searchStatus}</div> : null}
         {visibleMatches.length > 0 ? (
-          visibleMatches.map(({ page: match }) => (
+          visibleMatches.map(({ page: match, snippet }) => (
             <button
               key={match.id}
               type="button"
@@ -123,6 +126,7 @@ export function SearchView({
               onClick={() => onOpenSearchResult(match.id)}
             >
               <span className="search-result-title">{getPageTitle(match)}</span>
+              {snippet ? <span className="search-result-date">{snippet}</span> : null}
               <span className="search-result-date">{getPageDateLabel(match)}</span>
             </button>
           ))

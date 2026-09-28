@@ -96,17 +96,6 @@ func (s agentServices) CreateSourceRef(ctx context.Context, runID int64, kind st
 	return err
 }
 
-func (s agentServices) CreateDocument(ctx context.Context, workspaceID int32, title string, content string) (int64, error) {
-	env := &aiToolMutationEnv{ctx: ctx, server: s.server, workspaceID: workspaceID}
-	return env.createDocument(title, content)
-}
-
-func (s agentServices) InsertBlock(ctx context.Context, userID int32, documentID int64, parentBlockID int64, afterBlockID int64, text string) (int64, int64, error) {
-	env := &aiToolMutationEnv{ctx: ctx, server: s.server, userID: userID}
-	return env.insertBlock(documentID, parentBlockID, afterBlockID, text)
-}
-
-func (s agentServices) MoveBlock(ctx context.Context, userID int32, blockID int64, parentBlockID int64, afterBlockID int64) (int64, int64, error) {
-	env := &aiToolMutationEnv{ctx: ctx, server: s.server, userID: userID}
-	return env.moveBlock(blockID, parentBlockID, afterBlockID)
+func (s agentServices) ExecuteMutationCall(ctx context.Context, call agent.MutationCall) (string, error) {
+	return s.server.executeAIMutationCall(ctx, call)
 }

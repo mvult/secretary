@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-func TestVersionedDocumentRequestsCannotFallThroughToLegacyWrites(t *testing.T) {
+func TestLegacyDocumentRequestsCannotBypassVersionedWrites(t *testing.T) {
 	ctx := context.WithValue(context.Background(), userIdKey, int64(1))
 	s := &Server{} // No DB: rejection must precede any reads/writes.
 	assertRejected := func(t *testing.T, err error) {
@@ -30,7 +30,8 @@ func TestVersionedDocumentRequestsCannotFallThroughToLegacyWrites(t *testing.T) 
 		}
 	}
 	for name, request := range map[string]*secretaryv1.SaveDocumentRequest{
-		"version":                  {ProtocolVersion: 1},
+		"legacy":                   {},
+		"version":                  {ProtocolVersion: 2},
 		"mutation":                 {MutationId: "07f6359a-9364-47fa-a07d-ef0b7b35c190"},
 		"create revision presence": {ExpectedRevision: proto.Int64(0)},
 		"update revision":          {ExpectedRevision: proto.Int64(9)},
@@ -42,7 +43,8 @@ func TestVersionedDocumentRequestsCannotFallThroughToLegacyWrites(t *testing.T) 
 		})
 	}
 	for name, request := range map[string]*secretaryv1.DeleteDocumentRequest{
-		"version":           {ProtocolVersion: 1},
+		"legacy":            {},
+		"version":           {ProtocolVersion: 2},
 		"mutation":          {MutationId: "07f6359a-9364-47fa-a07d-ef0b7b35c190"},
 		"revision presence": {ExpectedRevision: proto.Int64(0)},
 		"scope":             {WorkspaceId: 4},
@@ -52,14 +54,18 @@ func TestVersionedDocumentRequestsCannotFallThroughToLegacyWrites(t *testing.T) 
 			assertRejected(t, err)
 		})
 	}
-	// Legacy requests still reach ordinary validation rather than the protocol gate.
-	_, err := s.SaveDocument(ctx, connect.NewRequest(&secretaryv1.SaveDocumentRequest{}))
+	// V1 requests now reach the service's validation, never a legacy fallback.
+	_, err := s.SaveDocument(ctx, connect.NewRequest(&secretaryv1.SaveDocumentRequest{ProtocolVersion: 1}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("legacy save validation changed: %v", err)
+		t.Fatalf("v1 save not activated: %v", err)
 	}
-	_, err = s.DeleteDocument(ctx, connect.NewRequest(&secretaryv1.DeleteDocumentRequest{}))
+	_, err = s.DeleteDocument(ctx, connect.NewRequest(&secretaryv1.DeleteDocumentRequest{ProtocolVersion: 1}))
 	if connect.CodeOf(err) != connect.CodeInvalidArgument {
-		t.Fatalf("legacy delete validation changed: %v", err)
+		t.Fatalf("v1 delete not activated: %v", err)
+	}
+	_, err = s.UpdateTodo(ctx, connect.NewRequest(&secretaryv1.UpdateTodoRequest{ProtocolVersion: 1}))
+	if connect.CodeOf(err) != connect.CodeInvalidArgument {
+		t.Fatalf("v1 TODO update not activated: %v", err)
 	}
 }
 

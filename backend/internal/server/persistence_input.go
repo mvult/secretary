@@ -57,10 +57,14 @@ func validateMutationEnvelope(actor, workspace int64, version uint32, mutation s
 // recursively. IDs/revisions are decimal strings; writable defaults are included.
 // Do not change this representation when adding future protocol versions.
 func mutationFingerprint(actor, workspace int64, operation string, expected int64, payload map[string]any) [32]byte {
+	return scopedMutationFingerprint(actor, "workspace", workspace, operation, expected, payload)
+}
+
+func scopedMutationFingerprint(actor int64, scope string, id int64, operation string, expected int64, payload map[string]any) [32]byte {
 	encoded, err := json.Marshal(map[string]any{
 		"fingerprint_version": 1, "protocol_version": 1, "operation": operation,
-		"actor_user_id": strconv.FormatInt(actor, 10), "scope_kind": "workspace",
-		"scope_id": strconv.FormatInt(workspace, 10), "expected_revision": strconv.FormatInt(expected, 10), "payload": payload,
+		"actor_user_id": strconv.FormatInt(actor, 10), "scope_kind": scope,
+		"scope_id": strconv.FormatInt(id, 10), "expected_revision": strconv.FormatInt(expected, 10), "payload": payload,
 	})
 	if err != nil {
 		panic(err) // Only the fixed JSON-compatible values constructed below enter this function.

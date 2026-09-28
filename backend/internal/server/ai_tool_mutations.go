@@ -18,13 +18,10 @@ type aiToolMutationEnv struct {
 	server      *Server
 	workspaceID int32
 	userID      int32
+	targetIDs   []int64
 }
 
-func (e *aiToolMutationEnv) createDocument(title string, content string) (int64, error) {
-	actor, err := requireUserID(e.ctx)
-	if err != nil {
-		return 0, err
-	}
+func (e *aiToolMutationEnv) createDocument(tx pgx.Tx, q *db.Queries, mutationID string, title string, content string) (int64, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
 		return 0, errors.New("title is required")
@@ -32,105 +29,27 @@ func (e *aiToolMutationEnv) createDocument(title string, content string) (int64,
 	if strings.EqualFold(title, lockedSystemDocument) {
 		return 0, errors.New("the System document is locked")
 	}
-	directoryID, err := e.ensureAIDirectory(int32(actor))
+	directoryID, err := e.ensureAIDirectory(q, e.userID)
 	if err != nil {
 		return 0, err
 	}
 	doc := &secretaryv1.Document{
-		ClientKey:   "tool-" + uuid.NewString(),
+		ClientKey:   "tool-" + mutationID,
 		WorkspaceId: int64(e.workspaceID),
 		Kind:        "note",
 		Title:       title,
 		DirectoryId: int64(directoryID),
 		Blocks:      blocksFromPlainText(content, 0),
 	}
-	initialRevision := int64(0)
-	resp, err := e.server.saveDocumentMutation(e.ctx, actor, &secretaryv1.SaveDocumentRequest{Document: doc, ProtocolVersion: 1, MutationId: uuid.NewString(), ExpectedRevision: &initialRevision})
+	saved, err := q.CreateDocumentWithClientKey(e.ctx, db.CreateDocumentWithClientKeyParams{WorkspaceID: e.workspaceID, Kind: "note", Title: title, ClientKey: doc.ClientKey, DirectoryID: pgtype.Int4{Int32: directoryID, Valid: true}})
 	if err != nil {
 		return 0, err
 	}
-	return resp.Document.Id, nil
+	_, err = e.server.persistDocumentBlocks(e.ctx, tx, saved, doc, int64(e.userID), true)
+	return int64(saved.ID), err
 }
 
-func (e *aiToolMutationEnv) insertBlock(documentID int64, parentBlockID int64, afterBlockID int64, text string) (int64, int64, error) {
-	text = strings.TrimSpace(text)
-	if documentID <= 0 {
-		return 0, 0, errors.New("document_id is required")
-	}
-	if text == "" {
-		return 0, 0, errors.New("text is required")
-	}
-	doc, _, err := e.server.loadAuthorizedDocument(e.ctx, int32(documentID), e.userID)
-	if err != nil {
-		return 0, 0, err
-	}
-	if isLockedSystemDocument(doc) {
-		return 0, 0, errors.New("the System document is locked")
-	}
-	block, err := e.insertDocumentBlock(doc, parentBlockID, afterBlockID, text)
-	if err != nil {
-		return 0, 0, err
-	}
-	return int64(doc.ID), int64(block.ID), nil
-}
-
-func (e *aiToolMutationEnv) moveBlock(blockID int64, parentBlockID int64, afterBlockID int64) (int64, int64, error) {
-	if blockID <= 0 {
-		return 0, 0, errors.New("block_id is required")
-	}
-	block, doc, err := e.loadAuthorizedBlock(blockID)
-	if err != nil {
-		return 0, 0, err
-	}
-	if isLockedSystemDocument(doc) {
-		return 0, 0, errors.New("the System document is locked")
-	}
-	moved, err := e.moveDocumentBlock(block, doc, parentBlockID, afterBlockID)
-	if err != nil {
-		return 0, 0, err
-	}
-	return int64(doc.ID), int64(moved.ID), nil
-}
-
-func (e *aiToolMutationEnv) loadAuthorizedBlock(blockID int64) (db.Block, db.Document, error) {
-	if blockID <= 0 {
-		return db.Block{}, db.Document{}, errors.New("block_id is required")
-	}
-	var block db.Block
-	err := e.server.db.QueryRow(e.ctx, `
-		SELECT id, document_id, parent_block_id, sort_order, text, todo_id, created_at, updated_at
-		FROM block
-		WHERE id = $1
-	`, int32(blockID)).Scan(
-		&block.ID,
-		&block.DocumentID,
-		&block.ParentBlockID,
-		&block.SortOrder,
-		&block.Text,
-		&block.TodoID,
-		&block.CreatedAt,
-		&block.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return db.Block{}, db.Document{}, errors.New("block not found")
-	}
-	if err != nil {
-		return db.Block{}, db.Document{}, err
-	}
-	doc, _, err := e.server.loadAuthorizedDocument(e.ctx, block.DocumentID, e.userID)
-	if err != nil {
-		return db.Block{}, db.Document{}, err
-	}
-	return block, doc, nil
-}
-
-func (e *aiToolMutationEnv) insertDocumentBlock(doc db.Document, parentBlockID int64, afterBlockID int64, text string) (db.Block, error) {
-	tx, err := e.server.db.BeginTx(e.ctx, pgx.TxOptions{})
-	if err != nil {
-		return db.Block{}, err
-	}
-	defer tx.Rollback(e.ctx)
-	qtx := e.server.queries.WithTx(tx)
+func (e *aiToolMutationEnv) insertDocumentBlock(qtx *db.Queries, doc db.Document, parentBlockID int64, afterBlockID int64, text string) (db.Block, error) {
 	deps, err := e.server.lockPersistenceWriter(e.ctx, qtx, e.userID, persistenceWriterScope{document: doc.ID})
 	if err != nil {
 		return db.Block{}, err
@@ -187,19 +106,13 @@ func (e *aiToolMutationEnv) insertDocumentBlock(doc db.Document, parentBlockID i
 	if _, err := advanceMutationDocuments(e.ctx, qtx, deps.documents, 0); err != nil {
 		return db.Block{}, err
 	}
-	if err := tx.Commit(e.ctx); err != nil {
-		return db.Block{}, err
+	for _, affected := range deps.documents {
+		e.targetIDs = append(e.targetIDs, int64(affected.ID))
 	}
 	return created, nil
 }
 
-func (e *aiToolMutationEnv) moveDocumentBlock(block db.Block, doc db.Document, parentBlockID int64, afterBlockID int64) (db.Block, error) {
-	tx, err := e.server.db.BeginTx(e.ctx, pgx.TxOptions{})
-	if err != nil {
-		return db.Block{}, err
-	}
-	defer tx.Rollback(e.ctx)
-	qtx := e.server.queries.WithTx(tx)
+func (e *aiToolMutationEnv) moveDocumentBlock(qtx *db.Queries, block db.Block, doc db.Document, parentBlockID int64, afterBlockID int64) (db.Block, error) {
 	deps, err := e.server.lockPersistenceWriter(e.ctx, qtx, e.userID, persistenceWriterScope{document: doc.ID})
 	if err != nil {
 		return db.Block{}, err
@@ -250,8 +163,8 @@ func (e *aiToolMutationEnv) moveDocumentBlock(block db.Block, doc db.Document, p
 	if _, err := advanceMutationDocuments(e.ctx, qtx, deps.documents, 0); err != nil {
 		return db.Block{}, err
 	}
-	if err := tx.Commit(e.ctx); err != nil {
-		return db.Block{}, err
+	for _, affected := range deps.documents {
+		e.targetIDs = append(e.targetIDs, int64(affected.ID))
 	}
 	return moved, nil
 }
@@ -411,13 +324,7 @@ func sameParent(a pgtype.Int4, b pgtype.Int4) bool {
 	return a.Int32 == b.Int32
 }
 
-func (e *aiToolMutationEnv) ensureAIDirectory(actor int32) (int32, error) {
-	tx, err := e.server.db.BeginTx(e.ctx, pgx.TxOptions{})
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(e.ctx)
-	qtx := e.server.queries.WithTx(tx)
+func (e *aiToolMutationEnv) ensureAIDirectory(qtx *db.Queries, actor int32) (int32, error) {
 	if _, err := e.server.lockPersistenceWriter(e.ctx, qtx, actor, persistenceWriterScope{workspace: e.workspaceID}); err != nil {
 		return 0, err
 	}
@@ -432,9 +339,6 @@ func (e *aiToolMutationEnv) ensureAIDirectory(actor int32) (int32, error) {
 	}
 	created, err := qtx.CreateDirectory(e.ctx, db.CreateDirectoryParams{WorkspaceID: e.workspaceID, Name: agentDirectoryName})
 	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(e.ctx); err != nil {
 		return 0, err
 	}
 	return created.ID, nil
