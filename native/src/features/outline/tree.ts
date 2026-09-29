@@ -1,18 +1,10 @@
 import { cycleStatus } from './keymap';
 import { getVisibleNodes } from './folding';
 import { createJournalPage, formatPageDate, getAvailableJournalDates, getCurrentJournalDate, getDateKey } from './sampleData';
-import type { CursorPlacement, OutlineNode, OutlinePage, OutlineSnapshot, OutlineState, YankBuffer, YankedOutlineNode } from './types';
+import type { CursorPlacement, OutlineNode, OutlinePage, OutlineState, YankBuffer, YankedOutlineNode } from './types';
 
 function buildIndexMap(nodes: OutlineNode[]) {
   return new Map(nodes.map((node, index) => [node.id, index]));
-}
-
-function cloneNodes(nodes: OutlineNode[]) {
-  return nodes.map((node) => ({ ...node }));
-}
-
-function clonePages(pages: OutlinePage[]) {
-  return pages.map((page) => ({ ...page, nodes: cloneNodes(page.nodes) }));
 }
 
 export function getPageBackendBlockIds(page: OutlinePage) {
@@ -136,46 +128,6 @@ function cloneYankedNodes(nodes: YankedOutlineNode[]) {
   return nodes.map((node) => ({ ...node }));
 }
 
-function normalizeTodoStatus(value: unknown): YankedOutlineNode['todoStatus'] {
-  return value === 'todo' || value === 'doing' || value === 'done' || value === 'blocked' || value === 'skipped'
-    ? value
-    : null;
-}
-
-function cloneYankBuffer(yankBuffer: YankBuffer | null) {
-  if (!yankBuffer) {
-    return null;
-  }
-
-  const legacyBuffer = yankBuffer as unknown as {
-    text?: unknown;
-    plainText?: unknown;
-    nodes?: unknown;
-    todoStatus?: unknown;
-  };
-
-  if (!Array.isArray(legacyBuffer.nodes)) {
-    const legacyText = typeof legacyBuffer.text === 'string'
-      ? legacyBuffer.text
-      : typeof legacyBuffer.plainText === 'string'
-        ? legacyBuffer.plainText
-        : '';
-    const legacyTodoStatus = normalizeTodoStatus(legacyBuffer.todoStatus);
-
-    return legacyText
-      ? {
-          plainText: legacyText,
-          nodes: [{ depth: 0, text: legacyText, todoStatus: legacyTodoStatus }],
-        }
-      : null;
-  }
-
-  return {
-    plainText: typeof legacyBuffer.plainText === 'string' ? legacyBuffer.plainText : '',
-    nodes: cloneYankedNodes(legacyBuffer.nodes as YankedOutlineNode[]),
-  };
-}
-
 function serializeStructuredNodesToText(nodes: YankedOutlineNode[]) {
   return nodes
     .map((node) => {
@@ -217,23 +169,21 @@ export function getCurrentPage(state: OutlineState) {
   return getPageById(state.pages, state.activePageId);
 }
 
+const draftPages = new WeakMap<OutlinePage, { node: string; text: string; page: OutlinePage }>();
 export function getPagesForPersistence(state: OutlineState) {
-  const pages = clonePages(state.pages);
+  const pages = state.pages;
   if (!state.editingId) {
     return pages;
   }
 
-  return pages.map((page) => ({
-    ...page,
-    nodes: page.nodes.map((node) =>
-      node.id === state.editingId
-        ? {
-            ...node,
-            text: state.draftText,
-          }
-        : node,
-    ),
-  }));
+  return pages.map(page => {
+    if (page.id !== state.activePageId || !page.nodes.some(node => node.id === state.editingId && node.text !== state.draftText)) return page;
+    const cached = draftPages.get(page);
+    if (cached?.node === state.editingId && cached.text === state.draftText) return cached.page;
+    const projected = { ...page, nodes: page.nodes.map(node => node.id === state.editingId ? { ...node, text: state.draftText } : node) };
+    draftPages.set(page, { node: state.editingId!, text: state.draftText, page: projected });
+    return projected;
+  });
 }
 
 function getActiveNodes(state: OutlineState) {
@@ -534,34 +484,9 @@ export function createTodayJournalPage(state: OutlineState): OutlineState {
   };
 }
 
-export function makeSnapshot(state: OutlineState): OutlineSnapshot {
-  return {
-    pages: clonePages(state.pages),
-    activePageId: state.activePageId,
-    activeView: state.activeView,
-    focusedId: state.focusedId,
-    normalCursor: state.normalCursor,
-    anchorId: state.anchorId,
-    editingId: state.editingId,
-    draftText: state.draftText,
-    editCursor: state.editCursor,
-    mode: state.mode,
-    yankBuffer: cloneYankBuffer(state.yankBuffer),
-  };
-}
-
-export function restoreSnapshot(state: OutlineState, snapshot: OutlineSnapshot): OutlineState {
-  return {
-    ...state,
-    ...snapshot,
-    pages: clonePages(snapshot.pages),
-    yankBuffer: cloneYankBuffer(snapshot.yankBuffer),
-  };
-}
-
 export function hydratePages(state: OutlineState, pages: OutlinePage[]): OutlineState {
   // Loading/restoring is not a user request to create a journal.
-  const nextPages = clonePages(pages);
+  const nextPages = pages;
   const activePage = getJournalPage({
     ...state,
     pages: nextPages,
@@ -579,7 +504,7 @@ export function hydratePages(state: OutlineState, pages: OutlinePage[]): Outline
     draftText: '',
     editCursor: 'end',
     mode: 'normal',
-    history: [],
+    documentHistory: {},
     yankBuffer: null,
   };
 }

@@ -62,22 +62,17 @@ export interface OutlineState {
   editCursor: CursorPlacement;
   mode: EditorMode;
   yankBuffer: YankBuffer | null;
-  history: OutlineSnapshot[];
+  documentHistory?: Record<string, DocumentUndo[]>;
+  documentCursors?: Record<string, { focusedId: string; normalCursor: number }>;
+  blockIdentities?: Record<string, Record<string, Pick<OutlineNode, 'backendId' | 'clientKey' | 'todoId' | 'createdAt' | 'updatedAt'>>>;
   collapsedNodeIds?: string[];
 }
 
-export interface OutlineSnapshot {
-  pages: OutlinePage[];
-  activePageId: string;
-  activeView: WorkspaceView;
+export interface DocumentUndo {
+  title: string;
+  nodes: Pick<OutlineNode, 'id' | 'parentId' | 'text' | 'todoStatus'>[];
   focusedId: string;
   normalCursor: number;
-  anchorId: string | null;
-  editingId: string | null;
-  draftText: string;
-  editCursor: CursorPlacement;
-  mode: EditorMode;
-  yankBuffer: YankBuffer | null;
 }
 
 export interface SelectedInfo {

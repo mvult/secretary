@@ -15,12 +15,12 @@ export function navigationPages(index: DocumentMetadata[], loaded: OutlinePage[]
   return [...loaded, ...index.filter(entry => !ids.has(entry.id) && !keys.has(entry.clientKey)).map(indexPage)];
 }
 
-export async function readDocumentIndex(baseUrl: string, token: string, workspaceId: number, active: () => boolean, query = '') {
+export async function readDocumentIndex(baseUrl: string, token: string, workspaceId: number, active: () => boolean, query = '', fetchIndex: typeof listDocumentIndex = listDocumentIndex) {
   const entries: DocumentMetadata[] = [];
   let before = 0;
   let first: Awaited<ReturnType<typeof listDocumentIndex>> | undefined;
   do {
-    const page = await listDocumentIndex(baseUrl, token, workspaceId, before, query);
+    const page = await fetchIndex(baseUrl, token, workspaceId, before, query);
     if (!active()) throw new Error('Document index scope changed.');
     if (page.persistenceProtocolVersion !== 1) throw new Error('Document index requires persistence protocol one.');
     if (page.entries.some(entry => entry.workspaceId !== workspaceId || !entry.revision || entry.revision === '0' || !entry.clientKey)) throw new Error('Invalid document index identity.');
@@ -35,8 +35,9 @@ export async function readDocumentIndex(baseUrl: string, token: string, workspac
 
 /** Refresh only loaded/recovery bodies; absence from a paged index never proves deletion. */
 export async function loadIndexedWorkspace(baseUrl: string, token: string, workspaceId: number,
-  records: () => DraftRecord[], active: () => boolean) {
-  const index = await readDocumentIndex(baseUrl, token, workspaceId, active);
+  records: () => DraftRecord[], active: () => boolean, fetchBody: typeof getDocument = getDocument,
+  fetchIndex: typeof listDocumentIndex = listDocumentIndex) {
+  const index = await readDocumentIndex(baseUrl, token, workspaceId, active, '', fetchIndex);
   const byId = new Map(index.entries.map(entry => [entry.id, entry]));
   const byKey = new Map(index.entries.map(entry => [entry.clientKey, entry]));
   const byDate = new Map(index.entries.filter(entry => entry.kind === 'journal').map(entry => [entry.journalDate, entry]));
@@ -72,7 +73,7 @@ export async function loadIndexedWorkspace(baseUrl: string, token: string, works
     while (queue.length && active()) {
       const id = queue.shift()!;
       try {
-        const doc = await getDocument(baseUrl, token, id);
+        const doc = await fetchBody(baseUrl, token, id);
         if (!active()) return;
         if (doc.id !== id || doc.workspaceId !== workspaceId) throw new Error('Document identity does not match the requested workspace.');
         documents.push(doc);

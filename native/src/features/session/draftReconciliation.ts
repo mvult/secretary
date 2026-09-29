@@ -30,7 +30,7 @@ export function mergeWorkspace(records: DraftRecord[], remote: OutlinePage[]): D
     if (record.envelope) return [{ ...record, serverCopy: match ?? null }];
     const dirty = isDraftDirty(record);
     if (!dirty || (match && isUntouchedJournalPlaceholder(record))) {
-      return match ? [{ draftId: record.draftId, generation: record.generation,
+      return match ? [{ draftId: record.draftId, generation: record.generation, lastAccessedAt: record.lastAccessedAt,
         acknowledgedGeneration: match.revision && match.revision !== '0' ? record.generation ?? 0 : undefined,
         page: match, baseline: match, savedHash: pageHash(match) }] : [];
     }
@@ -64,10 +64,13 @@ export function isUntouchedJournalPlaceholder(record: DraftRecord) {
 /** Observe every edit, so typing then deleting text cannot turn a draft back into a placeholder. */
 export function trackDrafts(records: DraftRecord[], pages: OutlinePage[], markNewPlaceholders = false): DraftRecord[] {
   const retained = new Set(records.filter((record) => record.envelope || record.pending || record.conflict));
+  const byKey = new Map(records.map(record => [pagePersistenceKey(record.page), record]));
+  const byId = new Map(records.map(record => [record.draftId, record]));
   const tracked = pages.map((page) => {
     if (page.metadataOnly) throw new Error('Document index entries cannot become drafts.');
-    const prior = records.find((entry) => pagePersistenceKey(entry.page) === pagePersistenceKey(page) || entry.draftId === page.id);
+    const prior = byKey.get(pagePersistenceKey(page)) ?? byId.get(page.id);
     if (prior) retained.delete(prior);
+    if (prior?.page === page) return prior;
     const placeholderHash = prior
       ? prior.placeholderHash === pageHash(page) ? prior.placeholderHash : undefined
       : markNewPlaceholders && !page.backendId && isBlankJournal(page) ? pageHash(page) : undefined;

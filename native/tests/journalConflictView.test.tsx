@@ -14,7 +14,7 @@ test('a blank journal has adjacent review controls exposing the populated server
   const [record] = mergeWorkspace([{ page: local }], [server]);
   const older: OutlinePage = { ...local, id: 'yesterday', date: '2026-09-22', nodes: [{ id: 'old', parentId: null, text: 'Older journal content' }] };
   const state: OutlineState = { pages: [local, older], activePageId: local.id, activeView: 'journals', focusedId: 'blank',
-    normalCursor: 0, anchorId: null, editingId: null, draftText: '', editCursor: 'end', mode: 'normal', yankBuffer: null, history: [] };
+    normalCursor: 0, anchorId: null, editingId: null, draftText: '', editCursor: 'end', mode: 'normal', yankBuffer: null, documentHistory: {} };
   const html = renderToStaticMarkup(<JournalsView journals={state.pages} journalPage={local} state={state}
     dispatch={() => undefined} pagesByBackendId={new Map()} activePageSaveMessage="Retained locally · conflict"
     onSelectJournalPage={() => undefined} onOpenDocumentLinkPicker={() => undefined}

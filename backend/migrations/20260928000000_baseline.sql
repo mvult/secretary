@@ -1,0 +1,315 @@
+-- +goose Up
+-- Current application schema, verified against secretary_db on 2026-09-28.
+-- Fresh databases execute this DDL. Existing databases must be explicitly
+-- baselined without executing it; see docs/goose-migration-prd.md.
+CREATE SCHEMA IF NOT EXISTS "public";
+COMMENT ON SCHEMA "public" IS 'standard public schema';
+
+CREATE TABLE public.topic (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  name text NOT NULL, "desc" text NULL, created_at timestamptz NULL,
+  PRIMARY KEY (id)
+);
+CREATE TYPE public.relation_kind AS ENUM ('support', 'attack');
+CREATE TYPE public.issue_status AS ENUM ('open', 'answered', 'stale');
+CREATE TYPE public.argument_acceptance AS ENUM ('accepted', 'contested', 'rejected', '');
+CREATE TYPE public.argument_type AS ENUM ('belief', 'hypothesis', 'evidence', 'decision', 'question', 'principle');
+CREATE TABLE public.argument (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  topic_id integer NULL, claim_text text NOT NULL, type public.argument_type NULL,
+  base_weight numeric(4,3) NOT NULL, created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (id),
+  CONSTRAINT topic_fk FOREIGN KEY (topic_id) REFERENCES public.topic (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT weight_range CHECK ((base_weight >= 0.0) AND (base_weight <= 1.0))
+);
+CREATE TABLE public.issue (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY,
+  topic_id integer NOT NULL, question text NOT NULL,
+  status public.issue_status NOT NULL DEFAULT 'open', created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (id),
+  CONSTRAINT issue_topic_id_fkey FOREIGN KEY (topic_id) REFERENCES public.topic (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+CREATE TABLE public.issue_position (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, issue_id integer NOT NULL, argument_id integer NOT NULL,
+  PRIMARY KEY (id), CONSTRAINT issue_position_issue_id_argument_id_key UNIQUE (issue_id, argument_id),
+  CONSTRAINT issue_position_argument_id_fkey FOREIGN KEY (argument_id) REFERENCES public.argument (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT issue_position_issue_id_fkey FOREIGN KEY (issue_id) REFERENCES public.issue (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+CREATE TABLE public.qbaf_run (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, topic_id integer NOT NULL,
+  method text NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT qbaf_run_topic_id_fkey FOREIGN KEY (topic_id) REFERENCES public.topic (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+CREATE TABLE public.qbaf_result (
+  run_id integer NOT NULL, argument_id integer NOT NULL, final_strength numeric(4,3) NOT NULL,
+  status public.argument_acceptance NOT NULL, PRIMARY KEY (run_id, argument_id),
+  CONSTRAINT qbaf_result_argument_id_fkey FOREIGN KEY (argument_id) REFERENCES public.argument (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT qbaf_result_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.qbaf_run (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT qbaf_result_final_strength_check CHECK ((final_strength >= 0.0) AND (final_strength <= 1.0))
+);
+CREATE TABLE public.relation (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, topic_id integer NOT NULL,
+  src_id integer NOT NULL, dst_id integer NOT NULL, kind public.relation_kind NOT NULL,
+  weight numeric(4,3) NOT NULL DEFAULT 1.0, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT relation_topic_id_src_id_dst_id_kind_key UNIQUE (topic_id, src_id, dst_id, kind),
+  CONSTRAINT relation_dst_id_fkey FOREIGN KEY (dst_id) REFERENCES public.argument (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT relation_src_id_fkey FOREIGN KEY (src_id) REFERENCES public.argument (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT relation_topic_id_fkey FOREIGN KEY (topic_id) REFERENCES public.topic (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT no_self_loops CHECK (src_id <> dst_id),
+  CONSTRAINT relation_weight_check CHECK ((weight >= 0.0) AND (weight <= 1.0))
+);
+CREATE TABLE public."user" (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, first_name text NOT NULL,
+  last_name text NULL, role text NULL, email text NULL, password_hash text NULL, PRIMARY KEY (id)
+);
+CREATE TABLE public.workspace (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, name text NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id)
+);
+CREATE TABLE public.activity_type (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, user_id integer NOT NULL, key text NOT NULL,
+  name text NOT NULL, unit text NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT activity_type_user_fk FOREIGN KEY (user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT activity_type_user_key_key UNIQUE (user_id, key),
+  CONSTRAINT activity_type_key_check CHECK (btrim(key) <> ''::text),
+  CONSTRAINT activity_type_name_check CHECK (btrim(name) <> ''::text)
+);
+CREATE TABLE public.activity_entry (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, activity_type_id integer NOT NULL,
+  occurred_at timestamptz NOT NULL DEFAULT now(), value double precision NULL, note text NULL,
+  data jsonb NOT NULL DEFAULT '{}'::jsonb, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT activity_entry_type_fk FOREIGN KEY (activity_type_id) REFERENCES public.activity_type (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+CREATE INDEX activity_entry_type_time_idx ON public.activity_entry (activity_type_id, occurred_at DESC, id DESC);
+CREATE TABLE public.whatsapp_chat (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, jid text NOT NULL, name text NULL,
+  is_group boolean NOT NULL DEFAULT false, created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT whatsapp_chat_jid_key UNIQUE (jid), CONSTRAINT whatsapp_chat_jid_check CHECK (btrim(jid) <> ''::text)
+);
+CREATE TABLE public.whatsapp_message (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, chat_jid text NOT NULL, message_id text NOT NULL,
+  sender_jid text NULL, sender_name text NULL, is_from_me boolean NOT NULL DEFAULT false,
+  sent_at timestamptz NULL, received_at timestamptz NOT NULL DEFAULT now(), message_type text NOT NULL,
+  text text NULL, raw_json jsonb NOT NULL DEFAULT '{}'::jsonb, classification_status text NOT NULL DEFAULT 'pending',
+  classification_important boolean NULL, classification_reason text NULL, classification_model text NULL,
+  classification_error text NULL, classified_at timestamptz NULL, notified_at timestamptz NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT whatsapp_message_chat_fk FOREIGN KEY (chat_jid) REFERENCES public.whatsapp_chat (jid) ON UPDATE CASCADE ON DELETE CASCADE,
+  CONSTRAINT whatsapp_message_chat_message_key UNIQUE (chat_jid, message_id),
+  CONSTRAINT whatsapp_message_chat_jid_check CHECK (btrim(chat_jid) <> ''::text),
+  CONSTRAINT whatsapp_message_id_check CHECK (btrim(message_id) <> ''::text),
+  CONSTRAINT whatsapp_message_type_check CHECK (btrim(message_type) <> ''::text),
+  CONSTRAINT whatsapp_message_classification_status_check CHECK (classification_status = ANY (ARRAY['pending'::text, 'classified'::text, 'error'::text]))
+);
+CREATE INDEX whatsapp_message_status_received_idx ON public.whatsapp_message (classification_status, received_at);
+CREATE INDEX whatsapp_message_important_received_idx ON public.whatsapp_message (classification_important, received_at DESC);
+CREATE INDEX whatsapp_message_chat_sent_idx ON public.whatsapp_message (chat_jid, sent_at DESC, id DESC);
+CREATE TABLE public.whatsapp_settings (
+  id boolean NOT NULL DEFAULT true, importance_instructions text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT whatsapp_settings_singleton_check CHECK (id = true),
+  CONSTRAINT whatsapp_settings_instructions_check CHECK (btrim(importance_instructions) <> ''::text)
+);
+CREATE TABLE public.workspace_user_rel (
+  workspace_id integer NOT NULL, user_id integer NOT NULL, role text NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (workspace_id, user_id),
+  CONSTRAINT workspace_user_rel_user_fk FOREIGN KEY (user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT workspace_user_rel_workspace_fk FOREIGN KEY (workspace_id) REFERENCES public.workspace (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+CREATE TABLE public.speaker_to_user (
+  recording_id integer NOT NULL, speaker_id integer NOT NULL, user_id integer NOT NULL, words_spoken integer,
+  CONSTRAINT constraint_1 PRIMARY KEY (recording_id, speaker_id, user_id),
+  CONSTRAINT user_fk FOREIGN KEY (user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE NO ACTION
+);
+CREATE TABLE public.recording (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, created_at timestamptz NULL,
+  name text NULL, audio_url text NULL, transcript text NULL, summary text NULL,
+  local_audio text NULL, nas_audio text NULL, duration integer NULL, notes text NULL, archived boolean NULL,
+  PRIMARY KEY (id)
+);
+CREATE TABLE public.directory (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, workspace_id integer NOT NULL, parent_id integer NULL,
+  name text NOT NULL, position integer NOT NULL DEFAULT 0, created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT directory_parent_fk FOREIGN KEY (parent_id) REFERENCES public.directory (id) ON UPDATE NO ACTION ON DELETE RESTRICT,
+  CONSTRAINT directory_workspace_fk FOREIGN KEY (workspace_id) REFERENCES public.workspace (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT directory_name_check CHECK (btrim(name) <> ''::text)
+);
+CREATE TABLE public.document (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, workspace_id integer NOT NULL, directory_id integer NULL,
+  kind text NOT NULL, title text NOT NULL, journal_date date NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT document_directory_fk FOREIGN KEY (directory_id) REFERENCES public.directory (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT document_workspace_fk FOREIGN KEY (workspace_id) REFERENCES public.workspace (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT document_kind_check CHECK (kind = ANY (ARRAY['journal'::text, 'note'::text])),
+  CONSTRAINT document_kind_date_check CHECK (((kind = 'journal'::text) AND (journal_date IS NOT NULL)) OR ((kind = 'note'::text) AND (journal_date IS NULL))),
+  CONSTRAINT document_kind_directory_check CHECK (((kind = 'journal'::text) AND (directory_id IS NULL)) OR (kind = 'note'::text)),
+  CONSTRAINT document_workspace_journal_date_key UNIQUE (workspace_id, journal_date)
+);
+ALTER TABLE public.document
+  ADD COLUMN client_key text NOT NULL DEFAULT gen_random_uuid()::text,
+  ADD COLUMN revision bigint NOT NULL DEFAULT 1,
+  ADD CONSTRAINT document_client_key_check CHECK (btrim(client_key) <> ''),
+  ADD CONSTRAINT document_revision_check CHECK (revision > 0),
+  ADD CONSTRAINT document_workspace_client_key_key UNIQUE (workspace_id, client_key);
+CREATE TABLE public.block (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, document_id integer NOT NULL, parent_block_id integer NULL,
+  sort_order integer NOT NULL, text text NOT NULL, todo_id integer NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT block_document_fk FOREIGN KEY (document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT block_parent_fk FOREIGN KEY (parent_block_id) REFERENCES public.block (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+ALTER TABLE public.block
+  ADD COLUMN client_key text NOT NULL DEFAULT gen_random_uuid()::text,
+  ADD CONSTRAINT block_client_key_check CHECK (btrim(client_key) <> ''),
+  ADD CONSTRAINT block_document_client_key_key UNIQUE (document_id, client_key);
+CREATE TABLE public.mutation_receipt (
+  actor_user_id integer NOT NULL, scope_kind text NOT NULL, scope_id integer NOT NULL,
+  mutation_id uuid NOT NULL, protocol_version integer NOT NULL, operation text NOT NULL,
+  payload_sha256 bytea NOT NULL, target_ids bigint[] NOT NULL DEFAULT '{}', creation_key text NULL,
+  result_type text NOT NULL, result_version integer NOT NULL, result_payload bytea NOT NULL,
+  committed_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (actor_user_id, scope_kind, scope_id, mutation_id),
+  CONSTRAINT mutation_receipt_actor_fk FOREIGN KEY (actor_user_id) REFERENCES public."user" (id) ON DELETE RESTRICT,
+  CONSTRAINT mutation_receipt_scope_check CHECK (scope_kind IN ('workspace', 'user') AND scope_id > 0 AND (scope_kind <> 'user' OR scope_id = actor_user_id)),
+  CONSTRAINT mutation_receipt_protocol_check CHECK (protocol_version > 0),
+  CONSTRAINT mutation_receipt_operation_check CHECK (btrim(operation) <> ''),
+  CONSTRAINT mutation_receipt_hash_check CHECK (octet_length(payload_sha256) = 32),
+  CONSTRAINT mutation_receipt_creation_key_check CHECK (creation_key IS NULL OR (scope_kind = 'workspace' AND operation = 'document.save' AND btrim(creation_key) <> '')),
+  CONSTRAINT mutation_receipt_result_check CHECK (btrim(result_type) <> '' AND result_version > 0 AND octet_length(result_payload) > 0)
+);
+CREATE UNIQUE INDEX mutation_receipt_creation_key_idx ON public.mutation_receipt (scope_id, creation_key) WHERE creation_key IS NOT NULL;
+CREATE TABLE public.block_document_link (
+  block_id integer NOT NULL, target_document_id integer NOT NULL, PRIMARY KEY (block_id, target_document_id),
+  CONSTRAINT block_document_link_block_fk FOREIGN KEY (block_id) REFERENCES public.block (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT block_document_link_target_document_fk FOREIGN KEY (target_document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE CASCADE
+);
+CREATE TABLE public.todo_goal (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, user_id integer NOT NULL, name text NOT NULL,
+  description text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT todo_goal_user_fk FOREIGN KEY (user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT todo_goal_name_check CHECK (btrim(name) <> ''::text)
+);
+CREATE TABLE public.todo (
+  id integer NOT NULL GENERATED ALWAYS AS IDENTITY, name text NOT NULL, "desc" text NULL,
+  status text NULL, user_id integer NULL, workspace_id integer NULL, bucket text NULL,
+  priority_rank integer NULL, deadline_date date NULL, goal_id integer NULL,
+  source_kind text NOT NULL DEFAULT 'manual', source_document_id integer NULL, source_block_id integer NULL,
+  current_document_id integer NULL, current_block_id integer NULL, completed_at timestamptz NULL,
+  completed_document_id integer NULL, completed_block_id integer NULL,
+  created_at_recording_id integer NULL, updated_at_recording_id integer NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT todo_completed_block_fk FOREIGN KEY (completed_block_id) REFERENCES public.block (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_completed_document_fk FOREIGN KEY (completed_document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT created_session_fk FOREIGN KEY (created_at_recording_id) REFERENCES public.recording (id) ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT todo_current_block_fk FOREIGN KEY (current_block_id) REFERENCES public.block (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_current_document_fk FOREIGN KEY (current_document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_goal_fk FOREIGN KEY (goal_id) REFERENCES public.todo_goal (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_source_document_fk FOREIGN KEY (source_document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT todo_user FOREIGN KEY (user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT todo_workspace_fk FOREIGN KEY (workspace_id) REFERENCES public.workspace (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_bucket_check CHECK (bucket IS NULL OR bucket = ANY (ARRAY['inbox'::text, 'on_deck'::text, 'blocked'::text, 'done'::text])),
+  CONSTRAINT todo_source_kind_check CHECK (source_kind = ANY (ARRAY['manual'::text, 'block'::text, 'recording'::text, 'llm'::text])),
+  CONSTRAINT updated_at_recording_id FOREIGN KEY (updated_at_recording_id) REFERENCES public.recording (id) ON UPDATE NO ACTION ON DELETE NO ACTION
+);
+ALTER TABLE public.block ADD CONSTRAINT block_todo_fk FOREIGN KEY (todo_id) REFERENCES public.todo (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  ADD CONSTRAINT block_document_parent_sort_key UNIQUE (document_id, parent_block_id, sort_order);
+CREATE INDEX block_document_idx ON public.block (document_id);
+CREATE INDEX block_document_link_target_document_idx ON public.block_document_link (target_document_id);
+CREATE INDEX block_parent_idx ON public.block (parent_block_id);
+CREATE INDEX block_todo_idx ON public.block (todo_id);
+CREATE INDEX directory_parent_idx ON public.directory (parent_id);
+CREATE INDEX directory_workspace_idx ON public.directory (workspace_id);
+CREATE INDEX document_directory_idx ON public.document (directory_id);
+CREATE TABLE public.document_history (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, document_id integer NOT NULL, capture_reason text NOT NULL,
+  content_hash text NOT NULL, snapshot_json jsonb NOT NULL, captured_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT document_history_document_fk FOREIGN KEY (document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT document_history_reason_check CHECK (capture_reason = ANY (ARRAY['day_start'::text, 'periodic'::text]))
+);
+CREATE UNIQUE INDEX todo_source_block_idx ON public.todo (source_block_id) WHERE (source_block_id IS NOT NULL);
+CREATE INDEX todo_goal_user_idx ON public.todo_goal (user_id, name);
+CREATE UNIQUE INDEX todo_current_block_idx ON public.todo (current_block_id) WHERE (current_block_id IS NOT NULL);
+CREATE INDEX todo_goal_idx ON public.todo (goal_id);
+CREATE INDEX todo_user_bucket_priority_idx ON public.todo (user_id, bucket, priority_rank, deadline_date, id);
+CREATE INDEX todo_workspace_idx ON public.todo (workspace_id);
+CREATE INDEX document_history_document_captured_idx ON public.document_history (document_id, captured_at DESC, id DESC);
+CREATE INDEX document_history_document_hash_idx ON public.document_history (document_id, content_hash);
+CREATE TABLE public.todo_history (
+  id bigserial NOT NULL, todo_id integer NOT NULL, actor_user_id integer NULL, change_type text NOT NULL,
+  name text NULL, "desc" text NULL, status text NULL, user_id integer NULL,
+  created_at_recording_id integer NULL, updated_at_recording_id integer NULL,
+  changed_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT todo_history_todo_fk FOREIGN KEY (todo_id) REFERENCES public.todo (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT todo_history_actor_user_fk FOREIGN KEY (actor_user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_history_user_fk FOREIGN KEY (user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_history_created_at_recording_fk FOREIGN KEY (created_at_recording_id) REFERENCES public.recording (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT todo_history_updated_at_recording_fk FOREIGN KEY (updated_at_recording_id) REFERENCES public.recording (id) ON UPDATE NO ACTION ON DELETE SET NULL
+);
+CREATE TABLE public.ai_thread (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, workspace_id integer NOT NULL,
+  document_id integer NULL, title text NULL, created_by_user_id integer NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT ai_thread_workspace_fk FOREIGN KEY (workspace_id) REFERENCES public.workspace (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT ai_thread_document_fk FOREIGN KEY (document_id) REFERENCES public.document (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT ai_thread_created_by_user_fk FOREIGN KEY (created_by_user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT ai_thread_title_check CHECK (title IS NULL OR btrim(title) <> ''::text)
+);
+CREATE TABLE public.ai_message (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, thread_id bigint NOT NULL, role text NOT NULL,
+  content text NOT NULL, created_by_user_id integer NULL, run_id bigint NULL,
+  created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT ai_message_thread_fk FOREIGN KEY (thread_id) REFERENCES public.ai_thread (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT ai_message_created_by_user_fk FOREIGN KEY (created_by_user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT ai_message_role_check CHECK (role = ANY (ARRAY['user'::text, 'assistant'::text, 'system'::text])),
+  CONSTRAINT ai_message_content_check CHECK (btrim(content) <> ''::text)
+);
+CREATE TABLE public.ai_run (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, trigger_message_id bigint NULL, status text NOT NULL,
+  mode text NOT NULL, provider text NULL, model text NULL, request_json jsonb NULL, response_json jsonb NULL,
+  input_tokens integer NULL, output_tokens integer NULL, latency_ms integer NULL, error_message text NULL,
+  started_at timestamptz NULL, completed_at timestamptz NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT ai_run_trigger_message_fk FOREIGN KEY (trigger_message_id) REFERENCES public.ai_message (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT ai_run_status_check CHECK (status = ANY (ARRAY['queued'::text, 'running'::text, 'completed'::text, 'failed'::text, 'cancelled'::text])),
+  CONSTRAINT ai_run_mode_check CHECK (mode = ANY (ARRAY['ask'::text, 'draft'::text, 'edit'::text, 'todo_assist'::text])),
+  CONSTRAINT ai_run_input_tokens_check CHECK (input_tokens IS NULL OR input_tokens >= 0),
+  CONSTRAINT ai_run_output_tokens_check CHECK (output_tokens IS NULL OR output_tokens >= 0),
+  CONSTRAINT ai_run_latency_ms_check CHECK (latency_ms IS NULL OR latency_ms >= 0)
+);
+ALTER TABLE public.ai_message ADD CONSTRAINT ai_message_run_fk FOREIGN KEY (run_id) REFERENCES public.ai_run (id) ON UPDATE NO ACTION ON DELETE SET NULL;
+CREATE TABLE public.ai_artifact (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, run_id bigint NOT NULL, kind text NOT NULL, title text NULL,
+  content_json jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), applied_at timestamptz NULL,
+  applied_by_user_id integer NULL, superseded_by_artifact_id bigint NULL, PRIMARY KEY (id),
+  CONSTRAINT ai_artifact_run_fk FOREIGN KEY (run_id) REFERENCES public.ai_run (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT ai_artifact_applied_by_user_fk FOREIGN KEY (applied_by_user_id) REFERENCES public."user" (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT ai_artifact_superseded_by_fk FOREIGN KEY (superseded_by_artifact_id) REFERENCES public.ai_artifact (id) ON UPDATE NO ACTION ON DELETE SET NULL,
+  CONSTRAINT ai_artifact_kind_check CHECK (kind = ANY (ARRAY['draft'::text, 'patch'::text, 'retrieval_manifest'::text, 'summary'::text, 'todo_proposal'::text]))
+);
+CREATE TABLE public.ai_source_ref (
+  id bigint NOT NULL GENERATED ALWAYS AS IDENTITY, run_id bigint NULL, artifact_id bigint NULL,
+  source_kind text NOT NULL, source_id integer NOT NULL, label text NULL, quote_text text NULL,
+  rank integer NULL, created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (id),
+  CONSTRAINT ai_source_ref_run_fk FOREIGN KEY (run_id) REFERENCES public.ai_run (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT ai_source_ref_artifact_fk FOREIGN KEY (artifact_id) REFERENCES public.ai_artifact (id) ON UPDATE NO ACTION ON DELETE CASCADE,
+  CONSTRAINT ai_source_ref_source_kind_check CHECK (source_kind = ANY (ARRAY['document'::text, 'block'::text, 'todo'::text, 'recording'::text])),
+  CONSTRAINT ai_source_ref_owner_check CHECK (((run_id IS NOT NULL) AND (artifact_id IS NULL)) OR ((run_id IS NULL) AND (artifact_id IS NOT NULL))),
+  CONSTRAINT ai_source_ref_rank_check CHECK (rank IS NULL OR rank >= 0)
+);
+CREATE INDEX ai_artifact_run_idx ON public.ai_artifact (run_id, created_at, id);
+CREATE INDEX ai_message_thread_idx ON public.ai_message (thread_id, created_at, id);
+CREATE INDEX ai_run_trigger_message_idx ON public.ai_run (trigger_message_id, created_at, id);
+CREATE INDEX ai_source_ref_artifact_idx ON public.ai_source_ref (artifact_id, rank, id);
+CREATE INDEX ai_source_ref_run_idx ON public.ai_source_ref (run_id, rank, id);
+CREATE INDEX ai_source_ref_source_idx ON public.ai_source_ref (source_kind, source_id);
+CREATE INDEX ai_thread_workspace_updated_idx ON public.ai_thread (workspace_id, updated_at DESC, id DESC);
+ALTER TABLE public.todo ADD CONSTRAINT todo_status_check CHECK (status IS NULL OR status = ANY (ARRAY['todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]));
+ALTER TABLE public.todo_history ADD CONSTRAINT todo_history_status_check CHECK (status IS NULL OR status = ANY (ARRAY['todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]));
+
+-- +goose Down
+-- +goose StatementBegin
+DO $$ BEGIN
+  RAISE EXCEPTION 'The schema baseline is forward-only; dropping application data is not a rollback.';
+END $$;
+-- +goose StatementEnd

@@ -50,6 +50,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@secretary/api": "workspace:*",
+        "@tanstack/react-query": "^5.104.0",
         "@tauri-apps/api": "^2.8.0",
         "react": "19.2.4",
         "react-dom": "19.2.4",

@@ -97,12 +97,21 @@ export function useAppCommands({
     jumpBackRef.current = [...current.slice(-(JUMPLIST_LIMIT - 1)), location];
   }, []);
 
-  const navigateToJumpLocation = useCallback((location: JumpLocation | null) => {
+  const jumpTicket = useRef(0);
+  const navigateToJumpLocation = useCallback(async (location: JumpLocation | null) => {
     if (!location) {
       return;
     }
 
-    const targetPage = stateRef.current.pages.find((entry) => entry.id === location.pageId) ?? null;
+    const ticket = ++jumpTicket.current;
+    const originPage = stateRef.current.activePageId;
+    const originView = stateRef.current.activeView;
+    let targetPage = stateRef.current.pages.find((entry) => entry.id === location.pageId) ?? null;
+    if (!targetPage && ensurePageLoaded) {
+      try { targetPage = await ensurePageLoaded(location.pageId); }
+      catch (error) { setSyncMessage(error instanceof Error ? error.message : 'Document load failed.'); return; }
+      if (ticket !== jumpTicket.current || stateRef.current.activePageId !== originPage || stateRef.current.activeView !== originView) return;
+    }
     if (!targetPage) {
       return;
     }
@@ -123,7 +132,7 @@ export function useAppCommands({
       dispatch({ type: 'focus', nodeId: focusedNode.id });
       document.querySelector<HTMLElement>(`[data-node-id="${focusedNode.id}"]`)?.scrollIntoView({ block: 'center' });
     }, 0);
-  }, [dispatch, dispatchAfterFlush, stateRef]);
+  }, [dispatch, dispatchAfterFlush, stateRef, ensurePageLoaded, setSyncMessage]);
 
   const jumpBack = useCallback(() => {
     const destination = jumpBackRef.current[jumpBackRef.current.length - 1] ?? null;

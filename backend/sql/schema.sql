@@ -534,3 +534,7 @@ CREATE INDEX "ai_source_ref_run_idx" ON "public"."ai_source_ref" ("run_id", "ran
 CREATE INDEX "ai_source_ref_source_idx" ON "public"."ai_source_ref" ("source_kind", "source_id");
 -- Create index "ai_thread_workspace_updated_idx" to table: "ai_thread"
 CREATE INDEX "ai_thread_workspace_updated_idx" ON "public"."ai_thread" ("workspace_id", "updated_at" DESC, "id" DESC);
+
+-- Existing live constraints, reconciled when creating the Goose baseline.
+ALTER TABLE "public"."todo" ADD CONSTRAINT "todo_status_check" CHECK (status IS NULL OR status = ANY (ARRAY['todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]));
+ALTER TABLE "public"."todo_history" ADD CONSTRAINT "todo_history_status_check" CHECK (status IS NULL OR status = ANY (ARRAY['todo'::text, 'doing'::text, 'done'::text, 'blocked'::text, 'skipped'::text]));

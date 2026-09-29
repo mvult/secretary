@@ -57,7 +57,8 @@ test('a save response does not resurrect a block deleted during the request', ()
 test('an unchanged new note adopts the saved page and is clean', () => {
   const local = { ...request, id: 'local-note', backendId: undefined };
   const result = reconcileSavedPage(local, local, request);
-  assert.equal(result.page, request);
+  assert.equal(result.page.id, local.id);
+  assert.equal(result.page.backendId, request.backendId);
   assert.equal(result.needsSave, false);
   assert.equal(pageHash(result.page), result.savedHash);
 });
@@ -89,7 +90,7 @@ test('a reordered save response cannot move the active draft onto a different bl
   const state: OutlineState = {
     pages: [mixedRows], activePageId: mixedRows.id, activeView: 'note', focusedId: 'local-polish',
     editingId: 'local-polish', draftText: 'Polish camera flow', normalCursor: 0, editCursor: 'end',
-    mode: 'insert', anchorId: null, yankBuffer: null, history: [],
+    mode: 'insert', anchorId: null, yankBuffer: null, documentHistory: {},
   };
   const next = mergeRemotePage(state, saved, mixedRows.id);
   assert.equal(next.editingId, 'block-4');

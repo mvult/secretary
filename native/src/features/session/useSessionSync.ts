@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject } from 'react';
-import { BackendError, createWorkspace, deleteDocument, getDocument, listTodos, listWorkspaces, login, moveDocumentTodosToRepository, pullOnDeckTodosToToday, onAuthFailure, saveDocument, updateTodo, type BackendDirectory, type TodoPatch, type DocumentMetadata } from '../../lib/backend';
+import { BackendError, createWorkspace, deleteDocument, getDocument, listDocumentIndex, login, moveDocumentTodosToRepository, pullOnDeckTodosToToday, onAuthFailure, saveDocument, updateTodo, type BackendDirectory, type TodoPatch, type DocumentMetadata } from '../../lib/backend';
 import { loadIndexedWorkspace, navigationPages } from './documentIndex';
 import { getCurrentJournalDate, getDateKey } from '../outline/sampleData';
 import { backendIdentity, draftScope, DraftStorage, openDraftDatabase, type DraftRecord, type TodoCommandEnvelope } from '../../lib/draftStorage';
 import { documentToOutlinePage, outlinePageToDocument } from '../outline/remote';
-import { getPageTitle, getPagesForPersistence } from '../outline/tree';
+import { getPageTitle, getPagesForPersistence, getJournalPages } from '../outline/tree';
+import { getVisibleNodes } from '../outline/folding';
 import { reduceOutlineState, type OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
 import { findPageForPersistence, normalizePageForSave, pageHash, pagePersistenceKey, validatePageForSave } from '../../app/pagePersistence';
@@ -14,6 +15,8 @@ import { useSaveStatus } from './useSaveStatus';
 import { adoptSnapshotIdentity, draftConflicts, isDraftDirty, mergeWorkspace, recoveryCopy, trackDrafts } from './draftReconciliation';
 import { assertVersionedPage, DocumentSaveController, draftId, prepareDelete, sendRetainedDelete, sendRetainedSave } from './documentSaveController';
 import { getCommandDate, prepareTodoCommand, prepareTodoUpdate, sendTodoCommand } from './todoCommandController';
+import { DocumentQueries } from './documentQueries';
+import { boundCleanBodies } from './bodyCache';
 
 type SessionStatus = 'restoring' | 'signed-out' | 'validating' | 'loading' | 'ready' | 'reauth-required' | 'unavailable';
 type LoadStage = 'restoring' | 'authenticating' | 'documents' | 'merging' | 'persisting';
@@ -64,6 +67,12 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
   const [syncMessage, setSyncMessage] = useState('');
   const [directories, setDirectories] = useState<BackendDirectory[]>([]);
   const [documentIndex, setDocumentIndex] = useState<DocumentMetadata[]>([]);
+  const indexRef = useRef<DocumentMetadata[]>([]);
+  const [bodyQueries] = useState(() => new DocumentQueries());
+  const fetchIndex = useCallback<typeof listDocumentIndex>((base, token, workspace, before, query) => {
+    if (!userId) return Promise.reject(new Error('An account is required to read the document index.'));
+    return bodyQueries.index(draftScope(base, userId, workspace), token, before, query);
+  }, [bodyQueries, userId]);
   const bodyLoads = useRef(new Map<number, Promise<OutlinePage>>());
   const selectionTicket = useRef(0);
   const [pageSaveIndicators, setPageSaveIndicators] = useState<Record<string, PageSaveIndicator>>({});
@@ -92,6 +101,10 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     pagesRef.current = getPagesForPersistence(stateRef.current);
     recordsRef.current = trackDrafts(recordsRef.current, pagesRef.current,
       action.type === 'createTodayJournal' || action.type === 'selectJournal');
+    if (action.type === 'selectNote' || action.type === 'selectJournalPage' || action.type === 'selectJournal') {
+      recordsRef.current = recordsRef.current.map(record => record.page.id === stateRef.current.activePageId
+        ? { ...record, lastAccessedAt: Date.now() } : record);
+    }
     // Reducers create UUIDs for new pages/blocks. Apply the computed state rather
     // than executing the action a second time with different identities in React.
     rawDispatch({ type: 'applySessionState', state: stateRef.current });
@@ -105,13 +118,30 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
 
   const currentRecords = useCallback((pages = pagesRef.current) => trackDrafts(recordsRef.current, pages), []);
 
-  const persist = useCallback(async (records = currentRecords()) => {
+  const persist = useCallback(async (supplied?: DraftRecord[]) => {
+    let records = supplied ?? currentRecords();
     const storage = storageRef.current;
     if (!storage) throw new Error('Local draft storage is not ready.');
+    if (!supplied && !savingRef.current && !commandRef.current && !retainedCommandRef.current && !bodyLoads.current.size) {
+      const bounded = boundCleanBodies(records, new Set([stateRef.current.activePageId]));
+      if (bounded.evicted.size) {
+        // Preserve metadata for bodies first encountered through creation or links.
+        const index = new Map(indexRef.current.map(entry => [entry.id, entry]));
+        for (const record of records) if (bounded.evicted.has(record.page.id)) {
+          const { blocks: _, ...metadata } = outlinePageToDocument(record.baseline!, record.page.workspaceId!);
+          if (!index.has(metadata.id)) index.set(metadata.id, { ...metadata, clientKey: record.baseline!.clientKey!, revision: record.baseline!.revision });
+        }
+        indexRef.current = [...index.values()];
+        setDocumentIndex(indexRef.current);
+        recordsRef.current = bounded.records;
+        apply({ type: 'evictPages', ids: bounded.evicted });
+        records = currentRecords();
+      }
+    }
     const epoch = epochRef.current;
     const request = ++persistRequestRef.current;
     try {
-      await storage.save({ records, directories: directoriesRef.current, command: retainedCommandRef.current });
+      await storage.save({ records, directories: directoriesRef.current, command: retainedCommandRef.current, index: indexRef.current }, true);
       if (epoch === epochRef.current && request === persistRequestRef.current) {
         setPersistedHashes(Object.fromEntries(records.map((record) => [record.page.id, pageHash(record.page)])));
         setLocalError('');
@@ -125,7 +155,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
       }
       throw error;
     }
-  }, [currentRecords]);
+  }, [currentRecords, apply]);
 
   const failSession = useCallback((error: unknown) => {
     syncRef.current = false;
@@ -164,7 +194,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
         if (!previous) return;
         const next = update(previous);
         recordsRef.current = records.map((record) => record === previous ? next : record);
-        if (next.page !== previous.page) apply({ type: 'mergeRemotePage', page: next.page, previousPageId: previous.page.id, source: 'session:versionedSave' });
+        if (next.page !== previous.page) apply({ type: 'mergeRemotePage', page: next.page, previousPageId: previous.page.id, source: 'session:versionedSave', acknowledged: next.baseline });
       },
       persist: () => persist(),
       send: (body) => sendRetainedSave(backendUrl, authToken, body),
@@ -215,6 +245,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
 
   useEffect(() => {
     const epoch = ++epochRef.current;
+    bodyQueries.clear();
     let cancelled = false;
     const active = () => !cancelled && epoch === epochRef.current;
     scopeReadyRef.current = false;
@@ -254,6 +285,8 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
             if (!active()) { db.close(); return; }
             storageRef.current = storage;
             recordsRef.current = cached.records;
+            indexRef.current = cached.index ?? [];
+            setDocumentIndex(indexRef.current);
             retainedCommandRef.current = cached.command;
             directoriesRef.current = cached.directories;
             setDirectories(cached.directories);
@@ -271,7 +304,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
         }
         setSessionStatus('validating');
         beginStage('authenticating');
-        let workspaces = await listWorkspaces(backendUrl, authToken);
+        let workspaces = await bodyQueries.workspaces(backendUrl, authToken, userId);
         if (!active()) return;
         if (!userId || tokenUser(authToken) !== userId) throw new BackendError('Log in to validate this account.', 401);
         if (!workspaceId) {
@@ -282,7 +315,8 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
         if (!workspaces.some((workspace) => workspace.id === workspaceId)) throw new BackendError('Workspace access denied. Local drafts are retained.', 403);
         setSessionStatus('loading');
         beginStage('documents');
-        let remote = await loadWorkspace(backendUrl, authToken, workspaceId, currentRecords, active);
+        const fetchBody: typeof getDocument = (_base, token, id) => bodyQueries.get(draftScope(backendUrl, userId, workspaceId!), token, id);
+        let remote = await loadWorkspace(backendUrl, authToken, workspaceId, currentRecords, active, fetchBody, fetchIndex);
         if (!active()) return;
         if (![0, 1].includes(remote.persistenceProtocolVersion)) throw new Error('Unsupported server persistence protocol. Drafts are retained.');
         if (remote.persistenceProtocolVersion !== 1 && (retainedCommandRef.current || currentRecords().some((record) => record.envelope || (record.baseline?.revision && record.baseline.revision !== '0')))) {
@@ -303,13 +337,15 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
             rejectedCommand = message(error);
           }
           if (!active()) return;
-          remote = await loadWorkspace(backendUrl, authToken, workspaceId, currentRecords, active);
+          bodyQueries.clear();
+          remote = await loadWorkspace(backendUrl, authToken, workspaceId, currentRecords, active, fetchBody, fetchIndex);
           if (!active()) return;
           if (remote.persistenceProtocolVersion !== 1) throw new Error('Command recovery requires versioned live snapshots.');
         }
         const remotePages = [...remote.documents.map(documentToOutlinePage), ...remote.unchangedPages];
         if (remote.persistenceProtocolVersion === 1) remotePages.forEach(assertVersionedPage);
         beginStage('merging');
+        indexRef.current = remote.entries;
         setDocumentIndex(remote.entries);
         const records = mergeWorkspace(currentRecords(), remotePages);
         recordsRef.current = records;
@@ -348,11 +384,12 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
       if (active()) refreshWaiters.current.splice(0).forEach((resolve) => resolve());
     });
     return () => {
+      bodyQueries.clear();
       cancelled = true;
       syncRef.current = false;
       if (epochRef.current === epoch) ++epochRef.current;
     };
-  }, [backendUrl, userId, workspaceId, authToken, refresh, apply, currentRecords, persist, failSession, createSaveController, onPagesSavedRef, loadWorkspace]);
+  }, [backendUrl, userId, workspaceId, authToken, refresh, apply, currentRecords, persist, failSession, createSaveController, onPagesSavedRef, loadWorkspace, bodyQueries, fetchIndex]);
 
   // No network debounce here: retain every editor snapshot, including active draft text.
   useEffect(() => {
@@ -372,7 +409,10 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
       const records = currentRecords().filter((record) => !snapshotOverride || record.envelope || snapshotOverride.some((page) => pagePersistenceKey(page) === pagePersistenceKey(record.page)));
       setSaving(true);
       const promise = Promise.all(records.map((record) => controller.flush(draftId(record)))).then(async () => {
-        if (epoch === epochRef.current) await onPagesSavedRef?.current?.().catch(() => undefined);
+        if (epoch === epochRef.current) {
+          bodyQueries.clearLists();
+          await onPagesSavedRef?.current?.().catch(() => undefined);
+        }
       }).finally(() => {
         if (savingRef.current === promise) savingRef.current = null;
         if (epoch === epochRef.current) setSaving(false);
@@ -427,7 +467,10 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
           if (error instanceof BackendError && [401, 403].includes(error.status)) failSession(error);
         }
       }
-      if (epoch === epochRef.current) await onPagesSavedRef?.current?.().catch(() => undefined);
+      if (epoch === epochRef.current) {
+        bodyQueries.clearLists();
+        await onPagesSavedRef?.current?.().catch(() => undefined);
+      }
     };
     const promise = run().finally(() => {
       if (savingRef.current === promise) savingRef.current = null;
@@ -435,7 +478,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     });
     savingRef.current = promise;
     return promise;
-  }, [apply, authToken, backendUrl, currentRecords, failSession, onPagesSavedRef, persist, userId, workspaceId]);
+  }, [apply, authToken, backendUrl, currentRecords, failSession, onPagesSavedRef, persist, userId, workspaceId, bodyQueries]);
 
   const syncEnabled = sessionStatus === 'ready' && loadStatus === 'ready' && localReady && !localError;
   useEffect(() => {
@@ -522,14 +565,14 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
       if (epoch !== epochRef.current || !syncRef.current) throw new Error('Command retained; reconnect to recover it.');
       return sendTodoCommand(backendUrl, authToken, scope, envelope);
     });
-  }, [authToken, backendUrl, currentRecords, persist, runDocumentCommand, userId, workspaceId]);
+  }, [authToken, backendUrl, currentRecords, persist, runDocumentCommand, userId, workspaceId, bodyQueries]);
 
   const runTodoUpdate = useCallback(async (id: number, input: TodoPatch) => {
     const patch = structuredClone(input);
     const storage = storageRef.current;
     const epoch = epochRef.current;
     await runDocumentCommand(async () => {
-      const current = (await listTodos(backendUrl, authToken, userId!)).find((todo) => todo.id === id);
+      const current = (await bodyQueries.todos(backendUrl, authToken, userId!)).find((todo) => todo.id === id);
       if (epoch !== epochRef.current || !syncRef.current) throw new Error('The session changed during TODO preparation.');
       if (!current) throw new Error('This TODO no longer exists. Refresh the list.');
       if (currentRecords().some(isDraftDirty)) throw new Error('New edits arrived during TODO preparation. Save them and retry.');
@@ -549,11 +592,11 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     });
     // The receipt is historical. Fetch the live TODO instead of installing it in the UI.
     if (storageRef.current !== storage) throw new Error('The TODO session changed.');
-    const current = (await listTodos(backendUrl, authToken, userId!)).find((todo) => todo.id === id);
+    const current = (await bodyQueries.todos(backendUrl, authToken, userId!)).find((todo) => todo.id === id);
     if (storageRef.current !== storage) throw new Error('The TODO session changed.');
     if (!current) throw new Error('The TODO was deleted after this command.');
     return current;
-  }, [authToken, backendUrl, currentRecords, persist, runDocumentCommand, userId, workspaceId]);
+  }, [authToken, backendUrl, currentRecords, persist, runDocumentCommand, userId, workspaceId, bodyQueries]);
 
   const deleteNote = useCallback(async (pageId: string) => {
     const epoch = epochRef.current;
@@ -611,6 +654,8 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     retainedCommandRef.current = undefined;
     recordsRef.current = [];
     setDocumentIndex([]);
+    indexRef.current = [];
+    bodyQueries.clear();
     bodyLoads.current.clear();
     setLocalReady(false);
     setLocalError('');
@@ -621,7 +666,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     setSaving(false);
     setDirectories([]);
     apply({ type: 'hydrate', pages: [], source: 'session:detach' });
-  }, [apply, persist]);
+  }, [apply, persist, bodyQueries]);
 
   const runLogin = useCallback(async () => {
     const epoch = epochRef.current;
@@ -665,6 +710,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
   }, [backendUrl, detach]);
 
   const ensurePageLoaded = useCallback(async (pageId: string): Promise<OutlinePage> => {
+    recordsRef.current = currentRecords().map(record => record.page.id === pageId ? { ...record, lastAccessedAt: Date.now() } : record);
     const existing = pagesRef.current.find(page => page.id === pageId);
     if (existing) return existing;
     const metadata = documentIndex.find(entry => `document-${entry.id}` === pageId);
@@ -674,14 +720,14 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     if (prior) return prior;
     const epoch = epochRef.current;
     const request = (async () => {
-      const document = await getDocument(backendUrl, authToken, id);
+      const document = await bodyQueries.get(draftScope(backendUrl, userId!, workspaceId), authToken, id);
       if (epoch !== epochRef.current || !syncRef.current) throw new Error('Document loading scope changed.');
       if (document.id !== id || document.workspaceId !== workspaceId) throw new Error('Document identity does not match this workspace.');
       const remote = documentToOutlinePage(document);
       assertVersionedPage(remote);
       const records = currentRecords();
       const related = records.filter(record => record.page.backendId === id || record.page.clientKey === remote.clientKey);
-      const merged = mergeWorkspace(related, [remote]);
+      const merged = mergeWorkspace(related, [remote]).map(record => ({ ...record, lastAccessedAt: Date.now() }));
       recordsRef.current = [...records.filter(record => !related.includes(record)), ...merged];
       apply({ type: 'refreshPages', pages: recordsRef.current.map(record => record.page) });
       await persist();
@@ -690,16 +736,32 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
     })();
     bodyLoads.current.set(id, request);
     try { return await request; }
-    finally { if (bodyLoads.current.get(id) === request) bodyLoads.current.delete(id); }
-  }, [documentIndex, workspaceId, backendUrl, authToken, currentRecords, apply, persist]);
+    finally {
+      if (bodyLoads.current.get(id) === request) {
+        bodyLoads.current.delete(id);
+        if (epoch === epochRef.current) await persist();
+      }
+    }
+  }, [documentIndex, workspaceId, backendUrl, authToken, currentRecords, apply, persist, bodyQueries, userId]);
 
   const dispatch = useCallback((action: OutlineAction) => {
     if (!writableRef.current && !['openSettings', 'openAI', 'openPomodoro'].includes(action.type)) return;
     if (storageRef.current && (!userId || !workspaceId || JSON.stringify(storageRef.current.scope) !== JSON.stringify(draftScope(backendUrl, userId, workspaceId)))) return;
     const ticket = ++selectionTicket.current;
-    const target = action.type === 'selectNote' || action.type === 'selectJournalPage' ? action.pageId
+    let adjacentJournal: string | undefined;
+    const current = stateRef.current;
+    if (action.type === 'moveFocus' && !action.extendSelection && current.activeView === 'journals') {
+      const page = current.pages.find(page => page.id === current.activePageId);
+      const nodes = getVisibleNodes(page?.nodes ?? [], current.collapsedNodeIds);
+      const position = nodes.findIndex(node => node.id === current.focusedId);
+      if (position >= 0 && (action.direction === 1 ? position === nodes.length - 1 : position === 0)) {
+        const journals = getJournalPages({ ...current, pages: navigationPages(documentIndex, current.pages) });
+        adjacentJournal = journals[journals.findIndex(page => page.id === current.activePageId) + action.direction]?.id;
+      }
+    }
+    const target = adjacentJournal ?? (action.type === 'selectNote' || action.type === 'selectJournalPage' ? action.pageId
       : action.type === 'selectJournal' || action.type === 'createTodayJournal'
-        ? documentIndex.find(entry => entry.kind === 'journal' && entry.journalDate === getDateKey(getCurrentJournalDate()))?.id : undefined;
+        ? documentIndex.find(entry => entry.kind === 'journal' && entry.journalDate === getDateKey(getCurrentJournalDate()))?.id : undefined);
     const targetId = typeof target === 'number' ? `document-${target}` : target;
     if (targetId && !pagesRef.current.some(page => page.id === targetId)) {
       const epoch = epochRef.current;
@@ -804,6 +866,7 @@ export function useSessionSync({ state, dispatch: rawDispatch, onPagesSavedRef, 
 
   const availablePages = useMemo(() => navigationPages(documentIndex, pagesForPersistence), [documentIndex, pagesForPersistence]);
   return {
+    queries: bodyQueries, fetchIndex,
     documentIndex, navigationPages: availablePages, ensurePageLoaded,
     backendUrl, setBackendUrl, email, setEmail, password, setPassword, authToken, userId, workspaceId,
     centerColumn, setCenterColumn, editorFontScale, setEditorFontScale, syncMessage, setSyncMessage,

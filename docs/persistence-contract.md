@@ -1,6 +1,6 @@
 # Persistence Contract and Writer Inventory
 
-Technical foundation for [Architecture and Persistence Reliability](architecture-reliability-prd.md), Phase 0. Initial audit 2026-09-23; backend writer participation re-audited 2026-09-26. This specifies the implementation target; it is not a description of guarantees already deployed. See the dated implementation evidence below.
+Technical foundation for architecture and persistence reliability. Initial audit 2026-09-23; backend writer participation re-audited 2026-09-26. This specifies the implementation target; it is not a description of guarantees already deployed. See the dated implementation evidence below and [Reliability Verification](reliability-verification.md).
 
 **Verification scope (owner decision, 2026-09-26):** PostgreSQL tests are excluded. They are not prerequisites, release gates, or planned follow-ups. Existing opt-in fixtures are unexecuted historical work. Continue with database-free tests/builds and application verification.
 
@@ -61,7 +61,7 @@ Sources: `backend/sql/schema.sql`, `backend/sql/queries/{documents,todos}.sql`, 
 | Generated TS | `packages/api/src/gen`: ES/Protobuf `1.10.1`, Connect runtime/web/generator `1.7.0`; documents, workspaces, TODOs, users, recordings, AI and activities; duplicate outputs removed |
 | Go | `backend/go.mod`: Go `1.25.0`, Connect `1.19.1`, Protobuf runtime `1.36.11`, pgx `5.6.0`; document generated header reports protoc-gen-go `1.36.5` |
 | Generation | Root `bun run api:generate` uses `buf.gen.frontend.yaml` and pinned workspace TS plugins; `api:check` regenerates into a temporary directory and checks drift in CI. Go generation still uses `backend/buf.gen.yaml` |
-| Migration workflow | `backend/atlas.hcl` and Atlas migrations remain active. Goose is a separate proposal |
+| Migration workflow | Goose, with baseline `20260928000000`; the existing database was metadata-baselined without replaying DDL. See `docs/goose-migration-prd.md` |
 
 App package versions are not evidence of installed/deployed client builds. The owner confirmed they are the only client user: update the app and server together, with no extended compatibility window or fleet inventory. No deployed server capability was queried.
 
@@ -75,7 +75,19 @@ Shared transport preserves codes/details (`BackendError`), reports auth failures
 
 Startup loads a small journal window (three recent journals and today's if outside that window), or one note if no journals exist. Previously loaded records reconcile against live bodies or their own complete baseline when the index confirms the same ID/key/revision. Pending envelopes, legacy uncertainty, conflicts and explicit invalidations force live reads. An index omission requires an individual `GetDocument`; only a typed `not_found` establishes absence. Any other read failure aborts refresh and preserves retained state. On-demand body reads validate returned identity and scope and cannot publish after an account/workspace epoch changes.
 
-Server-side literal title/body search uses the same pagination and bounds snippets to 240 characters. Local loaded bodies override server matches; unavailable/offline search labels cached-only coverage. Indexed full-text search, persistent index caching, bounded clean-body eviction and document-local undo remain follow-ups. No metadata entry is serialized through SaveDocument, and command/save replay continues to send its original retained bytes.
+Server-side literal title/body search uses the same pagination and bounds snippets to 240 characters. Local loaded bodies override server matches; unavailable/offline search labels cached-only coverage. Indexed full-text search and document-local undo remain follow-ups. No metadata entry is serialized through SaveDocument, and command/save replay continues to send its original retained bytes.
+
+The scoped IndexedDB `indexes` store retains index metadata for offline navigation. Clean closed bodies use a 100-document LRU budget; the active document and dirty/pending/conflicted/retrying/invalidated or uncertain-baseline records are excluded from eviction. Eviction pauses during commands, saves and body loads. Eligible eviction removes bodies from IndexedDB/editor state and discards that document's undo history, preserving metadata. A failed storage transaction reports failure through the existing persistence error path. TanStack Query separately deduplicates live body reads, holds at most 100 idle results for up to five minutes, always revalidates subsequent opens, and clears on session/refresh cleanup. It never owns drafts or retained requests.
+
+IndexedDB version 6 separates the index from the workspace CAS row. Opening upgrades the database non-destructively and excludes older writers; legacy inline indexes remain readable until the first successful save atomically moves them. Index changes, draft changes, retained commands and the CAS revision commit in one transaction. Unchanged immutable indexes incur no index reads/writes during ordinary saves. A stale writer retains its complete candidate, including its index, in recovery without changing live data. An aborted transaction advances neither the CAS revision nor the in-memory written-index marker, so retry writes the index again.
+
+### Document-local editing and undo
+
+Native live queries additionally cover index/search pages and workspace/TODO/goal lists. Index query keys include account/workspace, search text and pagination cursor; list keys include backend/account. Each read family retains at most 100 idle results for five minutes, independently of document-body results. Matching concurrent reads share transport work, but later calls revalidate. Session/refresh cleanup clears all query families; save completion clears list families before the related TODO refresh. Clearing cancels pending consumers, preventing late results from satisfying a new read. Index validation and caller epoch/search-scope guards still run outside the cache. Credentials are not query keys, and query results never replace retained mutation envelopes or editable drafts.
+
+Undo now retains up to 100 content-only entries per document in memory, not workspace snapshots. Eviction discards that document's history. Undo restores title, logical block identity/tree/text/status and focus, while the live page retains its revision, directory and transport metadata. Block server-ID mappings are maintained separately and reconciled on acknowledgment: a block whose deletion was acknowledged must receive a fresh insertion key when restored, including when undo races the response. A newly inserted block deleted locally before its acknowledgment retains the returned mapping until a deletion is acknowledged. Save reconciliation preserves logical editor IDs across server allocation.
+
+Immutable page identity is the dirty-observation/hash-cache boundary. Projecting an active draft preserves all untouched page references. The native editor uses incremental immutable storage capture and writes only changed document records, while preserving ordered writes, workspace CAS, retained commands and cross-window recovery. No-op/navigation operations do not create content undo entries. Remote replacement invalidates only affected histories. Undo histories are not persisted and never own mutation receipts or credentials.
 
 ## 3. Identity, snapshots and revisions
 
@@ -282,7 +294,7 @@ These are source-derived regression specifications, not executed test results:
 
 ### Immediate next implementation slice
 
-The loading follow-up is implemented: accurate stages, native/backend timings, and batched block/TODO reads. Owner measurements show workspace 4 improving from 941 queries / 91.83 seconds to four queries / 928.772 ms, with the same 180 documents, 1,832 blocks, and 758 TODO links. See [PRD continuation notes](architecture-reliability-prd.md#9-continuation-notes--owner-feedback-and-current-state-2026-09-23).
+The loading follow-up is implemented: accurate stages, native/backend timings, and batched block/TODO reads. Owner measurements show workspace 4 improving from 941 queries / 91.83 seconds to four queries / 928.772 ms, with the same 180 documents, 1,832 blocks, and 758 TODO links.
 
 The Phase 2 schema/API foundation is now prepared, **not deployed**:
 
@@ -295,7 +307,7 @@ The Phase 2 schema/API foundation is now prepared, **not deployed**:
 
 Next: implement canonical fingerprinting and atomic receipt/revision-aware document services, coherent read transactions, and AI/TODO/directory writer participation, then the native controller and coordinated capability activation. Do not manufacture revisions for legacy baselines or replay old uncertain creates as new operations. Obtain permission before applying migrations.
 
-**Subsequent owner feedback:** the owner reported successfully applying the foundation migration with `PGSSLMODE=disable atlas migrate apply --env neon`; no agent applied it. Native save-time row displacement was then reproduced and corrected: preserve already-valid parent-before-child row order, retain echoed block client keys, and match save-response/editor identities without positional fallback. Six new regressions bring native coverage to 42 passing tests. Existing persisted duplicate text requires deliberate recovery/cleanup, not guessed deletion. See the PRD's save-time regression handoff for details.
+**Subsequent owner feedback:** the owner reported successfully applying the foundation migration with `PGSSLMODE=disable atlas migrate apply --env neon`; no agent applied it. Native save-time row displacement was then reproduced and corrected: preserve already-valid parent-before-child row order, retain echoed block client keys, and match save-response/editor identities without positional fallback. Six new regressions bring native coverage to 42 passing tests. Existing persisted duplicate text requires deliberate recovery/cleanup, not guessed deletion.
 
 ### Transactional service implementation (2026-09-25)
 

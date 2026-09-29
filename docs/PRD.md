@@ -6,7 +6,7 @@ Secretary needs a React Native mobile app for reading and editing notes, journal
 
 The mobile app should be touch-first and simpler than the desktop/native app. It should preserve the backend data model, especially block-based documents, but should not port keyboard-first or Vim-oriented workflows.
 
-The shared architecture and persistence foundation is specified in [Architecture and Persistence Reliability PRD](architecture-reliability-prd.md). That work covers session/draft recovery, revision-checked saves, shared backend mutation services, generated API clients, and document-scoped state. It does not implement the mobile app itself.
+The implemented shared architecture and persistence foundation is documented in [Persistence Contract](persistence-contract.md), with verification evidence in [Reliability Verification](reliability-verification.md). It covers session/draft recovery, revision-checked saves, shared backend mutation services, generated API clients, and document-scoped state. It does not implement the mobile app itself.
 
 ## Goals
 
@@ -263,7 +263,7 @@ Useful existing sources:
 
 Implementation direction, superseding the earlier copy-first approach:
 
-- Complete the shared generated TypeScript API package described in `docs/architecture-reliability-prd.md` and consume it from mobile rather than copying native handwritten wire wrappers.
+- Consume the existing shared generated TypeScript API package, documented in `packages/api/README.md`, from mobile rather than copying native handwritten wire wrappers.
 - Bring generated clients into sync with the full backend AI/document surface and align runtime/generator versions as part of that foundation work.
 - Reuse platform-independent document identity, save-protocol, and journal-date logic where suitable. Keep mobile UI and its MMKV storage adapter platform-specific.
 - Follow the shared revision/idempotency contract and retain drafts on manual conflicts. Mobile implementation must account for the foundation's API rollout rather than introducing another unversioned writer.

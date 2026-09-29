@@ -57,6 +57,7 @@ function App() {
     userId: session.userId,
     syncMessageSetter: session.setSyncMessage,
     runTodoUpdate: session.runTodoUpdate,
+    queries: session.queries,
   });
 
   refreshTodosRef.current = async () => {
@@ -554,6 +555,8 @@ function App() {
                   token={session.authToken} onResolve={session.resolveConflict} /> : null;
               }}
               onSelectJournalPage={(pageId) => commands.openJournalPage(pageId, { recordJump: true })}
+              online={session.syncEnabled}
+              loadJournal={session.ensurePageLoaded}
               onOpenDocumentLinkPicker={documentLinks.openDocumentLinkPicker}
               onFollowDocumentLink={commands.followDocumentLink}
               onOpenDocumentLink={commands.openDocumentLinkTarget}

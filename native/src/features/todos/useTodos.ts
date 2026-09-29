@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { listTodoGoals, listTodos, type BackendTodo, type BackendTodoGoal, type TodoPatch } from '../../lib/backend';
 import type { TodoFilter } from '../../app/types';
 import { matchesTodoFilter } from '../../app/format';
+import type { DocumentQueries } from '../session/documentQueries';
 
 interface UseTodosOptions {
   backendUrl: string;
@@ -9,9 +10,10 @@ interface UseTodosOptions {
   userId: number | null;
   syncMessageSetter: (message: string) => void;
   runTodoUpdate: (id: number, patch: TodoPatch) => Promise<BackendTodo>;
+  queries?: DocumentQueries;
 }
 
-export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, runTodoUpdate }: UseTodosOptions) {
+export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, runTodoUpdate, queries }: UseTodosOptions) {
   const scope = JSON.stringify([backendUrl, authToken, userId]);
   const scopeRef = useRef(scope);
   scopeRef.current = scope;
@@ -35,8 +37,8 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, run
     setIsLoadingTodos(true);
     try {
       const [nextTodos, nextGoals] = await Promise.all([
-        listTodos(backendUrl, nextToken, nextUserId),
-        listTodoGoals(backendUrl, nextToken, nextUserId),
+        queries ? queries.todos(backendUrl, nextToken, nextUserId) : listTodos(backendUrl, nextToken, nextUserId),
+        queries ? queries.goals(backendUrl, nextToken, nextUserId) : listTodoGoals(backendUrl, nextToken, nextUserId),
       ]);
       if (scopeRef.current !== scope) return;
       setTodos(nextTodos);
@@ -47,7 +49,7 @@ export function useTodos({ backendUrl, authToken, userId, syncMessageSetter, run
     } finally {
       if (scopeRef.current === scope) setIsLoadingTodos(false);
     }
-  }, [authToken, backendUrl, syncMessageSetter, userId, scope]);
+  }, [authToken, backendUrl, syncMessageSetter, userId, scope, queries]);
 
   const filteredTodos = useMemo(() => todos.filter((todo) => {
     if (!matchesTodoFilter(todo, todoFilter)) {

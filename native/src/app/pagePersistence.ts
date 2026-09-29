@@ -19,8 +19,11 @@ type InvalidBlockTreeInfo = {
   }[];
 };
 
+const hashes = new WeakMap<OutlinePage, string>();
 export function pageHash(page: OutlinePage) {
-  return JSON.stringify({
+  const cached = hashes.get(page);
+  if (cached !== undefined) return cached;
+  const hash = JSON.stringify({
     id: page.id,
     backendId: page.backendId ?? 0,
     workspaceId: page.workspaceId ?? 0,
@@ -37,6 +40,8 @@ export function pageHash(page: OutlinePage) {
       todoId: node.todoId ?? 0,
     })),
   });
+  hashes.set(page, hash);
+  return hash;
 }
 
 export function pagePersistenceKey(page: OutlinePage) {

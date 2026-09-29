@@ -6,6 +6,7 @@ import { getNodeDepths, getPageDateLabel } from '../outline/tree';
 import type { OutlineAction } from '../outline/state';
 import type { OutlinePage, OutlineState } from '../outline/types';
 import { formatInlineTodoStatus } from '../../app/format';
+import { useJournalPreviews } from './useJournalPreviews';
 
 interface JournalsViewProps {
   journals: OutlinePage[];
@@ -16,6 +17,8 @@ interface JournalsViewProps {
   activePageSaveMessage: string;
   renderConflict?: (page: OutlinePage) => ReactNode;
   onSelectJournalPage: (pageId: string) => void;
+  online?: boolean;
+  loadJournal?: (pageId: string) => Promise<OutlinePage>;
   onOpenDocumentLinkPicker: () => void;
   onFollowDocumentLink: () => void;
   onOpenDocumentLink: (targetDocumentId: number) => void;
@@ -30,10 +33,13 @@ export function JournalsView({
   activePageSaveMessage,
   renderConflict,
   onSelectJournalPage,
+  online = false,
+  loadJournal,
   onOpenDocumentLinkPicker,
   onFollowDocumentLink,
   onOpenDocumentLink,
 }: JournalsViewProps) {
+  const { stackRef, errors } = useJournalPreviews(journals, online, loadJournal);
   const journalNodeDepths = useMemo(
     () => new Map(
       journals
@@ -51,12 +57,12 @@ export function JournalsView({
         </div>
       </header>
 
-      <div className="journal-stack">
+      <div className="journal-stack" ref={stackRef}>
         {journals.map((journal) => {
           const isActive = state.activePageId === journal.id;
 
           return (
-            <article key={journal.id} className="journal-card" data-active={isActive}>
+            <article key={journal.id} className="journal-card" data-active={isActive} data-journal-id={journal.id} data-uncached={Boolean(journal.metadataOnly)}>
               <button
                 type="button"
                 className="journal-card-header"
@@ -74,7 +80,7 @@ export function JournalsView({
 
               {renderConflict?.(journal)}
 
-               {journal.metadataOnly ? <div className="journal-preview">Not cached</div> : isActive ? (
+               {journal.metadataOnly ? <div className="journal-preview">{!online ? 'Not cached offline' : errors[journal.id] ? 'Could not load journal. Select its date to retry.' : 'Loading…'}</div> : isActive ? (
                 <OutlineEditor
                   page={journal}
                   state={state}

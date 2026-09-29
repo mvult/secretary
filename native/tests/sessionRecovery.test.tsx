@@ -32,6 +32,143 @@ const doc = { id: 1, workspaceId: 1, clientKey: 'document-1', kind: 'note' as co
   createdAt: '', updatedAt: '', blocks: [{ id: 1, clientKey: 'block-1', documentId: 1, parentBlockId: 0, parentClientKey: '', sortOrder: 1, text: 'Server text', todoId: 0, createdAt: '', updatedAt: '' }] };
 const page = documentToOutlinePage(doc);
 
+test('journal boundary navigation loads the next indexed date instead of jumping to an old cached journal', async () => {
+  await environment(false);
+  const dates = ['2026-09-29', '2026-09-28', '2026-09-27', '2026-09-26', '2026-08-18', '2026-08-17'];
+  const journals = dates.map((journalDate, i) => ({ ...doc, id: 10 - i, clientKey: `journal-${i}`, revision: '1',
+    kind: 'journal', journalDate, blocks: [{ ...doc.blocks[0], id: 10 - i, documentId: 10 - i }] }));
+  const db = await openDraftDatabase();
+  const storage = new DraftStorage(db, draftScope(backend, 1, 1));
+  await storage.load();
+  const old = documentToOutlinePage({ ...journals[5], kind: 'journal' });
+  await storage.save({ records: [{ page: old, baseline: old, savedHash: pageHash(old) }], directories: [] });
+  db.close();
+  const bodies: number[] = [];
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).endsWith('ListDocumentIndex')) return Response.json({ entries: journals.map(({ blocks: _, ...entry }) => entry), persistenceProtocolVersion: 1 });
+    if (String(url).endsWith('GetDocument')) {
+      const id = Number(JSON.parse(String(init?.body)).id); bodies.push(id);
+      return Response.json({ document: journals.find(journal => journal.id === id) });
+    }
+    return respond(String(url));
+  }) as typeof fetch;
+  const app = await mount(loadIndexedWorkspace);
+  try {
+    await until(() => app.current().sessionStatus === 'ready');
+    assert.equal(bodies.includes(7), false);
+    await act(async () => app.current().dispatch({ type: 'selectJournalPage', pageId: 'document-8' }));
+    await act(async () => app.current().dispatch({ type: 'moveFocus', direction: 1, extendSelection: false }));
+    await until(() => app.current().stateRef.current.activePageId === 'document-7');
+    assert.equal(bodies.includes(7), true);
+    await act(async () => app.current().dispatch({ type: 'selectJournalPage', pageId: 'document-5' }));
+    await act(async () => app.current().dispatch({ type: 'moveFocus', direction: -1, extendSelection: false }));
+    await until(() => app.current().stateRef.current.activePageId === 'document-6');
+    assert.equal(bodies.includes(6), true);
+  } finally { await app.unmount(); }
+});
+
+test('indexed session keeps saved undo document-local and retains the undone draft across offline restart', async () => {
+  await environment(false);
+  const notes = [2, 1].map(id => ({ ...doc, id, clientKey: `document-${id}`, revision: '1', title: `Note ${id}`,
+    blocks: [{ ...doc.blocks[0], id, documentId: id, clientKey: `block-${id}` }] }));
+  const saves: { id: string; expectedRevision: string; document: { title: string } }[] = [];
+  const online = (async (url, init) => {
+    const body = JSON.parse(String(init?.body ?? '{}'));
+    if (String(url).endsWith('ListDocumentIndex')) return Response.json({ entries: notes.map(({ blocks: _, ...entry }) => entry), persistenceProtocolVersion: 1 });
+    if (String(url).endsWith('GetDocument')) return Response.json({ document: notes.find(note => note.id === Number(body.id)) });
+    if (String(url).endsWith('SaveDocument')) {
+      saves.push(body);
+      const note = notes.find(note => note.id === Number(body.document.id))!;
+      assert.equal(body.expectedRevision, note.revision);
+      note.title = body.document.title;
+      note.revision = String(BigInt(note.revision) + 1n);
+      return Response.json({ document: note, mutationId: body.mutationId, outcome: 1 });
+    }
+    return respond(String(url));
+  }) as typeof fetch;
+  globalThis.fetch = online;
+  const app = await mount(loadIndexedWorkspace);
+  try {
+    await until(() => app.current().sessionStatus === 'ready');
+    await act(async () => { await app.current().ensurePageLoaded('document-1'); });
+    await act(async () => {
+      app.current().dispatch({ type: 'selectNote', pageId: 'document-2' });
+      app.current().dispatch({ type: 'updatePageTitle', title: 'Edited two' });
+      app.current().dispatch({ type: 'selectNote', pageId: 'document-1' });
+      app.current().dispatch({ type: 'updatePageTitle', title: 'Edited one' });
+    });
+    await act(async () => { await app.current().flushDirtyPages(); });
+    assert.equal(saves.length, 2);
+    await act(async () => { app.current().dispatch({ type: 'selectNote', pageId: 'document-2' }); app.current().dispatch({ type: 'undo' }); });
+    const pages = app.current().pagesRef.current;
+    assert.equal(pages.find(page => page.backendId === 2)?.title, 'Note 2');
+    assert.equal(pages.find(page => page.backendId === 2)?.revision, '2');
+    assert.equal(pages.find(page => page.backendId === 1)?.title, 'Edited one');
+    await until(async () => (await retainedWorkspace()).records.find(record => record.page.backendId === 2)?.page.title === 'Note 2');
+  } finally { await app.unmount(); }
+  // A fresh hook reads the committed IndexedDB draft; no in-memory undo survives.
+  globalThis.fetch = (async () => { throw new TypeError('offline'); }) as typeof fetch;
+  const offline = await mount(loadIndexedWorkspace);
+  try {
+    await until(() => offline.current().sessionStatus === 'unavailable');
+    assert.equal(offline.current().pagesRef.current.find(page => page.backendId === 2)?.title, 'Note 2');
+    assert.equal(offline.current().pagesRef.current.find(page => page.backendId === 1)?.title, 'Edited one');
+    assert.equal(Object.values(offline.current().stateRef.current.documentHistory ?? {}).flat().length, 0);
+  } finally { await offline.unmount(); }
+  globalThis.fetch = online;
+  const restarted = await mount(loadIndexedWorkspace);
+  try {
+    await until(() => restarted.current().sessionStatus === 'ready');
+    await act(async () => { await restarted.current().flushDirtyPages(); });
+    assert.equal(saves.length, 3);
+    assert.equal(saves[2].expectedRevision, '2');
+    assert.equal(notes.find(note => note.id === 2)?.title, 'Note 2');
+    assert.equal(notes.find(note => note.id === 1)?.revision, '2');
+  } finally { await restarted.unmount(); }
+});
+
+test('clean cache is bounded on disk and offline restart preserves the full navigation index', async () => {
+  await environment(false);
+  const notes = Array.from({ length: 105 }, (_, i) => ({ ...doc, id: i + 1, clientKey: `document-${i + 1}`, revision: '1' }));
+  const db = await openDraftDatabase();
+  const storage = new DraftStorage(db, draftScope(backend, 1, 1));
+  await storage.load();
+  await storage.save({ records: notes.map(note => {
+    const page = documentToOutlinePage(note);
+    return { page, baseline: page, savedHash: pageHash(page), lastAccessedAt: note.id };
+  }), directories: [], index: notes.map(({ blocks: _, ...entry }) => entry) });
+  db.close();
+  globalThis.fetch = (async (url, init) => {
+    if (String(url).endsWith('ListDocumentIndex')) return Response.json({ entries: [...notes].reverse().map(({ blocks: _, ...entry }) => entry), persistenceProtocolVersion: 1 });
+    if (String(url).endsWith('GetDocument')) return Response.json({ document: notes.find(note => note.id === Number(JSON.parse(String(init?.body)).id)) });
+    return respond(String(url));
+  }) as typeof fetch;
+  const app = await mount(loadIndexedWorkspace);
+  try {
+    await until(() => app.current().sessionStatus === 'ready');
+    assert.ok(app.current().pagesRef.current.length <= 101);
+    assert.equal(app.current().navigationPages.length, 105);
+    const cached = await retainedWorkspace();
+    assert.ok(cached.records.length <= 101);
+    assert.equal(cached.index?.length, 105);
+    const evicted = app.current().navigationPages.find(page => page.metadataOnly)!;
+    let reopened = false;
+    await act(async () => { void app.current().ensurePageLoaded(evicted.id).then(() => { reopened = true; }); });
+    await until(() => reopened);
+    assert.equal(app.current().pagesRef.current.find(page => page.id === evicted.id)?.nodes[0].text, 'Server text');
+    assert.ok((await retainedWorkspace()).records.length <= 101);
+  } finally { await app.unmount(); }
+  globalThis.fetch = (async () => { throw new Error('offline'); }) as typeof fetch;
+  const offline = await mount(loadIndexedWorkspace);
+  try {
+    await until(() => offline.current().sessionStatus === 'unavailable');
+    assert.equal(offline.current().navigationPages.length, 105);
+    const uncached = offline.current().navigationPages.find(page => page.metadataOnly)!;
+    await assert.rejects(offline.current().ensurePageLoaded(uncached.id), /not cached/);
+    assert.equal(offline.current().pagesRef.current.some(page => page.id === uncached.id), false);
+  } finally { await offline.unmount(); }
+});
+
 test('indexed startup keeps later-page metadata out of drafts and opens its body on demand', async () => {
   await environment(false);
   const bodies: number[] = [];
@@ -549,11 +686,11 @@ test('directory copy stops at the first unsaved note and retains that local copy
   } finally { await app.unmount(); }
 });
 
-async function until(predicate: () => boolean) {
+async function until(predicate: () => boolean | Promise<boolean>) {
   // Status text deliberately settles after a 3.5-second presentation debounce.
   for (let attempt = 0; attempt < 850; attempt++) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); });
-    if (predicate()) return;
+    if (await predicate()) return;
   }
   throw new Error('Timed out waiting for session state.');
 }
@@ -1060,7 +1197,8 @@ test('saving an active new row between children neither moves it nor copies its 
     await act(async () => app.current().flushDirtyPages());
     assert.deepEqual(sentRows, [expected]);
     assert.deepEqual(app.current().pagesRef.current[0].nodes.map((node) => node.text), expected);
-    assert.equal(app.current().stateRef.current.editingId, 'block-4');
+    assert.equal(app.current().stateRef.current.editingId, 'local-polish');
+    assert.equal(app.current().pagesRef.current[0].nodes[2].backendId, 4);
     assert.equal(app.current().activePageIsDirty, false);
 
     // Continue typing into that same row and save again with its assigned server ID.
@@ -1070,7 +1208,7 @@ test('saving an active new row between children neither moves it nor copies its 
     updated[2] = 'Polish camera flow — updated';
     assert.deepEqual(sentRows[1], updated);
     assert.deepEqual(app.current().pagesRef.current[0].nodes.map((node) => node.text), updated);
-    assert.equal(app.current().stateRef.current.editingId, 'block-4');
+    assert.equal(app.current().stateRef.current.editingId, 'local-polish');
   } finally { await app.unmount(); }
 });
 

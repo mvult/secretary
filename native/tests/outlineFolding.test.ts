@@ -14,7 +14,7 @@ function initial(): OutlineState {
     ] }],
     activePageId: 'note', activeView: 'note', focusedId: 'parent', normalCursor: 0,
     anchorId: null, editingId: null, draftText: '', editCursor: 'end', mode: 'normal',
-    yankBuffer: null, history: [],
+    yankBuffer: null, documentHistory: {},
   };
 }
 
@@ -28,7 +28,7 @@ test('folds preserve nested folds and document contents without adding undo entr
   state = reduceOutlineState(state, { type: 'toggleFold' });
   assert.deepEqual(visible(state), ['parent', 'child', 'last']);
   assert.equal(state.pages, original.pages);
-  assert.equal(state.history.length, 0);
+  assert.equal(Object.keys(state.documentHistory ?? {}).length, 0);
 });
 
 test('navigation skips hidden descendants in both directions and at page end', () => {

@@ -1,8 +1,9 @@
 import type { OutlinePage } from '../features/outline/types';
-import type { BackendDirectory } from './backend';
+import type { BackendDirectory, DocumentMetadata } from './backend';
 
 export type DraftScope = [backend: string, user: string, workspace: string];
 export type DraftRecord = {
+  lastAccessedAt?: number;
   page: OutlinePage;
   draftId?: string;
   generation?: number;
@@ -36,7 +37,7 @@ export type TodoCommandEnvelope = {
   mutationId: string;
   body: string;
 };
-export type LocalWorkspace = { records: DraftRecord[]; directories: BackendDirectory[]; command?: TodoCommandEnvelope };
+export type LocalWorkspace = { records: DraftRecord[]; directories: BackendDirectory[]; command?: TodoCommandEnvelope; index?: DocumentMetadata[] };
 
 export function backendIdentity(value: string) {
   const url = new URL(value);
@@ -71,11 +72,12 @@ function result<T>(request: IDBRequest<T>) {
 // No destructive upgrade fallback: a failed/open-newer database stays intact.
 export function openDraftDatabase(factory: IDBFactory = indexedDB): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = factory.open('secretary-drafts', 5);
+    const request = factory.open('secretary-drafts', 6);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains('workspaces')) request.result.createObjectStore('workspaces');
       if (!request.result.objectStoreNames.contains('drafts')) request.result.createObjectStore('drafts');
       if (!request.result.objectStoreNames.contains('recovery')) request.result.createObjectStore('recovery', { autoIncrement: true });
+      if (!request.result.objectStoreNames.contains('indexes')) request.result.createObjectStore('indexes');
     };
     request.onerror = () => reject(request.error);
     request.onblocked = () => reject(new Error('Close other Secretary windows to open local draft storage.'));
@@ -93,16 +95,30 @@ export class DraftStorage {
   private keys: string[] = [];
   private queue: Promise<unknown> = Promise.resolve();
   private loaded = false;
+  private captured = new WeakMap<object, object>();
+  private written = new Map<string, DraftRecord>();
+  private writtenIndex?: DocumentMetadata[];
+  private readonly emptyIndex: DocumentMetadata[] = [];
+
+  private capture<T extends object>(value: T): T {
+    const cached = this.captured.get(value);
+    if (cached) return cached as T;
+    const snapshot = structuredClone(value);
+    this.captured.set(value, snapshot);
+    return snapshot;
+  }
 
   constructor(private db: IDBDatabase, readonly scope: DraftScope) {}
 
   async load(): Promise<LocalWorkspace> {
-    const tx = this.db.transaction(['workspaces', 'drafts'], 'readonly');
+    const tx = this.db.transaction(['workspaces', 'drafts', 'indexes'], 'readonly');
     const done = completed(tx);
     const metaRequest = result(tx.objectStore('workspaces').get(this.scope));
     const recordsRequest = result(tx.objectStore('drafts').getAll(IDBKeyRange.bound([...this.scope, ''], [...this.scope, '\uffff'])));
-    const [meta, records] = await Promise.all([metaRequest, recordsRequest, done]);
-    if (meta && ![1, 2, 3, 4, 5].includes(meta.schemaVersion)) throw new Error('Unsupported local draft format; retained data was not changed.');
+    const indexRequest = result(tx.objectStore('indexes').get(this.scope));
+    const [meta, records, index] = await Promise.all([metaRequest, recordsRequest, indexRequest, done]);
+    if (meta && ![1, 2, 3, 4, 5, 6].includes(meta.schemaVersion)) throw new Error('Unsupported local draft format; retained data was not changed.');
+    if (meta?.schemaVersion === 6 && !Array.isArray(index)) throw new Error('Local document index is missing; retained data was not changed.');
     if (meta?.command && !((meta.command.version === 1 && ['repository', 'pull'].includes(meta.command.operation)) || (meta.command.version === 2 && meta.command.operation === 'update'))) {
       throw new Error('Unsupported retained command; retained data was not changed.');
     }
@@ -113,12 +129,19 @@ export class DraftStorage {
     this.revision = meta?.revision ?? 0;
     this.keys = records.map((record: DraftRecord) => record.page.id);
     this.loaded = true;
-    return { records, directories: meta?.directories ?? [], command: meta?.command };
+    this.written.clear();
+    this.writtenIndex = undefined;
+    return { records, directories: meta?.directories ?? [], command: meta?.command,
+      index: meta?.schemaVersion === 6 ? index : meta?.index ?? [] };
   }
 
-  save(workspace: LocalWorkspace): Promise<void> {
+  save(workspace: LocalWorkspace, immutable = false): Promise<void> {
     // Capture at enqueue time, not when the previous transaction finishes.
-    const snapshot = structuredClone(workspace);
+    // Editor/record objects are immutable. Capture only changed documents;
+    // retained snapshots are owned here and never exposed to the editor.
+    const snapshot: LocalWorkspace = immutable ? { records: workspace.records.map(record => this.capture(record)),
+      directories: this.capture(workspace.directories), index: workspace.index ? this.capture(workspace.index) : undefined,
+      command: workspace.command ? this.capture(workspace.command) : undefined } : structuredClone(workspace);
     const write = this.queue.then(() => this.write(snapshot));
     this.queue = write.catch(() => undefined);
     return write;
@@ -126,8 +149,9 @@ export class DraftStorage {
 
   private async write(workspace: LocalWorkspace) {
     if (!this.loaded) throw new Error('Restore local drafts before writing them.');
-    const tx = this.db.transaction(['workspaces', 'drafts', 'recovery'], 'readwrite');
+    const tx = this.db.transaction(['workspaces', 'drafts', 'recovery', 'indexes'], 'readwrite');
     const done = completed(tx);
+    const index = workspace.index ?? this.emptyIndex;
     let conflict = false;
     const metadata = tx.objectStore('workspaces');
     const request = metadata.get(this.scope);
@@ -140,12 +164,19 @@ export class DraftStorage {
       const store = tx.objectStore('drafts');
       const keys = new Set(workspace.records.map((record) => record.page.id));
       for (const key of this.keys) if (!keys.has(key)) store.delete([...this.scope, key]);
-      for (const record of workspace.records) store.put(record, [...this.scope, record.page.id]);
-      metadata.put({ schemaVersion: 5, revision: this.revision + 1, directories: workspace.directories, command: workspace.command }, this.scope);
+      for (const record of workspace.records) {
+        if (this.written.get(record.page.id) !== record) store.put(record, [...this.scope, record.page.id]);
+      }
+      // First successful save lazily moves legacy inline indexes. The small CAS
+      // row and index update commit together; unchanged indexes incur no reads/writes.
+      if (this.writtenIndex !== index) tx.objectStore('indexes').put(index, this.scope);
+      metadata.put({ schemaVersion: 6, revision: this.revision + 1, directories: workspace.directories, command: workspace.command }, this.scope);
     };
     await done;
     if (conflict) throw new Error('Another window changed these drafts. This window’s snapshot was retained in local recovery storage; keep it open and resolve the other window before continuing.');
     this.revision++;
     this.keys = workspace.records.map((record) => record.page.id);
+    this.written = new Map(workspace.records.map(record => [record.page.id, record]));
+    this.writtenIndex = index;
   }
 }

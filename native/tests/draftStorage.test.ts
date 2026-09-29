@@ -7,10 +7,13 @@ import { pageHash } from '../src/app/pagePersistence';
 import { draftConflicts, mergeWorkspace, recoveryCopy, trackDrafts } from '../src/features/session/draftReconciliation';
 import type { OutlinePage } from '../src/features/outline/types';
 import { prepareSave } from '../src/features/session/documentSaveController';
+import type { DocumentMetadata } from '../src/lib/backend';
 
 const page: OutlinePage = { id: 'document-1', backendId: 1, workspaceId: 1, kind: 'note', title: 'Draft', date: '',
   nodes: [{ id: 'block-1', backendId: 1, text: 'Original', parentId: null, todoId: 3, todoStatus: 'todo' }] };
 const scope = draftScope('https://example.com/', 1, 1);
+const index: DocumentMetadata[] = [{ id: 1, clientKey: 'document-1', workspaceId: 1, directoryId: 0,
+  kind: 'note', title: 'Indexed title', journalDate: '', revision: '1', createdAt: '', updatedAt: '' }];
 
 test('committed local drafts and uncertain-save markers survive reopening', async () => {
   const factory = new IDBFactory();
@@ -30,9 +33,10 @@ test('backend, account and workspace records are isolated', async () => {
   const db = await openDraftDatabase(new IDBFactory());
   const writer = new DraftStorage(db, scope);
   await writer.load();
-  await writer.save({ records: [{ page }], directories: [] });
+  await writer.save({ records: [{ page }], directories: [], index });
   for (const other of [draftScope('https://other.com', 1, 1), draftScope('https://example.com', 2, 1), draftScope('https://example.com', 1, 2)]) {
     assert.deepEqual((await new DraftStorage(db, other).load()).records, []);
+    assert.deepEqual((await new DraftStorage(db, other).load()).index, []);
   }
   assert.deepEqual(draftScope('https://EXAMPLE.com:443/', 1, 1), scope);
   assert.notDeepEqual(draftScope('http://example.com', 1, 1), scope);
@@ -54,19 +58,58 @@ test('queued writes retain the latest edit and capture inputs at enqueue time', 
   db.close();
 });
 
+test('immutable persistence writes only changed documents and retains queued edits', async () => {
+  const db = await openDraftDatabase(new IDBFactory());
+  const storage = new DraftStorage(db, scope);
+  await storage.load();
+  const records = Array.from({ length: 150 }, (_, i) => ({ page: { ...page, id: `document-${i + 1}`, backendId: i + 1 } }));
+  const directories: [] = [];
+  const original = IDBObjectStore.prototype.put;
+  const puts: string[] = [];
+  let indexWrites = 0;
+  IDBObjectStore.prototype.put = function(value, key) {
+    if (this.name === 'drafts') puts.push(value.page.id);
+    if (this.name === 'indexes') indexWrites++;
+    if (this.name === 'workspaces') assert.equal('index' in value, false);
+    return original.call(this, value, key);
+  };
+  try {
+    await storage.save({ records, directories, index }, true);
+    assert.equal(indexWrites, 1);
+    puts.length = 0;
+    const edited = [{ page: { ...records[0].page, title: 'One changed document' } }, ...records.slice(1)];
+    await storage.save({ records: edited, directories, index }, true);
+    assert.deepEqual(puts, ['document-1']);
+    puts.length = 0;
+    await storage.save({ records: edited, directories, index }, true);
+    assert.deepEqual(puts, []);
+    assert.equal(indexWrites, 1);
+    const changedIndex = [{ ...index[0], title: 'Updated index' }];
+    await storage.save({ records: edited, directories, index: changedIndex }, true);
+    assert.equal(indexWrites, 2);
+    const loaded = await new DraftStorage(db, scope).load();
+    assert.equal(loaded.records.find(record => record.page.id === 'document-1')?.page.title, 'One changed document');
+    assert.equal(loaded.records.length, 150);
+    assert.deepEqual(loaded.index, changedIndex);
+  } finally { IDBObjectStore.prototype.put = original; db.close(); }
+});
+
 test('stale windows cannot overwrite drafts and retain their candidate separately', async () => {
   const db = await openDraftDatabase(new IDBFactory());
   const first = new DraftStorage(db, scope);
   const second = new DraftStorage(db, scope);
   await first.load(); await second.load();
-  await first.save({ records: [{ page }], directories: [] });
-  await assert.rejects(second.save({ records: [{ page: { ...page, title: 'Other window' } }], directories: [] }), /Another window/);
+  await first.save({ records: [{ page }], directories: [], index });
+  const staleIndex = [{ ...index[0], title: 'Stale index' }];
+  await assert.rejects(second.save({ records: [{ page: { ...page, title: 'Other window' } }], directories: [], index: staleIndex }), /Another window/);
   assert.equal((await new DraftStorage(db, scope).load()).records[0].page.title, 'Draft');
+  assert.deepEqual((await new DraftStorage(db, scope).load()).index, index);
   const recovery = await new Promise<any[]>((resolve) => {
     const request = db.transaction('recovery').objectStore('recovery').getAll();
     request.onsuccess = () => resolve(request.result);
   });
   assert.equal(recovery[0].workspace.records[0].page.title, 'Other window');
+  assert.deepEqual(recovery[0].workspace.index, staleIndex);
   db.close();
 });
 
@@ -75,6 +118,34 @@ test('failed storage writes reject rather than acknowledge retention', async () 
   const storage = new DraftStorage(db, scope);
   await storage.load(); db.close();
   await assert.rejects(storage.save({ records: [{ page }], directories: [] }));
+});
+
+test('an aborted index update rolls back drafts and CAS and remains retryable', async () => {
+  const db = await openDraftDatabase(new IDBFactory());
+  const storage = new DraftStorage(db, scope);
+  await storage.load();
+  await storage.save({ records: [{ page }], directories: [], index }, true);
+  const update = { records: [{ page: { ...page, title: 'New draft' } }], directories: [],
+    index: [{ ...index[0], title: 'New index' }] };
+  const original = IDBObjectStore.prototype.put;
+  IDBObjectStore.prototype.put = function(value, key) {
+    const request = original.call(this, value, key);
+    if (this.name === 'workspaces') this.transaction.abort();
+    return request;
+  };
+  try { await assert.rejects(storage.save(update, true), /abort|storage failed/i); }
+  finally { IDBObjectStore.prototype.put = original; }
+  try {
+    const unchanged = await new DraftStorage(db, scope).load();
+    assert.equal(unchanged.records[0].page.title, page.title);
+    assert.deepEqual(unchanged.index, index);
+    await storage.save(update, true);
+    const retried = await new DraftStorage(db, scope).load();
+    assert.equal(retried.records[0].page.title, 'New draft');
+    assert.deepEqual(retried.index, update.index);
+    await storage.save({ ...update, index: [] }, true);
+    assert.deepEqual((await new DraftStorage(db, scope).load()).index, []);
+  } finally { db.close(); }
 });
 
 test('refresh preserves dirty drafts and detects changed or deleted server copies', () => {
@@ -166,7 +237,7 @@ test('both conflict versions survive IndexedDB restart without a network refresh
   db.close();
 });
 
-for (const version of [1, 2, 3, 4]) test(`v${version} local storage upgrades without losing drafts and excludes old writers`, async () => {
+for (const version of [1, 2, 3, 4, 5]) test(`v${version} local storage upgrades without losing drafts and excludes old writers`, async () => {
   const factory = new IDBFactory();
   const old = await new Promise<IDBDatabase>((resolve, reject) => {
     const request = factory.open('secretary-drafts', version);
@@ -177,13 +248,19 @@ for (const version of [1, 2, 3, 4]) test(`v${version} local storage upgrades wit
     request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error);
   });
   const tx = old.transaction(['workspaces', 'drafts'], 'readwrite');
-  tx.objectStore('workspaces').put({ schemaVersion: version, revision: 1, directories: [] }, scope);
+  tx.objectStore('workspaces').put({ schemaVersion: version, revision: 1, directories: [], ...(version === 5 ? { index } : {}) }, scope);
   tx.objectStore('drafts').put({ page, pending: true }, [...scope, page.id]);
   await new Promise<void>((resolve) => { tx.oncomplete = () => resolve(); });
   old.close();
   const upgraded = await openDraftDatabase(factory);
   const storage = new DraftStorage(upgraded, scope);
-  assert.equal((await storage.load()).records[0].pending, true);
+  const restored = await storage.load();
+  assert.equal(restored.records[0].pending, true);
+  assert.deepEqual(restored.index, version === 5 ? index : []);
+  await storage.save(restored, true);
+  const migrated = await new DraftStorage(upgraded, scope).load();
+  assert.deepEqual(migrated.index, restored.index);
+  assert.equal(migrated.records[0].pending, true);
   upgraded.close();
   await assert.rejects(new Promise((resolve, reject) => {
     const request = factory.open('secretary-drafts', version);

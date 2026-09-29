@@ -31,7 +31,7 @@ function mergeSavedIdentities(requestPage: OutlinePage, latestPage: OutlinePage,
         todoId: savedNode.todoId,
         createdAt: savedNode.createdAt,
         updatedAt: savedNode.updatedAt,
-      } : node;
+      } : node.backendId ? { ...node, backendId: undefined, clientKey: crypto.randomUUID(), todoId: undefined, createdAt: undefined, updatedAt: undefined } : node;
     }),
   };
 }
@@ -41,7 +41,7 @@ export function reconcileSavedPage(requestPage: OutlinePage, latestPage: Outline
   // response whose new block identities would have to be guessed by position.
   const submitted = mergeSavedIdentities(requestPage, requestPage, savedPage);
   if (pageHash(latestPage) === pageHash(requestPage)) {
-    return { page: savedPage, savedHash: pageHash(savedPage), needsSave: false };
+    return { page: submitted, savedHash: pageHash(submitted), needsSave: false };
   }
 
   // Only the request was persisted. Preserve newer edits, but never mark them saved.

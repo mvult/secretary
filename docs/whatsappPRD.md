@@ -203,7 +203,7 @@ Native behavior:
 
 ### Checkpoint 1: Backend Storage
 
-- Add Atlas migration for `whatsapp_chat`, `whatsapp_message`, and `whatsapp_settings`.
+- WhatsApp tables are included in the Goose baseline; use new Goose migrations for subsequent schema changes.
 - Update `backend/sql/schema.sql`.
 - Add sqlc queries for chat upsert, message insert, classification update, settings get/update, pending notifications, and mark-notified.
 - Regenerate sqlc code.

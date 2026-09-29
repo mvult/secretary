@@ -3,10 +3,10 @@ import { findMatchingNotes, getPageTitle } from '../outline/tree';
 import type { OutlineState } from '../outline/types';
 import { pageMatchesBody, pageMatchesTitle } from '../../app/format';
 import { readDocumentIndex, indexPage } from '../session/documentIndex';
-import type { DocumentMetadata } from '../../lib/backend';
+import type { DocumentMetadata, listDocumentIndex } from '../../lib/backend';
 import type { OutlinePage } from '../outline/types';
 
-export function useSearchView(state: OutlineState, session?: { backendUrl: string; authToken: string; workspaceId: number | null; syncEnabled: boolean; pagesForPersistence: OutlinePage[] }) {
+export function useSearchView(state: OutlineState, session?: { backendUrl: string; authToken: string; workspaceId: number | null; syncEnabled: boolean; pagesForPersistence: OutlinePage[]; fetchIndex?: typeof listDocumentIndex }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<'insert' | 'select'>('insert');
   const [searchScope, setSearchScope] = useState<'title' | 'fulltext'>('title');
@@ -14,19 +14,19 @@ export function useSearchView(state: OutlineState, session?: { backendUrl: strin
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const lastSearchJPressRef = useRef<number | null>(null);
   const [remoteSearch, setRemoteSearch] = useState<{ key: string; entries: DocumentMetadata[]; status: string }>({ key: '', entries: [], status: '' });
-  const { backendUrl = '', authToken = '', workspaceId = null, syncEnabled = false } = session ?? {};
+  const { backendUrl = '', authToken = '', workspaceId = null, syncEnabled = false, fetchIndex } = session ?? {};
   const searchKey = JSON.stringify([backendUrl, authToken, workspaceId, searchQuery.trim()]);
   useEffect(() => {
     let active = true;
     if (state.activeView !== 'search' || !searchQuery.trim() || !syncEnabled || !workspaceId) return;
     const timer = window.setTimeout(() => {
       setRemoteSearch({ key: searchKey, entries: [], status: 'Searching workspace…' });
-      void readDocumentIndex(backendUrl, authToken, workspaceId, () => active, searchQuery.trim()).then(result => {
+      void readDocumentIndex(backendUrl, authToken, workspaceId, () => active, searchQuery.trim(), fetchIndex).then(result => {
         if (active) setRemoteSearch({ key: searchKey, entries: result.entries, status: '' });
       }).catch(() => { if (active) setRemoteSearch({ key: searchKey, entries: [], status: 'Workspace search unavailable; cached matches only.' }); });
     }, 200);
     return () => { active = false; window.clearTimeout(timer); };
-  }, [state.activeView, searchKey, backendUrl, authToken, workspaceId, syncEnabled, searchQuery]);
+  }, [state.activeView, searchKey, backendUrl, authToken, workspaceId, syncEnabled, searchQuery, fetchIndex]);
   const remote = remoteSearch.key === searchKey && syncEnabled ? remoteSearch.entries : [];
 
   const matches = useMemo(() => findMatchingNotes(state.pages, searchQuery), [searchQuery, state.pages]);

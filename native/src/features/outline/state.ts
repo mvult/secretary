@@ -13,7 +13,6 @@ import {
   insertTextAtCursor,
   jumpFocusInPage,
   hydratePages,
-  makeSnapshot,
   mergeRemotePage,
   getPageBackendBlockIds,
   syncRemoteTodoToPage,
@@ -31,7 +30,6 @@ import {
   openAbove,
   openBelow,
   outdentSelection,
-  restoreSnapshot,
   selectJournal,
   selectJournalPage,
   selectNote,
@@ -44,6 +42,7 @@ import {
   yankLine,
 } from './tree';
 import type { OutlineState } from './types';
+import { observeIdentities, rememberEdit, retainHistories, undoDocument } from './documentUndo';
 
 export type OutlineAction =
   | { type: 'toggleFold'; nodeId?: string }
@@ -86,7 +85,8 @@ export type OutlineAction =
   | { type: 'updatePageTitle'; title: string }
   | { type: 'hydrate'; pages: OutlineState['pages']; source?: string }
   | { type: 'refreshPages'; pages: OutlineState['pages'] }
-  | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string; source?: string }
+  | { type: 'evictPages'; ids: ReadonlySet<string> }
+  | { type: 'mergeRemotePage'; page: OutlineState['pages'][number]; previousPageId?: string; source?: string; acknowledged?: OutlineState['pages'][number] }
   | { type: 'syncRemoteTodo'; sourceDocumentId: number; sourceBlockId: number; todoId: number; status: OutlineState['pages'][number]['nodes'][number]['todoStatus']; updatedAt?: string }
   | { type: 'undo' };
 
@@ -106,38 +106,26 @@ const initialState: OutlineState = {
   editCursor: 'end',
   mode: 'normal',
   yankBuffer: null,
-  history: [],
+  documentHistory: {},
 };
 
 function withHistory(state: OutlineState, updater: (current: OutlineState) => OutlineState): OutlineState {
-  const nextState = updater(state);
-  if (nextState === state || sameEditablePages(state.pages, nextState.pages)) {
-    return nextState;
-  }
-
-  return {
-    ...nextState,
-    history: [...state.history, makeSnapshot(state)],
-  };
-}
-
-// Focus, cursor, editor mode, and server bookkeeping are not undoable edits.
-function sameEditablePages(left: OutlineState['pages'], right: OutlineState['pages']) {
-  if (left === right) return true;
-  return left.length === right.length && left.every((page, index) => {
-    const other = right[index];
-    return page.id === other.id && page.kind === other.kind && page.date === other.date
-      && page.title === other.title && page.directoryId === other.directoryId
-      && page.nodes.length === other.nodes.length && page.nodes.every((node, nodeIndex) => {
-        const next = other.nodes[nodeIndex];
-        return node.id === next.id && node.parentId === next.parentId && node.text === next.text
-          && (node.todoStatus || '') === (next.todoStatus || '');
-      });
-  });
+  return rememberEdit(state, updater(state));
 }
 
 export function reduceOutlineState(state: OutlineState, action: OutlineAction): OutlineState {
-  return revealFocusedNode(reduceAction(state, action));
+  if (action.type === 'applySessionState') return action.state;
+  const prepared = state.blockIdentities ? state : observeIdentities(state, state);
+  let next = revealFocusedNode(reduceAction(prepared, action));
+  if (next.activePageId !== state.activePageId) {
+    const cursors = { ...state.documentCursors, [state.activePageId]: { focusedId: state.focusedId, normalCursor: state.normalCursor } };
+    const saved = cursors[next.activePageId];
+    const page = next.pages.find(page => page.id === next.activePageId);
+    const canRestore = saved && page?.nodes.some(node => node.id === saved.focusedId);
+    next = { ...next, ...(canRestore ? saved : {}), documentCursors: Object.fromEntries(next.pages.filter(page => cursors[page.id]).map(page => [page.id, cursors[page.id]])) };
+  }
+  if (next === prepared) return state;
+  return observeIdentities(prepared, next, action.type === 'mergeRemotePage' ? action.acknowledged : undefined);
 }
 
 function reduceAction(state: OutlineState, action: OutlineAction): OutlineState {
@@ -204,25 +192,25 @@ function reduceAction(state: OutlineState, action: OutlineAction): OutlineState 
     case 'deleteSelection':
       return withHistory(currentState, deleteSelection);
     case 'selectJournal':
-      return selectJournal(currentState);
+      return withHistory(currentState, selectJournal);
     case 'selectJournalPage':
-      return selectJournalPage(currentState, action.pageId);
+      return withHistory(currentState, active => selectJournalPage(active, action.pageId));
     case 'selectNote':
-      return selectNote(currentState, action.pageId);
+      return withHistory(currentState, active => selectNote(active, action.pageId));
     case 'deleteNote':
       return withHistory(currentState, (active) => deleteNotePage(active, action.pageId));
     case 'openSearch':
-      return openSearchView(currentState);
+      return withHistory(currentState, openSearchView);
     case 'openTodos':
-      return openTodosView(currentState);
+      return withHistory(currentState, openTodosView);
     case 'openSettings':
-      return openSettingsView(currentState);
+      return withHistory(currentState, openSettingsView);
     case 'openAI':
-      return openAIView(currentState);
+      return withHistory(currentState, openAIView);
     case 'openDirectory':
-      return openDirectoryView(currentState);
+      return withHistory(currentState, openDirectoryView);
     case 'openPomodoro':
-      return openPomodoroView(currentState);
+      return withHistory(currentState, openPomodoroView);
     case 'createNote':
       return withHistory(currentState, (active) => createNotePage(active, action.title, action.directoryId ?? null));
     case 'createTodayJournal':
@@ -233,12 +221,17 @@ function reduceAction(state: OutlineState, action: OutlineAction): OutlineState 
       return toggleVisualMode(currentState);
     case 'updatePageTitle':
       return withHistory(currentState, (active) => updatePageTitle(active, action.title));
+    case 'evictPages': {
+      const keep = (page: OutlineState['pages'][number]) => page.id === currentState.activePageId || !action.ids.has(page.id);
+      return { ...currentState, pages: currentState.pages.filter(keep),
+        documentHistory: Object.fromEntries(Object.entries(currentState.documentHistory ?? {}).filter(([id]) => id === currentState.activePageId || !action.ids.has(id))) };
+    }
     case 'refreshPages': {
       const active = action.pages.find((page) => page.id === currentState.activePageId);
       if (active && (!currentState.editingId || active.nodes.some((node) => node.id === currentState.editingId))) {
-        return { ...currentState, pages: action.pages, history: [] };
+        return { ...currentState, pages: action.pages, documentHistory: retainHistories(currentState, action.pages) };
       }
-      return hydratePages(currentState, action.pages);
+      return { ...hydratePages(currentState, action.pages), documentHistory: retainHistories(currentState, action.pages) };
     }
     case 'hydrate':
       logIdentityChange('hydrate pages', {
@@ -250,7 +243,7 @@ function reduceAction(state: OutlineState, action: OutlineAction): OutlineState 
           count: getPageBackendBlockIds(page).length,
         })),
       });
-      return hydratePages(currentState, action.pages);
+      return { ...hydratePages(currentState, action.pages), documentHistory: retainHistories(currentState, action.pages) };
     case 'mergeRemotePage':
       {
         const previousPage = currentState.pages.find((entry) => entry.id === action.previousPageId)
@@ -271,31 +264,17 @@ function reduceAction(state: OutlineState, action: OutlineAction): OutlineState 
           removed: previousIds.filter((id) => !nextIds.includes(id)).slice(-12),
           added: nextIds.filter((id) => !previousIds.includes(id)).slice(-12),
         });
-        return mergeRemotePage(currentState, action.page, action.previousPageId);
+         const merged = mergeRemotePage(currentState, action.page, action.previousPageId);
+         // Autosave may commit the active draft before insert mode ends. Keep
+         // that content boundary undoable even when the later commit is a no-op.
+         return action.acknowledged ? rememberEdit(currentState, merged)
+           : { ...merged, documentHistory: retainHistories(currentState, merged.pages) };
       }
-    case 'syncRemoteTodo':
-      return syncRemoteTodoToPage(currentState, action.sourceDocumentId, action.sourceBlockId, action.todoId, action.status, action.updatedAt);
-    case 'undo': {
-      // Also skip no-op entries retained by a live app from the older implementation.
-      let index = currentState.history.length - 1;
-      while (index >= 0 && sameEditablePages(currentState.pages, currentState.history[index].pages)) index--;
-      const previous = currentState.history[index];
-      if (!previous) {
-        return currentState.history.length ? { ...currentState, history: [] } : currentState;
-      }
-
-      const restored = restoreSnapshot(currentState, previous);
-      return {
-        ...restored,
-        // The snapshot's pages contain the pre-edit text. Its draft buffer may
-        // already contain the later edit; reopening it would hide the undo.
-        editingId: null,
-        draftText: '',
-        mode: 'normal',
-        anchorId: null,
-        history: currentState.history.slice(0, index),
-      };
+    case 'syncRemoteTodo': {
+      const next = syncRemoteTodoToPage(currentState, action.sourceDocumentId, action.sourceBlockId, action.todoId, action.status, action.updatedAt);
+      return next === currentState ? next : { ...next, documentHistory: retainHistories(currentState, next.pages) };
     }
+    case 'undo': return undoDocument(currentState);
     default:
       return currentState;
   }
