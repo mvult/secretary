@@ -37,6 +37,9 @@ type Service struct {
 	onMessage     MessageHandler
 
 	mu        sync.Mutex
+	lifecycle sync.Mutex
+	ctx       context.Context
+	qrCancel  context.CancelFunc
 	client    *whatsmeow.Client
 	container *sqlstore.Container
 	status    Status
@@ -63,6 +66,8 @@ func New(queries Queries, sessionDBPath string, onMessage MessageHandler) *Servi
 }
 
 func (s *Service) Start(ctx context.Context) error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
 	if err := os.MkdirAll(filepath.Dir(s.sessionDBPath), 0o755); err != nil {
 		return err
 	}
@@ -83,18 +88,15 @@ func (s *Service) Start(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.container = container
+	s.ctx = ctx
 	s.client = client
 	s.status.SessionDB = s.sessionDBPath
 	s.markEventLocked("initialized")
 	s.mu.Unlock()
 
 	if client.Store.ID == nil {
-		qrChan, err := client.GetQRChannel(ctx)
-		if err != nil {
-			s.setError("qr channel: " + err.Error())
-		} else {
-			s.setPairing(true)
-			go s.consumeQR(ctx, qrChan)
+		if err := s.startPairing(client); err != nil {
+			return err
 		}
 	}
 
@@ -111,7 +113,12 @@ func (s *Service) Start(ctx context.Context) error {
 }
 
 func (s *Service) Stop() {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
 	s.mu.Lock()
+	if s.qrCancel != nil {
+		s.qrCancel()
+	}
 	client := s.client
 	container := s.container
 	s.client = nil
@@ -145,12 +152,49 @@ func (s *Service) QR() (string, Status) {
 }
 
 func (s *Service) Reconnect(ctx context.Context) error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	client := s.currentClient()
 	if client == nil {
 		return errors.New("whatsapp service is not started")
 	}
+	s.mu.Lock()
+	if s.qrCancel != nil {
+		s.qrCancel()
+	}
+	s.latestQR = ""
+	s.status.HasQR = false
+	s.status.Pairing = false
+	s.status.LastError = ""
+	s.mu.Unlock()
 	client.Disconnect()
-	if err := client.ConnectContext(ctx); err != nil {
+	if client.Store.ID == nil {
+		// QR-channel cleanup can disconnect its client asynchronously. Use a
+		// fresh client so an expired channel cannot interrupt the new attempt.
+		client.RemoveEventHandlers()
+		client = whatsmeow.NewClient(client.Store, waLog.Stdout("WhatsApp", "INFO", false))
+		client.EnableAutoReconnect = true
+		client.InitialAutoReconnect = true
+		client.AddEventHandler(s.handleEvent)
+		s.mu.Lock()
+		s.client = client
+		s.mu.Unlock()
+		if err := s.startPairing(client); err != nil {
+			return err
+		}
+	}
+	// WhatsMeow keeps this context for the socket and its background loops.
+	// The HTTP request ends before pairing does, so use the service lifetime.
+	if err := client.ConnectContext(s.ctx); err != nil {
+		s.mu.Lock()
+		if s.qrCancel != nil {
+			s.qrCancel()
+		}
+		s.status.Pairing = false
+		s.mu.Unlock()
 		s.setError("reconnect: " + err.Error())
 		return err
 	}
@@ -158,6 +202,8 @@ func (s *Service) Reconnect(ctx context.Context) error {
 }
 
 func (s *Service) Logout(ctx context.Context) error {
+	s.lifecycle.Lock()
+	defer s.lifecycle.Unlock()
 	client := s.currentClient()
 	if client == nil {
 		return errors.New("whatsapp service is not started")
@@ -182,6 +228,23 @@ func (s *Service) currentClient() *whatsmeow.Client {
 	return s.client
 }
 
+// Pairing outlives the reconnect HTTP request and ends with the service.
+func (s *Service) startPairing(client *whatsmeow.Client) error {
+	ctx, cancel := context.WithCancel(s.ctx)
+	s.mu.Lock()
+	s.qrCancel = cancel
+	s.mu.Unlock()
+	ch, err := client.GetQRChannel(ctx)
+	if err != nil {
+		cancel()
+		s.setError("qr channel: " + err.Error())
+		return err
+	}
+	s.setPairing(true)
+	go s.consumeQR(ctx, ch)
+	return nil
+}
+
 func (s *Service) consumeQR(ctx context.Context, ch <-chan whatsmeow.QRChannelItem) {
 	for {
 		select {
@@ -191,14 +254,17 @@ func (s *Service) consumeQR(ctx context.Context, ch <-chan whatsmeow.QRChannelIt
 			if !ok {
 				return
 			}
-			s.handleQRItem(item)
+			s.handleQRItem(ctx, item)
 		}
 	}
 }
 
-func (s *Service) handleQRItem(item whatsmeow.QRChannelItem) {
+func (s *Service) handleQRItem(ctx context.Context, item whatsmeow.QRChannelItem) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
 	s.markEventLocked("qr_" + item.Event)
 	s.status.LastError = ""
 	s.status.Pairing = true

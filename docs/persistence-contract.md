@@ -61,13 +61,21 @@ Sources: `backend/sql/schema.sql`, `backend/sql/queries/{documents,todos}.sql`, 
 | Generated TS | `packages/api/src/gen`: ES/Protobuf `1.10.1`, Connect runtime/web/generator `1.7.0`; documents, workspaces, TODOs, users, recordings, AI and activities; duplicate outputs removed |
 | Go | `backend/go.mod`: Go `1.25.0`, Connect `1.19.1`, Protobuf runtime `1.36.11`, pgx `5.6.0`; document generated header reports protoc-gen-go `1.36.5` |
 | Generation | Root `bun run api:generate` uses `buf.gen.frontend.yaml` and pinned workspace TS plugins; `api:check` regenerates into a temporary directory and checks drift in CI. Go generation still uses `backend/buf.gen.yaml` |
-| Migration workflow | Goose, with baseline `20260928000000`; the existing database was metadata-baselined without replaying DDL. See `docs/goose-migration-prd.md` |
+| Migration workflow | Goose, with baseline `20260928000000`; the existing database was metadata-baselined without replaying DDL. See [Goose cutover](#goose-cutover) |
 
 App package versions are not evidence of installed/deployed client builds. The owner confirmed they are the only client user: update the app and server together, with no extended compatibility window or fleet inventory. No deployed server capability was queried.
 
 The shared package stays on the TS Protobuf/Connect v1 family. Both builds and TS drift checks pass. Go generator pinning remains separate toolchain work; the existing Docker Go generator installs still use `latest`.
 
 Shared transport preserves codes/details (`BackendError`), reports auth failures with the captured token, and accepts cancellation. Generated RPC serialization is used for ordinary native calls; exact retained request bytes are sent unchanged. `safeInteger` explicitly rejects unsafe app-ID narrowing and document revisions remain decimal strings. Query caches never own pending requests/drafts. See `packages/api/README.md` for mobile and REST-adapter boundaries.
+
+### Goose cutover
+
+On 2026-09-28, the owner-approved cutover replaced Atlas history with Goose baseline `20260928000000`. Existing `secretary_db` was marked applied without executing baseline DDL; Goose's ledger was created/populated and Atlas's ledger dropped atomically. Application data was untouched. The one-time SQL is retained at `backend/scripts/baseline-existing.sql`; future migrations follow the README and Goose project skill.
+
+Read-only inspection found 31 application tables and four enum types, with no custom public routines, non-internal triggers, views, policies, extra extensions, or non-public application tables. The schema reference and baseline include two previously omitted live constraints: `todo_status_check` and `todo_history_status_check`.
+
+Baseline/reference/live SQL comparisons covered 436 definitions; the before/after application-schema comparison found zero differences. Goose v3.27.0 validation passed, `sqlc generate` produced no code changes, `status` confirmed the baseline applied, and `up` reported no pending migrations. Fresh-database initialization was statically validated but not executed; other deployments were not baselined.
 
 ### Index and body loading
 

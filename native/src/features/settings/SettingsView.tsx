@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import {
   getWhatsAppQR,
   getWhatsAppSettings,
@@ -62,6 +63,7 @@ export function SettingsView({
   const [whatsAppQR, setWhatsAppQR] = useState('');
   const [importanceInstructions, setImportanceInstructions] = useState('');
   const [whatsAppMessage, setWhatsAppMessage] = useState('');
+  const [pairingError, setPairingError] = useState('');
   const [isWhatsAppLoading, setIsWhatsAppLoading] = useState(false);
 
   const loadWhatsApp = useCallback(async () => {
@@ -80,7 +82,8 @@ export function SettingsView({
       setImportanceInstructions(settingsPayload.importanceInstructions || settingsPayload.defaultImportanceInstructions);
       if (statusPayload.status.has_qr || statusPayload.status.pairing || !statusPayload.status.logged_in) {
         const qrPayload = await getWhatsAppQR(backendUrl, authToken);
-        setWhatsAppQR(qrPayload.qr);
+        setWhatsAppQR(qrPayload.status.logged_in ? '' : qrPayload.qr);
+        setPairingError('');
         setWhatsAppStatus(qrPayload.status);
       } else {
         setWhatsAppQR('');
@@ -96,6 +99,31 @@ export function SettingsView({
   useEffect(() => {
     void loadWhatsApp();
   }, [loadWhatsApp]);
+
+  useEffect(() => {
+    if (!authToken || !backendUrl.trim() || whatsAppStatus?.logged_in || isWhatsAppLoading) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refreshPairing() {
+      try {
+        const payload = await getWhatsAppQR(backendUrl, authToken);
+        if (cancelled) return;
+        setWhatsAppStatus(payload.status);
+        setWhatsAppQR(payload.status.logged_in ? '' : payload.qr);
+        setPairingError('');
+        if (payload.status.logged_in) return;
+      } catch (error) {
+        // Do not leave an expired code on screen when the backend is unreachable.
+        if (!cancelled) {
+          setWhatsAppQR('');
+          setPairingError(error instanceof Error ? error.message : 'Could not fetch pairing QR.');
+        }
+      }
+      if (!cancelled) timer = setTimeout(() => void refreshPairing(), 3000);
+    }
+    timer = setTimeout(() => void refreshPairing(), 3000);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [authToken, backendUrl, whatsAppStatus?.logged_in, isWhatsAppLoading]);
 
   async function handleSaveWhatsAppSettings() {
     if (!authToken) {
@@ -118,6 +146,8 @@ export function SettingsView({
       return;
     }
     setIsWhatsAppLoading(true);
+    setWhatsAppQR('');
+    setPairingError('');
     try {
       const status = await reconnectWhatsApp(backendUrl, authToken);
       setWhatsAppStatus(status);
@@ -229,10 +259,17 @@ export function SettingsView({
           </p>
           {whatsAppStatus?.connected ? <p className="settings-message">Connected to WhatsApp.</p> : null}
           {whatsAppStatus?.last_error ? <p className="settings-message">Error: {whatsAppStatus.last_error}</p> : null}
-          {whatsAppQR ? (
-            <p className="settings-message">
-              Pairing payload: <code>{whatsAppQR}</code>
-            </p>
+          {pairingError ? <p className="settings-message" role="status">{pairingError}</p> : null}
+          {authToken && !whatsAppStatus?.logged_in && !whatsAppQR && !pairingError ? (
+            <p className="settings-message">{whatsAppStatus?.pairing ? 'Waiting for a QR code from the backend…' : 'Choose Generate QR to start pairing.'}</p>
+          ) : null}
+          {authToken && whatsAppQR && !whatsAppStatus?.logged_in ? (
+            <div>
+              <QRCodeSVG value={whatsAppQR} size={256} marginSize={4}
+                bgColor="#ffffff" fgColor="#000000" title="WhatsApp pairing QR code"
+                style={{ display: 'block', maxWidth: '100%', height: 'auto' }} />
+              <p className="settings-message">WhatsApp → Linked devices → Link a device. Scan this code.</p>
+            </div>
           ) : null}
         </div>
 
@@ -248,13 +285,13 @@ export function SettingsView({
 
         <div className="settings-actions">
           <button type="button" className="sync-button" onClick={() => void loadWhatsApp()} disabled={!authToken || isWhatsAppLoading}>
-            Refresh WhatsApp
+            Refresh status
           </button>
           <button type="button" className="sync-button" onClick={() => void handleSaveWhatsAppSettings()} disabled={!authToken || isWhatsAppLoading}>
             Save instructions
           </button>
           <button type="button" className="sync-button" onClick={() => void handleWhatsAppReconnect()} disabled={!authToken || isWhatsAppLoading}>
-            Reconnect
+            {whatsAppStatus?.logged_in ? 'Reconnect' : 'Generate QR'}
           </button>
           <button type="button" className="sync-button" onClick={() => void handleWhatsAppLogout()} disabled={!authToken || isWhatsAppLoading}>
             Logout WhatsApp

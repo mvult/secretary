@@ -32,4 +32,4 @@ or explicitly reject rollback; do not silently mark destructive changes undone.
 The single `20260928000000_baseline.sql` initializes empty databases. The existing
 database was baselined by recording that version without executing its DDL.
 Do not run the baseline against an existing untracked database or edit it after
-application. See [Goose migration notes](docs/goose-migration-prd.md).
+application. See [Goose cutover evidence](docs/persistence-contract.md#goose-cutover).

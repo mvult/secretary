@@ -1,7 +1,7 @@
 -- +goose Up
 -- Current application schema, verified against secretary_db on 2026-09-28.
 -- Fresh databases execute this DDL. Existing databases must be explicitly
--- baselined without executing it; see docs/goose-migration-prd.md.
+-- baselined without executing it; see docs/persistence-contract.md#goose-cutover.
 CREATE SCHEMA IF NOT EXISTS "public";
 COMMENT ON SCHEMA "public" IS 'standard public schema';
 

@@ -73,7 +73,7 @@ Expose authenticated admin endpoints under `/api/whatsapp/*`.
 
 ### Message Storage
 
-Add Postgres tables managed by Atlas migrations and sqlc.
+Postgres tables are managed by Goose migrations and sqlc.
 
 `whatsapp_chat`:
 
