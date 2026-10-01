@@ -1,0 +1,380 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A00000000000000000000001 /* Secretary/App/SecretaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000011 /* Secretary/App/SecretaryApp.swift */; };
+		A00000000000000000000002 /* SecretaryCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000071 /* SecretaryCore */; };
+		A00000000000000000000003 /* SecretaryTests/StorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000013 /* SecretaryTests/StorageTests.swift */; };
+		A00000000000000000000004 /* SecretaryTests/APITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000014 /* SecretaryTests/APITests.swift */; };
+		A00000000000000000000005 /* SecretaryTests/SessionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000015 /* SecretaryTests/SessionTests.swift */; };
+		A00000000000000000000006 /* SecretaryCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000072 /* SecretaryCore */; };
+		A00000000000000000000007 /* Connect in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000073 /* Connect */; };
+		A00000000000000000000008 /* SwiftProtobuf in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000074 /* SwiftProtobuf */; };
+		B00000000000000000000001 /* Secretary/App/NotesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000002 /* Secretary/App/NotesView.swift */; };
+		B00000000000000000000003 /* Secretary/App/NoteEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000004 /* Secretary/App/NoteEditorView.swift */; };
+		B00000000000000000000005 /* SecretaryTests/DocumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B00000000000000000000006 /* SecretaryTests/DocumentTests.swift */; };
+		C00000000000000000000001 /* Secretary/App/TodosView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C00000000000000000000002 /* Secretary/App/TodosView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A00000000000000000000042 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A00000000000000000000050 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A00000000000000000000040;
+			remoteInfo = Secretary;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		A00000000000000000000011 /* Secretary/App/SecretaryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secretary/App/SecretaryApp.swift; sourceTree = "<group>"; };
+		A00000000000000000000012 /* Secretary/App/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Secretary/App/Info.plist; sourceTree = "<group>"; };
+		A00000000000000000000013 /* SecretaryTests/StorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTests/StorageTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000014 /* SecretaryTests/APITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTests/APITests.swift; sourceTree = "<group>"; };
+		A00000000000000000000015 /* SecretaryTests/SessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTests/SessionTests.swift; sourceTree = "<group>"; };
+		A00000000000000000000016 /* Secretary.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = Secretary.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000017 /* SecretaryTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = SecretaryTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000018 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = "<group>"; };
+		A00000000000000000000019 /* Secretary/App/Secretary.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Secretary/App/Secretary.entitlements; sourceTree = "<group>"; };
+		B00000000000000000000002 /* Secretary/App/NotesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secretary/App/NotesView.swift; sourceTree = "<group>"; };
+		B00000000000000000000004 /* Secretary/App/NoteEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secretary/App/NoteEditorView.swift; sourceTree = "<group>"; };
+		B00000000000000000000006 /* SecretaryTests/DocumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTests/DocumentTests.swift; sourceTree = "<group>"; };
+		C00000000000000000000002 /* Secretary/App/TodosView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secretary/App/TodosView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A00000000000000000000031 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000002 /* SecretaryCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000034 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000006 /* SecretaryCore in Frameworks */,
+				A00000000000000000000007 /* Connect in Frameworks */,
+				A00000000000000000000008 /* SwiftProtobuf in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A00000000000000000000020 = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000011 /* Secretary/App/SecretaryApp.swift */,
+				B00000000000000000000002 /* Secretary/App/NotesView.swift */,
+				B00000000000000000000004 /* Secretary/App/NoteEditorView.swift */,
+				C00000000000000000000002 /* Secretary/App/TodosView.swift */,
+				A00000000000000000000012 /* Secretary/App/Info.plist */,
+				A00000000000000000000019 /* Secretary/App/Secretary.entitlements */,
+				A00000000000000000000013 /* SecretaryTests/StorageTests.swift */,
+				A00000000000000000000014 /* SecretaryTests/APITests.swift */,
+				A00000000000000000000015 /* SecretaryTests/SessionTests.swift */,
+				B00000000000000000000006 /* SecretaryTests/DocumentTests.swift */,
+				A00000000000000000000018 /* Package.swift */,
+				A00000000000000000000021 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A00000000000000000000021 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A00000000000000000000016 /* Secretary.app */,
+				A00000000000000000000017 /* SecretaryTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A00000000000000000000040 /* Secretary */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000061 /* Build configuration list for PBXNativeTarget "Secretary" */;
+			buildPhases = (
+				A00000000000000000000030 /* Sources */,
+				A00000000000000000000031 /* Frameworks */,
+				A00000000000000000000032 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Secretary;
+			packageProductDependencies = (
+				A00000000000000000000071 /* SecretaryCore */,
+			);
+			productName = Secretary;
+			productReference = A00000000000000000000016 /* Secretary.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A00000000000000000000041 /* SecretaryTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A00000000000000000000062 /* Build configuration list for PBXNativeTarget "SecretaryTests" */;
+			buildPhases = (
+				A00000000000000000000033 /* Sources */,
+				A00000000000000000000034 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A00000000000000000000043 /* PBXTargetDependency */,
+			);
+			name = SecretaryTests;
+			packageProductDependencies = (
+				A00000000000000000000072 /* SecretaryCore */,
+				A00000000000000000000073 /* Connect */,
+				A00000000000000000000074 /* SwiftProtobuf */,
+			);
+			productName = SecretaryTests;
+			productReference = A00000000000000000000017 /* SecretaryTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A00000000000000000000050 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastSwiftUpdateCheck = 2640;
+				LastUpgradeCheck = 2640;
+			};
+			buildConfigurationList = A00000000000000000000060 /* Build configuration list for PBXProject "Secretary" */;
+			compatibilityVersion = "Xcode 15.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A00000000000000000000020;
+			packageReferences = (
+				A00000000000000000000070 /* XCLocalSwiftPackageReference "." */,
+			);
+			productRefGroup = A00000000000000000000021 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A00000000000000000000040 /* Secretary */,
+				A00000000000000000000041 /* SecretaryTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000032 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000001 /* Secretary/App/SecretaryApp.swift in Sources */,
+				B00000000000000000000003 /* Secretary/App/NoteEditorView.swift in Sources */,
+				B00000000000000000000001 /* Secretary/App/NotesView.swift in Sources */,
+				C00000000000000000000001 /* Secretary/App/TodosView.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000033 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A00000000000000000000003 /* SecretaryTests/StorageTests.swift in Sources */,
+				A00000000000000000000004 /* SecretaryTests/APITests.swift in Sources */,
+				A00000000000000000000005 /* SecretaryTests/SessionTests.swift in Sources */,
+				B00000000000000000000005 /* SecretaryTests/DocumentTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A00000000000000000000043 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A00000000000000000000040 /* Secretary */;
+			targetProxy = A00000000000000000000042 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		A00000000000000000000080 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		A00000000000000000000081 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		A00000000000000000000082 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Secretary/App/Secretary.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AM4CZPZHFJ;
+				INFOPLIST_FILE = Secretary/App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.secretary.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		A00000000000000000000083 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Secretary/App/Secretary.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AM4CZPZHFJ;
+				INFOPLIST_FILE = Secretary/App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.secretary.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		A00000000000000000000084 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.secretary.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Secretary.app/Secretary";
+			};
+			name = Debug;
+		};
+		A00000000000000000000085 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.secretary.ios.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Secretary.app/Secretary";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A00000000000000000000060 /* Build configuration list for PBXProject "Secretary" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000080 /* Debug */,
+				A00000000000000000000081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000061 /* Build configuration list for PBXNativeTarget "Secretary" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000082 /* Debug */,
+				A00000000000000000000083 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A00000000000000000000062 /* Build configuration list for PBXNativeTarget "SecretaryTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A00000000000000000000084 /* Debug */,
+				A00000000000000000000085 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		A00000000000000000000070 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A00000000000000000000071 /* SecretaryCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SecretaryCore;
+		};
+		A00000000000000000000072 /* SecretaryCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SecretaryCore;
+		};
+		A00000000000000000000073 /* Connect */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = Connect;
+		};
+		A00000000000000000000074 /* SwiftProtobuf */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwiftProtobuf;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A00000000000000000000050 /* Project object */;
+}

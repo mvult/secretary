@@ -8,7 +8,7 @@ The mobile app should be touch-first and simpler than the desktop/native app. It
 
 The implemented shared architecture and persistence foundation is documented in [Persistence Contract](persistence-contract.md), with verification evidence in [Reliability Verification](reliability-verification.md). It covers session/draft recovery, revision-checked saves, shared backend mutation services, generated API clients, and document-scoped state. It does not implement the mobile app itself.
 
-Decision (2026-09-29): replace the proposed React Native implementation with native iOS. Share Protobuf definitions and persistence semantics across clients; implement mobile UI, storage, and recovery in Swift. No mobile app has been implemented yet. References below to the existing native app mean the Tauri desktop app.
+Decision (2026-09-29): replace the proposed React Native implementation with native iOS. Share Protobuf definitions and persistence semantics across clients; implement mobile UI, storage, and recovery in Swift. Phases 1–3 are implemented in `mobile/`; live authentication, index/body reads, and note create/edit/move/delete are verified. References below to the existing native app mean the Tauri desktop app.
 
 ## Goals
 
@@ -17,13 +17,13 @@ Decision (2026-09-29): replace the proposed React Native implementation with nat
 - Browse and manage the full directory tree for notes.
 - View and edit "my TODOs".
 - Create and edit TODOs directly from document blocks.
-- Chat with the existing backend AI system in workspace and document context.
 - Use a hardcoded workspace to avoid workspace-selection flow.
 - Keep local cached drafts and snapshots while saving online.
 
 ## Non-Goals
 
 - Android support in V1.
+- Mobile AI chat (deferred; no Chat tab in the current scope).
 - Vim bindings or keyboard-first desktop parity.
 - Full offline-first merge/conflict-resolution engine.
 - Recreating the Tauri app's dense multi-pane UI.
@@ -33,25 +33,24 @@ Decision (2026-09-29): replace the proposed React Native implementation with nat
 
 ## Users
 
-- Internal Secretary users who need lightweight mobile access to notes, journals, TODOs, and chat.
-- Primary use case is quick capture, review, TODO updates, and backend AI chat while away from desktop.
+- Internal Secretary users who need lightweight mobile access to notes, journals, and TODOs.
+- Primary use case is quick capture, review, and TODO updates while away from desktop.
 
 ## Core Product Shape
 
-The app should have five top-level areas:
+The app should have three functional tabs plus Settings:
 
 - Notes
 - Journals
 - TODOs
-- Chat
 - Settings
 
 ## Workspace Behavior
 
 The app should not expose a workspace picker.
 
-- Configure one hardcoded `MOBILE_WORKSPACE_ID` in mobile app config.
-- After login, use that workspace ID for document, directory, journal, and chat APIs.
+- Configure one hardcoded workspace ID in mobile app config: `AppConfiguration.workspaceID = 4` (the Swift equivalent of `MOBILE_WORKSPACE_ID`).
+- After login, use that workspace ID for document, directory, and journal APIs.
 - On startup/login, verify that the authenticated user has access to the configured workspace.
 - If access fails, show a clear error rather than offering workspace selection.
 
@@ -163,23 +162,6 @@ Required behavior:
 
 The backend already reconciles block TODO state during document saves, so mobile should prefer editing the block document snapshot and saving the document rather than inventing a separate block-TODO API.
 
-## Chat
-
-The app should chat with the existing backend AI system.
-
-Required behavior:
-
-- Workspace chat with no document context.
-- Note-specific chat using the active note document ID.
-- Journal-specific chat using the active journal document ID.
-- List AI threads.
-- Open AI thread detail.
-- Create a new AI thread automatically when sending the first message in a context.
-- Send user messages through `RunAIThreadTurn`.
-- Render assistant responses.
-
-V1 does not need to expose AI artifacts, source refs, run JSON, or debugging details unless needed for support.
-
 ## Authentication
 
 Required behavior:
@@ -206,7 +188,6 @@ Cache locally:
 - unsaved note and journal drafts
 - acknowledged baselines, edit generations, immutable pending requests, and conflict/recovery records
 - recent TODO list snapshot
-- recent AI thread/message snapshot
 
 Required behavior:
 
@@ -232,13 +213,13 @@ Conflict behavior for V1:
 
 ## Mobile Stack
 
-- Native iOS Xcode project in `mobile/`, written in Swift.
-- SwiftUI for the five-tab shell, navigation, and touch-first screens; use UIKit integration where needed for reliable block text editing/focus.
+- Native iOS Xcode project in `mobile/`, written in Swift, with iOS 26 minimum support.
+- SwiftUI for the four-tab shell, navigation, and touch-first screens; use UIKit integration where needed for reliable block text editing/focus.
 - Observable Swift state for session/editor/UI state, with UI updates isolated to the main actor.
 - Swift concurrency and an actor-owned save/recovery coordinator. Explicitly serialize pending-operation transitions across suspension points.
 - SwiftProtobuf and Connect-Swift clients generated from the existing backend `.proto` definitions.
 - A transport path that can send the original retained request bytes unchanged for durable mutations; ordinary reads can use generated RPC calls.
-- SQLite-backed transactional cache, drafts, baselines, and pending operations; Keychain for credentials; UserDefaults for non-sensitive preferences.
+- GRDB-backed SQLite storage for transactional cache, drafts, baselines, and pending operations; Keychain for credentials; UserDefaults for non-sensitive preferences.
 - Swift Package Manager for dependencies, with pinned compatible runtime/generator versions and a reproducible generation/drift check.
 
 This replaces the React Native/TypeScript, React Navigation, Zustand, TanStack Query, and MMKV proposal. The shared Go backend and its authentication model remain the API foundation.
@@ -257,7 +238,6 @@ mobile/
       Notes/
       Journals/
       Todos/
-      Chat/
       Settings/
     Core/
       API/
@@ -281,7 +261,6 @@ Useful existing sources:
 - `native/src/lib/draftStorage.ts`: reference durability, scope isolation, and recovery behavior; use SQLite transactions instead of IndexedDB/Web Locks.
 - `native/src/features/outline/remote.ts`: backend document to outline-page mapping and reverse mapping.
 - `native/src/features/outline/sampleData.ts`: journal date availability rules.
-- `native/src/features/ai/useAIThreads.ts`: current thread creation and send flow.
 
 Implementation direction:
 
@@ -289,7 +268,7 @@ Implementation direction:
 - Port document identity/tree, journal-date, and save/recovery behavior into small Swift components. Do not port desktop-specific editor/UI machinery.
 - Match persistence protocol v1 and typed errors. The backend fingerprints decoded writable fields; Swift need not reproduce JavaScript serialization order or calculate server receipt hashes.
 - Add shared language-neutral protocol fixtures and equivalent Swift recovery tests to keep clients aligned as the contract evolves.
-- Verify server capability before writes/replay; do not add an unversioned fallback. Protocol v1 is active in current backend source; target-deployment verification is still required.
+- Verify server capability before writes/replay; do not add an unversioned fallback. Protocol v1 is active in current backend source and verified by the simulator's authenticated session validation.
 
 ## Backend Context
 
@@ -304,60 +283,68 @@ Relevant backend behavior:
 - Journals are unique by workspace/date and cannot belong to directories.
 - TODO API supports list, get, create, update, delete, and history.
 - TODO delete is permissioned; current backend allows only admins to delete TODOs.
-- AI API supports threads, messages, and `RunAIThreadTurn`.
 
 ## Phases
 
-Live checklist: mobile implementation has not started. Check off and strike through completed items as work lands; the next step is Phase 1.
+Live checklist: Phases 1–5 are implemented (2026-09-30), including My TODOs and full block TODO status controls. An opt-in live-backend test previously verified note create/read/edit/move/delete. Automated journal/TODO recovery tests pass; manual journal, TODO, and folder-operation smoke tests and real-device lifecycle exercises remain open. Next milestone is Phase 6 (Polish And Recovery). Check off and strike through completed items as work lands.
 
 - [x] ~~Choose native Swift/SwiftUI and define the mobile persistence/API boundary.~~
+- [x] ~~Defer mobile Chat and remove its tab from the app shell and current implementation scope.~~
 
 ### Phase 1: App Shell And Auth
 
-- [ ] Confirm minimum iOS version, app signing/distribution, workspace ID, and SQLite access library before scaffolding.
-- [ ] Create the `mobile/` Xcode project, SwiftUI tab shell, observable session state, and app config.
-- [ ] Add SwiftProtobuf/Connect-Swift generation, pinned dependencies, and generation drift validation.
-- [ ] Implement login/logout with Keychain and account/backend-scoped state restoration.
-- [ ] Add SQLite storage and transactional draft/pending-operation repository foundations.
-- [ ] Hardcode and verify `MOBILE_WORKSPACE_ID`; validate the target server's persistence capability.
-- [ ] Add Settings for backend URL and session/debug state.
-- [ ] Verify a generated authenticated read, typed error decoding, and retained-byte transport compatibility against the target backend.
+- [x] ~~Confirm minimum iOS version, app signing/distribution, workspace ID, and SQLite access library before scaffolding.~~ Owner chose iOS 26+, simulator-first, workspace 4, and GRDB. Bundle ID `com.secretary.ios` is provisional.
+- [x] ~~Create the `mobile/` Xcode project, SwiftUI tab shell, observable session state, and app config.~~ Build/install/launch verified on iPhone 17 Pro simulator, iOS 26.4.1. Feature tabs are placeholders until their implementation phases.
+- [x] ~~Add SwiftProtobuf/Connect-Swift generation, pinned dependencies, and generation drift validation.~~ SwiftProtobuf 1.38.1, Connect-Swift 1.2.3; `sh mobile/scripts/api.sh check` passes.
+- [x] ~~Implement login/logout with Keychain and account/backend-scoped state restoration.~~ Epoch guards suppress late results; foreground activation revalidates the session.
+- [x] ~~Add SQLite storage and transactional draft/pending-operation repository foundations.~~ GRDB 7.11.1; restart, CAS, in-flight edits, acknowledgment, and scope-isolation tests pass. The network save coordinator is Phase 3 work.
+- [x] ~~Hardcode workspace 4 and implement authenticated access/protocol validation.~~
+- [x] ~~Verify workspace 4 and protocol v1 against the target deployment using a real account.~~ Simulator restored existing Keychain credentials and successfully loaded the live index on 2026-09-30.
+- [x] ~~Add Settings for backend URL and session/debug state.~~ Connection revalidation, workspace/protocol/account information, retained draft count, and logout are implemented. Change backend on the login screen after logout.
+- [x] ~~Verify generated authenticated reads, typed error decoding, and retained-byte transport through HTTP fixtures.~~ Tests cover optional zero revisions, Int64 precision, deployment URL prefixes, legacy HTTP 401, and unsupported protocol rejection.
+- [x] ~~Verify retained-byte mutation transport against the target backend.~~ The opt-in iOS smoke test passed protocol-v1 note create/edit/move/delete with the signed-in simulator account. Exact-byte retries after lost responses are separately verified through deterministic fixtures.
+- [x] ~~Run the foundation tests on macOS and iOS Simulator.~~ 11 core tests pass on macOS; 12 tests (13 parameterized executions) pass on iOS, including real Keychain insert/update/read/delete. Simulator Keychain entitlements and app-hosted test linking are configured; signing must remain enabled.
 
 ### Phase 2: Notes And Directories
 
-- [ ] Load the paginated document/directory index for the hardcoded workspace; fetch full bodies on demand.
-- [ ] Render the full directory tree and open notes read-only with cached startup.
-- [ ] Implement directory create/rename/move/delete within backend constraints.
+- [x] ~~Load the paginated document/directory index for the hardcoded workspace; fetch full bodies on demand.~~ Complete traversals replace the cached index atomically; bodies are fetched when opening a note.
+- [x] ~~Render the full directory tree and open notes read-only with cached startup.~~ Nested folder navigation, indented block text/TODO status, scoped SQLite index/body cache, and pull-to-refresh. Cache loads after session validation; offline authentication/startup is not implemented.
+- [x] ~~Implement directory create/rename/move/delete within backend constraints.~~ Long-press folder actions, presence-aware rename/move patches, descendant exclusion for moves, and empty-folder deletion. No automatic mutation retry; refresh required after failures with potentially ambiguous outcomes.
+- [x] ~~Verify Phase 2 through fixtures and simulator build/tests.~~ Pagination, cache reopening/account isolation, late reads after sign-out, mutation retry gating, and optional patch fields are covered. Full suite: 15 macOS tests; 16 iOS tests (18 parameterized executions), zero failures.
+- [x] ~~Verify live workspace 4 index loading.~~ Relaunched simulator app and visually confirmed populated folders and notes with no cached/error banner.
+- [x] ~~Verify live note body reads with the account in workspace 4.~~ Included in the Phase 3 live smoke test.
+- [ ] Smoke-test folder create/rename/move/delete with the account in workspace 4.
 
 ### Phase 3: Block Editor And Save
 
-- [ ] Implement the editable block list with creation/deletion/indent/outdent/reorder.
-- [ ] Implement the Swift save coordinator with immediate local durability and debounced protocol-v1 saves.
-- [ ] Preserve pending request bytes, submitted generations, baseline revisions, and client-key mappings across restarts.
-- [ ] Implement note create/rename/move/delete through the save/command coordinator.
-- [ ] Add save states and manual conflict/retry/reload flows without losing local edits.
-- [ ] Verify crash recovery, ambiguous outcomes, in-flight edits, deletion, journal-create races, and account switching before expanding editable scope.
+- [x] ~~Implement the editable block list with creation/deletion/indent/outdent/reorder.~~ Inline title and multiline block editing, subtree-safe structural operations, stable client-key focus/identity, heading previews, and TODO indicators. Tap to edit; all block actions live in the long-press menu (empty notes offer add-first-block). Save status occupies a fixed-size slot beside the title; unchanged bindings/no-op actions do not trigger saves.
+- [x] ~~Implement the Swift save coordinator with immediate local durability and debounced protocol-v1 saves.~~ Account-owned actor queue, serialized immediate SQLite edit writes, 700 ms network debounce, and one editor/save queue per document. Local write failures keep in-memory text and block network preparation.
+- [x] ~~Preserve pending request bytes, submitted generations, baseline revisions, and client-key mappings across restarts.~~ Immutable envelopes, atomic acknowledgment/reconciliation, and a persisted live-refresh barrier prevent historical receipts from authorizing newer writes.
+- [x] ~~Implement note create/rename/move/delete through the save/command coordinator.~~ Live smoke verified create, title/text updates, nested parent mapping, folder move, and revision-checked deletion. Only clean acknowledged notes can be deleted.
+- [x] ~~Add save states and manual conflict/retry/reload flows without losing local edits.~~ Review local/server copies, save against the reviewed revision, confirm reload/discard, export, create a recovery copy, and archive rejected/resolved recovery. Unknown outcomes retain their requests and block discard/reload.
+- [x] ~~Verify crash recovery, ambiguous outcomes, in-flight edits, deletion, journal-create races, and account switching before expanding editable scope.~~ 27 macOS tests and 28 standard iOS tests pass. Coverage includes pre-send recovery, database reopening, lost responses, bad acknowledgments, in-flight create identity mapping, historical replay after deletion, explicit conflict resolution, account changes, concurrent opens, local persistence rejection, and untouched/edited journal-create races. The opt-in live smoke also passed; these are automated core/protocol checks, not a completed manual touch or real-device lifecycle review.
+- [x] ~~Review the touch editor with the owner before expanding to journals/TODOs.~~ Owner approved proceeding after refinements to save status, no-op saves, long-press actions, and TODO cycling. Full manual conflict/recovery exercises remain part of Phase 6.
 
 ### Phase 4: Journals
 
-- [ ] Add the Journals tab and date list with current/future journal availability.
-- [ ] Create missing journals on open, including safe `EXISTING_JOURNAL` handling.
-- [ ] Reuse the block editor and save flow for journals.
+- [x] ~~Add the Journals tab and date list with current/future journal availability.~~ Today plus tomorrow after 18:00 local time; Friday evening exposes Saturday through Monday. Existing journals sort newest-first; a date picker opens older dates. Shares the scoped, paginated document index/cache and separates journal recovery from Notes.
+- [x] ~~Create missing journals on open, including safe `EXISTING_JOURNAL` handling.~~ Stable per-date local draft keys prevent concurrent-open duplicates; retained requests survive restart. Untouched placeholders adopt existing journals, while edited drafts retain a reviewable conflict.
+- [x] ~~Reuse the block editor and save flow for journals.~~ Includes long-press TODO cycling, fixed-size inline save status, autosave, and recovery controls. Journals cannot move into folders; note deletion is not offered. 30 macOS tests and the simulator suite pass, including local date cutoff/year/DST boundaries and journal creation recovery.
+- [ ] Manually smoke-test journal date browsing and editing against the live account in the simulator.
 
 ### Phase 5: TODOs
 
-- [ ] Add My TODOs with user-scoped listing and status filters.
-- [ ] Create/edit TODOs and expose permitted deletion using retained protocol-v1 mutations.
-- [ ] Add block-level TODO controls in the note/journal editor.
-- [ ] Refresh TODOs and affected document bodies after mutations, preserving dirty drafts.
+Handoff (2026-09-30): My TODOs is implemented. Preserve the approved editor UX: fixed-size subtle save status beside the title, block actions in the long-press menu, no saves for no-op edits, and immediate clean-document reload with an inline spinner (confirm only when discarding edits). TODO rejection metadata uses a local SQLite migration, not a backend schema change. Changes remain uncommitted; no backend Go changes were needed.
 
-### Phase 6: Chat
+- [x] ~~Add My TODOs with user-scoped listing and status filters.~~ All/open/done/blocked/skipped; open includes todo and doing. Scoped SQLite read cache, pull-to-refresh, and source/current document links with source block references.
+- [x] ~~Create/edit TODOs and expose permitted deletion using retained protocol-v1 mutations.~~ Create assigned to the authenticated user; edit name/description/status with presence-aware patches. Delete is shown only after the backend user listing identifies the account as admin. Exact command bytes/IDs are committed before sending; uncertain requests block further mutations and expose explicit retry after restart. Definitive rejection is stored independently of caches and can be explicitly discarded. Permission/authentication failures retain requests.
+- [x] ~~Add the native-style TODO cycle to the note editor's long-press menu.~~ None → todo → done → none, saved through the document coordinator.
+- [x] ~~Add the remaining block TODO statuses (doing, blocked, skipped) and expose controls in the journal editor.~~ Shared Notes/Journals long-press menu now includes a TODO status submenu alongside the existing cycle command.
+- [x] ~~Refresh TODOs and affected document bodies after mutations, preserving dirty drafts.~~ Mutation acknowledgments atomically invalidate document/TODO read caches; open editors fetch live bodies and preserve dirty work as conflicts. Document saves refresh the TODO list. Fresh list reads are required before another TODO mutation.
+- [x] ~~Verify TODO mutation recovery with deterministic tests.~~ 34 macOS tests pass, including lost-create-response recovery across SQLite reopening, exact-byte replay, scope isolation, presence-aware clearing/omission, permission-gated deletion, persistent rejection, and dirty-document preservation after external changes.
+- [ ] Manually smoke-test live TODO create/edit/status/delete and document links in the simulator.
 
-- [ ] Add Chat with thread listing/detail and workspace chat.
-- [ ] Add note/journal contextual chat through `RunAIThreadTurn`.
-- [ ] Refresh affected document state after AI activity without replacing local edits; do not assume AI turns have the document-save replay guarantees.
-
-### Phase 7: Polish And Recovery
+### Phase 6: Polish And Recovery
 
 - [ ] Improve cached startup and bounded clean-cache eviction.
 - [ ] Add recent documents and server-backed search if needed.
@@ -366,7 +353,7 @@ Live checklist: mobile implementation has not started. Check off and strike thro
 
 ## Acceptance And Checkpoints
 
-- Core flows: authenticate, browse/manage notes and folders, edit block trees and journals, update standalone/block TODOs, and use workspace/document chat against the existing backend.
+- Core flows: authenticate, browse/manage notes and folders, edit block trees and journals, and update standalone/block TODOs against the existing backend.
 - Durability: acknowledged local edits survive restart; crash before send, lost response after server commit, and crash before local acknowledgment reuse one retained operation without duplicate effects or loss of newer edits.
 - Concurrency: a desktop/AI/TODO change causes safe refresh or a visible retained conflict, never silent overwrite. Test journal-create races and historical receipt replay after deletion.
 - Isolation: logout, expired credentials, backend/account changes, and late responses cannot expose or write another scope's data.
@@ -376,10 +363,9 @@ Live checklist: mobile implementation has not started. Check off and strike thro
 
 ## Risks And Open Questions
 
-- The exact hardcoded workspace ID must be chosen before implementation.
-- Minimum iOS version, bundle ID/signing and distribution method, and SQLite access library remain implementation checkpoints.
+- Workspace 4, iOS 26+, GRDB, and simulator-first development are confirmed. Choose the final bundle ID, signing team, and distribution method before device builds.
 - Swift and TypeScript recovery implementations can drift; shared fixtures and translated recovery scenarios are required, rather than assuming generated API types enforce client durability.
-- Connect-Swift integration must support the chosen retained-byte replay path and structured error decoding; verify this in Phase 1.
+- Generated reads and retained-byte transport pass intercepted HTTP tests; live workspace/index/body reads and note mutations also pass. Live folder-operation verification remains outstanding.
 - Block editing on mobile must stay simple enough to be usable while preserving the backend block tree.
 - Current TODO APIs are user-centric; V1 should treat the TODO tab as "my TODOs" unless multi-user assignment becomes necessary.
 - Block TODO creation/editing should rely on document save reconciliation unless backend gaps appear during implementation.

@@ -47,6 +47,22 @@ public struct StoredDraft: Codable, Equatable, Sendable {
     public var acknowledgedGeneration: Int64
     public var baseline: Data?
     public var pending: PendingOperation?
+    public var conflict: String?
+    public var serverCopy: Data?
+    public var serverMissing: Bool?
+    public var rejected: Bool?
+    public var needsRefresh: Bool?
+    public var deleted: Bool?
+    public var archived: Bool?
+    public var lastError: String?
+
+    public init(snapshot: Data, baseline: Data?) {
+        schemaVersion = 1; localVersion = 0; self.snapshot = snapshot
+        generation = 0; acknowledgedGeneration = baseline == nil ? -1 : 0
+        self.baseline = baseline
+    }
+
+    public var dirty: Bool { generation > acknowledgedGeneration }
 }
 
 public enum DraftStorageError: LocalizedError {
@@ -83,6 +99,18 @@ public actor DraftRepository {
                 );
                 """)
         }
+        migrations.registerMigration("mobile-read-cache-v1") { db in
+            try db.execute(sql: """
+                CREATE TABLE read_cache (
+                    backend TEXT NOT NULL, user_id INTEGER NOT NULL, workspace_id INTEGER NOT NULL,
+                    cache_key TEXT NOT NULL, payload BLOB NOT NULL,
+                    PRIMARY KEY (backend, user_id, workspace_id, cache_key)
+                );
+                """)
+        }
+        migrations.registerMigration("mobile-command-rejections-v1") { db in
+            try db.execute(sql: "ALTER TABLE commands ADD COLUMN rejection TEXT")
+        }
         try migrations.migrate(database)
     }
 
@@ -97,6 +125,25 @@ public actor DraftRepository {
         try database.read { db in try Self.read(db, scope: scope, key: key) }
     }
 
+    public func cached(scope: AccountScope, key: String) throws -> Data? {
+        try database.read { db in
+            try Data.fetchOne(db, sql: "SELECT payload FROM read_cache WHERE backend = ? AND user_id = ? AND workspace_id = ? AND cache_key = ?",
+                arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID, key])
+        }
+    }
+
+    public func cache(scope: AccountScope, key: String, data: Data?) throws {
+        try database.write { db in
+            if let data {
+                try db.execute(sql: "INSERT OR REPLACE INTO read_cache VALUES (?, ?, ?, ?, ?)",
+                    arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID, key, data])
+            } else {
+                try db.execute(sql: "DELETE FROM read_cache WHERE backend = ? AND user_id = ? AND workspace_id = ? AND cache_key = ?",
+                    arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID, key])
+            }
+        }
+    }
+
     @discardableResult
     public func saveDraft(scope: AccountScope, key: String, snapshot: Data, generation: Int64,
                           expectedLocalVersion: Int64) throws -> StoredDraft {
@@ -106,8 +153,7 @@ public actor DraftRepository {
             guard generation >= 0, existing == nil || generation > existing!.generation else {
                 throw DraftStorageError.invalidTransition
             }
-            var record = existing ?? StoredDraft(schemaVersion: 1, localVersion: 0, snapshot: snapshot,
-                generation: generation, acknowledgedGeneration: -1, baseline: nil, pending: nil)
+            var record = existing ?? StoredDraft(snapshot: snapshot, baseline: nil)
             record.snapshot = snapshot
             record.generation = generation
             record.localVersion += 1
@@ -170,7 +216,7 @@ public actor DraftRepository {
                 }
                 return
             }
-            try db.execute(sql: "INSERT INTO commands VALUES (?, ?, ?, ?, ?)",
+            try db.execute(sql: "INSERT INTO commands (backend, user_id, workspace_id, mutation_id, payload) VALUES (?, ?, ?, ?, ?)",
                            arguments: args + [payload])
         }
     }
@@ -187,10 +233,65 @@ public actor DraftRepository {
         }
     }
 
+    public func finishCommand(_ operation: PendingOperation) throws {
+        try database.write { db in
+            let args = Self.arguments(operation.scope, operation.mutationID)
+            guard let payload = try Data.fetchOne(db, sql: "SELECT payload FROM commands WHERE backend=? AND user_id=? AND workspace_id=? AND mutation_id=?", arguments: args),
+                  try JSONDecoder().decode(PendingOperation.self, from: payload) == operation else {
+                throw DraftStorageError.invalidTransition
+            }
+            try db.execute(sql: "DELETE FROM commands WHERE backend=? AND user_id=? AND workspace_id=? AND mutation_id=?", arguments: args)
+            let scope = operation.scope
+            try db.execute(sql: "DELETE FROM read_cache WHERE backend=? AND user_id=? AND workspace_id=? AND (cache_key='index' OR cache_key='todos' OR cache_key LIKE 'body:%')",
+                arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID])
+        }
+    }
+
+    public func rejectCommand(_ operation: PendingOperation, message: String) throws {
+        try database.write { db in
+            try db.execute(sql: "UPDATE commands SET rejection=? WHERE backend=? AND user_id=? AND workspace_id=? AND mutation_id=?",
+                arguments: [message] + Self.arguments(operation.scope, operation.mutationID))
+        }
+    }
+
+    public func rejectedCommands(scope: AccountScope) throws -> Set<String> {
+        try database.read { db in
+            Set(try String.fetchAll(db, sql: "SELECT mutation_id FROM commands WHERE backend=? AND user_id=? AND workspace_id=? AND rejection IS NOT NULL",
+                arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID]))
+        }
+    }
+
     public func retainedDraftCount(scope: AccountScope) throws -> Int {
         try database.read { db in
             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM drafts WHERE backend=? AND user_id=? AND workspace_id=?",
                 arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID]) ?? 0
+        }
+    }
+
+    /// Atomic transitions serialize edits with acknowledgments across actor suspension points.
+    @discardableResult
+    public func transition(scope: AccountScope, key: String, invalidateCache: Bool = false,
+                           update: @Sendable (StoredDraft?) throws -> StoredDraft) throws -> StoredDraft {
+        try database.write { db in
+            let previous = try Self.read(db, scope: scope, key: key)
+            var next = try update(previous)
+            next.localVersion = (previous?.localVersion ?? 0) + 1
+            try Self.write(db, scope: scope, key: key, record: next)
+            if invalidateCache {
+                try db.execute(sql: "DELETE FROM read_cache WHERE backend=? AND user_id=? AND workspace_id=?",
+                    arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID])
+            }
+            return next
+        }
+    }
+
+    public func allDrafts(scope: AccountScope) throws -> [String: StoredDraft] {
+        try database.read { db in
+            let keys = try String.fetchAll(db, sql: "SELECT draft_key FROM drafts WHERE backend=? AND user_id=? AND workspace_id=?",
+                arguments: [scope.backend.rawValue, scope.userID, scope.workspaceID])
+            return try Dictionary(uniqueKeysWithValues: keys.compactMap { key in
+                try Self.read(db, scope: scope, key: key).map { (key, $0) }
+            })
         }
     }
 

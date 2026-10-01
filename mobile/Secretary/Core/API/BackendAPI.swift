@@ -33,7 +33,7 @@ public protocol SessionAPI: Sendable {
 
 public struct BackendAPI: SessionAPI, Sendable {
     private let session: URLSession
-    private let httpClient: URLSessionHTTPClient
+    let httpClient: URLSessionHTTPClient
 
     public init(configuration: URLSessionConfiguration = .ephemeral) {
         configuration.urlCache = nil

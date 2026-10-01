@@ -45,10 +45,9 @@ private struct SessionView: View {
             ProgressView("Restoring session")
         } else if model.session != nil {
             TabView {
-                Tab("Notes", systemImage: "doc.text") { FeaturePlaceholder(title: "Notes", icon: "doc.text") }
-                Tab("Journals", systemImage: "calendar") { FeaturePlaceholder(title: "Journals", icon: "calendar") }
-                Tab("TODOs", systemImage: "checklist") { FeaturePlaceholder(title: "TODOs", icon: "checklist") }
-                Tab("Chat", systemImage: "bubble.left.and.bubble.right") { FeaturePlaceholder(title: "Chat", icon: "bubble.left.and.bubble.right") }
+                Tab("Notes", systemImage: "doc.text") { NotesView(model: model.notes) }
+                Tab("Journals", systemImage: "calendar") { JournalsView(model: model.notes) }
+                Tab("TODOs", systemImage: "checklist") { TodosView(model: model.todos, notes: model.notes) }
                 Tab("Settings", systemImage: "gearshape") { SettingsView(model: model) }
             }
             .safeAreaInset(edge: .top, spacing: 0) {

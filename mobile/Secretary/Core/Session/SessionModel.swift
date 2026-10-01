@@ -10,6 +10,8 @@ public final class SessionModel {
     public private(set) var message: String?
     public private(set) var retainedDraftCount = 0
     public private(set) var backendURL: String
+    public let notes: NotesModel
+    public let todos: TodosModel
 
     private let api: any SessionAPI
     private let credentials: any CredentialStore
@@ -23,8 +25,28 @@ public final class SessionModel {
         self.api = api
         self.credentials = credentials
         self.drafts = drafts
+        notes = NotesModel(api: BackendAPI(), store: drafts)
+        todos = TodosModel(store: drafts)
         self.preferences = preferences
         backendURL = preferences.string(forKey: "backendURL") ?? AppConfiguration.defaultBackendURL
+        notes.onAuthenticationFailure = { [weak self] in
+            guard let self else { return }
+            self.notes.suspend()
+            self.todos.suspend()
+            self.status = .reauthenticationRequired
+            self.message = "Your session expired. Sign out and sign in again."
+        }
+        todos.onAuthenticationFailure = { [weak self] in self?.notes.onAuthenticationFailure?() }
+        notes.editors.onChange = { [weak self] in
+            guard let self else { return }
+            await self.notes.refresh()
+            await self.todos.refresh()
+        }
+        todos.onMutation = { [weak self] in
+            guard let self else { return }
+            await self.notes.editors.refreshAfterTodoMutation()
+            await self.notes.refresh()
+        }
     }
 
     public func restore() async {
@@ -40,6 +62,8 @@ public final class SessionModel {
     public func login(backendURL: String, email: String, password: String) async {
         epoch += 1
         let attempt = epoch
+        notes.clear()
+        todos.clear()
         status = .validating
         session = nil
         retainedDraftCount = 0
@@ -64,6 +88,8 @@ public final class SessionModel {
             session = validated
             retainedDraftCount = count
             status = .ready
+            notes.activate(candidate)
+            todos.activate(candidate)
         } catch {
             guard attempt == epoch else { return }
             fail(error)
@@ -76,6 +102,8 @@ public final class SessionModel {
         let attempt = epoch
         status = .validating
         message = nil
+        notes.suspend()
+        todos.suspend()
         do {
             let validated = try await api.validate(candidate)
             guard attempt == epoch else { return }
@@ -84,6 +112,8 @@ public final class SessionModel {
             session = validated
             retainedDraftCount = count
             status = .ready
+            notes.activate(candidate)
+            todos.activate(candidate)
         } catch {
             guard attempt == epoch else { return }
             fail(error)
@@ -91,6 +121,8 @@ public final class SessionModel {
     }
 
     public func logout() {
+        notes.clear()
+        todos.clear()
         epoch += 1
         session = nil
         activeCredentials = nil
