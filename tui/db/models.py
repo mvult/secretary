@@ -10,6 +10,7 @@ class Recording(Model):
     created_at = fields.DatetimeField(auto_now_add=True)
     name = fields.TextField()
     audio_url = fields.TextField(null=True)
+    audio_object_key = fields.TextField(null=True)
     transcript = fields.TextField(null=True)
     summary = fields.TextField(null=True)
     local_audio = fields.TextField(null=True)
@@ -54,8 +55,7 @@ class Recording(Model):
         # Check NAS storage
         has_nas = bool(self.nas_audio and os.path.exists(self.nas_audio))
 
-        # Check cloud storage (Azure)
-        has_cloud = bool(self.audio_url and self.audio_url.startswith("https://"))
+        has_cloud = bool(getattr(self, "audio_object_key", None) or self.audio_url)
 
         return f"{'t' if has_local else 'f'}/{'t' if has_nas else 'f'}/{'t' if has_cloud else 'f'}"
 
@@ -66,7 +66,7 @@ class Recording(Model):
 
         has_local = bool(self.local_audio and os.path.exists(self.local_audio))
         has_nas = bool(self.nas_audio and os.path.exists(self.nas_audio))
-        has_cloud = bool(self.audio_url and self.audio_url.startswith("https://"))
+        has_cloud = bool(getattr(self, "audio_object_key", None) or self.audio_url)
 
         return " | ".join(
             [

@@ -42,10 +42,28 @@ test('navigation skips hidden descendants in both directions and at page end', (
   assert.equal(state.focusedId, 'parent');
 });
 
-test('opening a child for editing reveals it; directly focusing a hidden node reveals ancestors', () => {
+test('opening below a folded node inserts after its subtree and preserves the fold', () => {
   const folded = reduceOutlineState(initial(), { type: 'toggleFold' });
   const editing = reduceOutlineState(folded, { type: 'openBelow' });
-  assert.ok(visible(editing).includes(editing.editingId!));
+  assert.deepEqual(editing.pages[0].nodes.map((node) => node.id), ['parent', 'child', 'grandchild', editing.editingId, 'last']);
+  assert.equal(editing.pages[0].nodes[3].parentId, null);
+  assert.deepEqual(editing.collapsedNodeIds, ['parent']);
+  assert.deepEqual(visible(editing), ['parent', editing.editingId, 'last']);
+});
+
+test('splitting a folded node inserts after its subtree at the same nesting level', () => {
+  let state = reduceOutlineState(initial(), { type: 'toggleFold', nodeId: 'child' });
+  state = reduceOutlineState(state, { type: 'focus', nodeId: 'child' });
+  state = reduceOutlineState(state, { type: 'startEditing' });
+  state = reduceOutlineState(state, { type: 'splitNodeAtCursor', selectionStart: 5, selectionEnd: 5 });
+  assert.deepEqual(state.pages[0].nodes.map((node) => node.id), ['parent', 'child', 'grandchild', state.editingId, 'last']);
+  assert.equal(state.pages[0].nodes[3].parentId, 'parent');
+  assert.deepEqual(state.collapsedNodeIds, ['child']);
+  assert.deepEqual(visible(state), ['parent', 'child', state.editingId, 'last']);
+});
+
+test('directly focusing a hidden node reveals ancestors', () => {
+  const folded = reduceOutlineState(initial(), { type: 'toggleFold' });
   const focused = reduceOutlineState(folded, { type: 'focus', nodeId: 'grandchild' });
   assert.ok(visible(focused).includes('grandchild'));
 });

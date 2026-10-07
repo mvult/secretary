@@ -161,7 +161,9 @@ class RecordingsListWidget(Container):
         """Delete the specified recording"""
         if self.db_connected:
             # TODO: Add confirmation dialog
-            await RecordingService.delete_recording(recording_id)
+            if not await RecordingService.delete_recording(recording_id):
+                self.notify("Deletion failed; see logs", severity="error")
+                return
             self.deselect_recording()
             await self.refresh_recordings_list()
 

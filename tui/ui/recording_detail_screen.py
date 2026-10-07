@@ -20,6 +20,7 @@ from db.service import (
     UserService,
 )
 from services.analysis_service import analyze_transcript
+from services.speaking_analysis import speaking_analysis_text
 from services.storage_manager import StorageManager
 from services.transcription_service import TranscriptionService
 from components.analysis_modal import AnalysisModal
@@ -85,6 +86,7 @@ class RecordingDetailScreen(Screen):
         "transcript": "Transcript",
         "summary": "Summary",
         "todos": "TODOs",
+        "speaking": "Speaking Time (word-based)",
     }
 
     BINDINGS = [
@@ -117,6 +119,7 @@ class RecordingDetailScreen(Screen):
         self._transcript_text = "No transcript available."
         self._summary_text = "No summary available."
         self._todos_text = "No TODOs available."
+        self._speaking_text = "No transcript available."
         self._transcription_status_text = "Transcription: Not started"
         self._transcription_status_note: Optional[str] = None
         self._analysis_status_text = "Analysis: Loading..."
@@ -213,10 +216,18 @@ class RecordingDetailScreen(Screen):
         self._todos_text = todos_text
 
         available_views: List[str] = ["transcript"]
+        if self.recording.transcript and self.recording.transcript.strip():
+            mappings = await SpeakerService.get_speaker_mappings(self.recording_id)
+            users = await UserService.get_all_users() if mappings else []
+            self._speaking_text = speaking_analysis_text(
+                self.recording.transcript, mappings, users
+            )
         if summary_present:
             available_views.append("summary")
         if todos_available:
             available_views.append("todos")
+        if self.recording.transcript and self.recording.transcript.strip():
+            available_views.append("speaking")
 
         self._set_available_views(available_views)
 
@@ -229,6 +240,9 @@ class RecordingDetailScreen(Screen):
             elif self.active_view == "todos" and todos_available:
                 text_widget.text = self._todos_text
                 label_widget.update(self.VIEW_LABELS["todos"])
+            elif self.active_view == "speaking":
+                text_widget.text = self._speaking_text
+                label_widget.update(self.VIEW_LABELS["speaking"])
             else:
                 text_widget.text = self._transcript_text
                 label_widget.update(self.VIEW_LABELS["transcript"])
@@ -280,6 +294,9 @@ class RecordingDetailScreen(Screen):
         elif self.active_view == "todos":
             text_widget.text = self._todos_text
             label_widget.update(self.VIEW_LABELS["todos"])
+        elif self.active_view == "speaking":
+            text_widget.text = self._speaking_text
+            label_widget.update(self.VIEW_LABELS["speaking"])
         else:
             text_widget.text = self._transcript_text
             label_widget.update(self.VIEW_LABELS["transcript"])
@@ -289,6 +306,8 @@ class RecordingDetailScreen(Screen):
             return self._summary_text
         if self.active_view == "todos":
             return self._todos_text
+        if self.active_view == "speaking":
+            return self._speaking_text
         return self._transcript_text
 
     def _render_analysis_status(self) -> None:
@@ -381,7 +400,9 @@ class RecordingDetailScreen(Screen):
         """Delete the recording"""
         if self.recording:
             try:
-                await RecordingService.delete_recording(self.recording_id)
+                if not await RecordingService.delete_recording(self.recording_id):
+                    self.notify("Deletion failed; see logs", severity="error")
+                    return
                 logging.info(f"Deleted recording {self.recording_id}")
                 self._schedule_list_refresh()
                 self.app.pop_screen()

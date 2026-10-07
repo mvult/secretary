@@ -53,6 +53,58 @@ private func readBody(_ request: URLRequest) -> Data {
     return body
 }
 
+private final class AudioFixtureState: @unchecked Sendable {
+    let lock = NSLock()
+    var completed = false
+    var puts = 0
+    var bodies: [Data] = []
+}
+
+@Test func audioUploadLostFinalResponseRetriesReceiptWithoutUploadingAgain() async throws {
+    let host = "\(UUID().uuidString.lowercased()).example.com"
+    let objectHost = "\(UUID().uuidString.lowercased()).example.com"
+    let state = AudioFixtureState()
+    let file = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).m4a")
+    try Data("audio".utf8).write(to: file)
+    let upload = AudioUploadRequest(id: UUID(), name: "Meeting", duration: 12, sizeBytes: 5)
+    FixtureProtocol.fixtures.set(host) { request in
+        try state.lock.withLock {
+            #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer secret")
+            if request.url!.path == "/api/audio/uploads" {
+                let body = readBody(request)
+                state.bodies.append(body)
+                #expect(try JSONDecoder().decode(AudioUploadRequest.self, from: body) == upload)
+                if state.completed { return (200, Data("{\"complete\":true,\"recording_id\":42}".utf8)) }
+                return (200, Data("{\"complete\":false,\"url\":\"https://\(objectHost)/audio\",\"headers\":{\"Content-Type\":[\"audio/mp4\"]}}".utf8))
+            }
+            #expect(request.url!.path == "/api/audio/uploads/\(upload.id.uuidString.lowercased())/complete")
+            state.completed = true
+            throw URLError(.networkConnectionLost)
+        }
+    }
+    FixtureProtocol.fixtures.set(objectHost) { request in
+        state.lock.withLock { state.puts += 1 }
+        #expect(request.httpMethod == "PUT")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+        #expect(request.value(forHTTPHeaderField: "Content-Type") == "audio/mp4")
+        return (200, Data())
+    }
+    defer {
+        FixtureProtocol.fixtures.remove(host); FixtureProtocol.fixtures.remove(objectHost)
+        try? FileManager.default.removeItem(at: file)
+    }
+    let config = URLSessionConfiguration.ephemeral; config.protocolClasses = [FixtureProtocol.self]
+    let credentials = Credentials(backend: try BackendAddress("https://\(host)"), token: "secret", userID: 7)
+    do {
+        _ = try await AudioUploadAPI(configuration: config).upload(upload, file: file, credentials: credentials)
+        Issue.record("Expected lost response")
+    } catch { #expect((error as? URLError)?.code == .networkConnectionLost) }
+    let id = try await AudioUploadAPI(configuration: config).upload(upload, file: file, credentials: credentials)
+    #expect(id == 42)
+    state.lock.withLock { #expect(state.puts == 1 && state.bodies.count == 2) }
+    #expect(FileManager.default.fileExists(atPath: file.path))
+}
+
 @Test func generatedProtocolPreservesPresenceInt64AndTypedErrors() throws {
     var create = Secretary_V1_SaveDocumentRequest()
     create.protocolVersion = 1

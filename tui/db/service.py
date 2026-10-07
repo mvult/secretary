@@ -119,20 +119,20 @@ class RecordingService:
             storage_manager = StorageManager()
             result = await storage_manager.delete_from_all_storage(recording)
 
-            # Log any file deletion errors but still delete from database
+            # Keep the row/object reference when any deletion failed.
             if result["errors"]:
                 for error in result["errors"]:
                     logging.warning(
                         f"File deletion error for recording {recording_id}: {error}"
                     )
+                return False
 
             if result["deleted_locations"]:
                 logging.info(
                     f"Deleted recording {recording_id} files from: {', '.join(result['deleted_locations'])}"
                 )
 
-            # Delete from database
-            await recording.delete()
+            # The backend deleted the database row after deleting B2 audio.
             return True
         except Exception as e:
             logging.error(f"Error deleting recording: {e}")

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        D00000000000000000000001 = {isa = PBXBuildFile; fileRef = D00000000000000000000002; };
 		A00000000000000000000001 /* Secretary/App/SecretaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000011 /* Secretary/App/SecretaryApp.swift */; };
 		A00000000000000000000002 /* SecretaryCore in Frameworks */ = {isa = PBXBuildFile; productRef = A00000000000000000000071 /* SecretaryCore */; };
 		A00000000000000000000003 /* SecretaryTests/StorageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00000000000000000000013 /* SecretaryTests/StorageTests.swift */; };
@@ -32,6 +33,7 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+        D00000000000000000000002 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secretary/App/RecordingsView.swift; sourceTree = "<group>"; };
 		A00000000000000000000011 /* Secretary/App/SecretaryApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Secretary/App/SecretaryApp.swift; sourceTree = "<group>"; };
 		A00000000000000000000012 /* Secretary/App/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Secretary/App/Info.plist; sourceTree = "<group>"; };
 		A00000000000000000000013 /* SecretaryTests/StorageTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SecretaryTests/StorageTests.swift; sourceTree = "<group>"; };
@@ -72,6 +74,7 @@
 		A00000000000000000000020 = {
 			isa = PBXGroup;
 			children = (
+				D00000000000000000000002,
 				A00000000000000000000011 /* Secretary/App/SecretaryApp.swift */,
 				B00000000000000000000002 /* Secretary/App/NotesView.swift */,
 				B00000000000000000000004 /* Secretary/App/NoteEditorView.swift */,
@@ -192,6 +195,7 @@
 				B00000000000000000000003 /* Secretary/App/NoteEditorView.swift in Sources */,
 				B00000000000000000000001 /* Secretary/App/NotesView.swift in Sources */,
 				C00000000000000000000001 /* Secretary/App/TodosView.swift in Sources */,
+				D00000000000000000000001,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

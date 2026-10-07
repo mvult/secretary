@@ -39,6 +39,7 @@ struct SecretaryApp: App {
 
 private struct SessionView: View {
     @Bindable var model: SessionModel
+    @State private var recorder = MobileRecorder()
 
     var body: some View {
         if model.status == .restoring {
@@ -48,6 +49,7 @@ private struct SessionView: View {
                 Tab("Notes", systemImage: "doc.text") { NotesView(model: model.notes) }
                 Tab("Journals", systemImage: "calendar") { JournalsView(model: model.notes) }
                 Tab("TODOs", systemImage: "checklist") { TodosView(model: model.todos, notes: model.notes) }
+                Tab("Record", systemImage: "mic") { RecordingsView(session: model, recorder: recorder) }
                 Tab("Settings", systemImage: "gearshape") { SettingsView(model: model) }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -56,6 +58,8 @@ private struct SessionView: View {
                         .font(.caption).frame(maxWidth: .infinity).padding(8).background(.thinMaterial)
                 }
             }
+            .onChange(of: model.session?.scope) { _, _ in recorder.stop() }
+            .onDisappear { recorder.stop() }
         } else {
             LoginView(model: model)
         }

@@ -10,3 +10,8 @@ services:
     environment:
       - DATABASE_URL=${DATABASE_URL}
       - JWT_SECRET=${JWT_SECRET}
+      - B2_ENDPOINT=${B2_ENDPOINT:-}
+      - B2_REGION=${B2_REGION:-}
+      - B2_BUCKET=${B2_BUCKET:-}
+      - B2_KEY_ID=${B2_KEY_ID:-}
+      - B2_APPLICATION_KEY=${B2_APPLICATION_KEY:-}

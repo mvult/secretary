@@ -45,6 +45,7 @@ type Server struct {
 	aiBaseURL string
 	aiModel   string
 	whatsapp  *whatsappsvc.Service
+	audio     audioStore
 
 	s400Mu       sync.Mutex
 	s400Sessions map[string]s400ScaleSession
@@ -66,6 +67,10 @@ func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.Handle("POST /api/audio/uploads", s.authMiddleware(http.HandlerFunc(s.handleBeginAudioUpload)))
+	mux.Handle("POST /api/audio/uploads/{id}/complete", s.authMiddleware(http.HandlerFunc(s.handleCompleteAudioUpload)))
+	mux.Handle("GET /api/recordings/{id}/audio", s.authMiddleware(http.HandlerFunc(s.handleGetRecordingAudio)))
+	mux.Handle("DELETE /api/recordings/{id}/audio", s.authMiddleware(http.HandlerFunc(s.handleDeleteRecordingAudio)))
 	mux.HandleFunc("/api/activity-events", s.handleActivityEvent)
 	mux.Handle("/api/whatsapp/status", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppStatus)))
 	mux.Handle("/api/whatsapp/qr", s.authMiddleware(http.HandlerFunc(s.handleWhatsAppQR)))
@@ -233,14 +238,15 @@ func (s *Server) ListRecordings(ctx context.Context, req *connect.Request[secret
 
 	var recordings []*secretaryv1.Recording
 	for _, row := range rows {
+		audioURL, _ := s.recordingAudioURL(ctx, row.AudioObjectKey.String, row.AudioUrl.String)
 		rec := &secretaryv1.Recording{
 			Id:         int64(row.ID),
 			CreatedAt:  formatTime(row.CreatedAt),
 			Name:       row.Name.String,
-			AudioUrl:   row.AudioUrl.String,
+			AudioUrl:   audioURL,
 			Transcript: row.Transcript.String,
 			Summary:    row.Summary.String,
-			HasAudio:   row.AudioUrl.String != "",
+			HasAudio:   row.AudioUrl.String != "" || row.AudioObjectKey.Valid,
 		}
 		if row.Duration.Valid {
 			rec.Duration = row.Duration.Int32
@@ -260,14 +266,18 @@ func (s *Server) GetRecording(ctx context.Context, req *connect.Request[secretar
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to fetch recording"))
 	}
 
+	audioURL, audioErr := s.recordingAudioURL(ctx, row.AudioObjectKey.String, row.AudioUrl.String)
+	if audioErr != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, audioErr)
+	}
 	rec := &secretaryv1.Recording{
 		Id:         int64(row.ID),
 		CreatedAt:  formatTime(row.CreatedAt),
 		Name:       row.Name.String,
-		AudioUrl:   row.AudioUrl.String,
+		AudioUrl:   audioURL,
 		Transcript: row.Transcript.String,
 		Summary:    row.Summary.String,
-		HasAudio:   row.AudioUrl.String != "",
+		HasAudio:   row.AudioUrl.String != "" || row.AudioObjectKey.Valid,
 	}
 	if row.Duration.Valid {
 		rec.Duration = row.Duration.Int32
@@ -303,7 +313,10 @@ func (s *Server) DeleteRecording(ctx context.Context, req *connect.Request[secre
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only admins can delete recordings"))
 	}
 
-	if err := s.queries.DeleteRecording(ctx, int32(req.Msg.Id)); err != nil {
+	if !validDatabaseID(req.Msg.Id, false) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid recording ID"))
+	}
+	if err := s.removeRecordingAudio(ctx, int32(req.Msg.Id), true); err != nil {
 		return nil, connect.NewError(connect.CodeInternal, errors.New("failed to delete recording"))
 	}
 	return connect.NewResponse(&secretaryv1.DeleteRecordingResponse{}), nil

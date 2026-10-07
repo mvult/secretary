@@ -16,6 +16,8 @@
     <key>UISupportedInterfaceOrientations</key>
     <array><string>UIInterfaceOrientationPortrait</string><string>UIInterfaceOrientationLandscapeLeft</string><string>UIInterfaceOrientationLandscapeRight</string></array>
     <key>NSLocalNetworkUsageDescription</key><string>Connect to your Secretary backend on the local network.</string>
+    <key>NSMicrophoneUsageDescription</key><string>Record meetings and upload the audio to Secretary for transcription.</string>
+    <key>UIBackgroundModes</key><array><string>audio</string></array>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsLocalNetworking</key><true/></dict>
 </dict>

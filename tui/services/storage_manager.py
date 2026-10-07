@@ -5,8 +5,8 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from services.azure_storage import AzureBlobStorage
-from services.audio_files import CANONICAL_AUDIO_SUFFIX, storage_name
+from services.backend_storage import BackendStorage
+from services.audio_files import storage_name
 from db.service import RecordingService
 import logging
 
@@ -14,32 +14,21 @@ import logging
 class StorageManager:
     def __init__(self):
         self.nas_dir = "/Volumes/s3/sec-recordings"
-        conn_str = os.getenv("AZURE_CONNECTION_STRING")
-        if not conn_str:
-            logging.warning("AZURE_CONNECTION_STRING is not set")
-            # We can still initialize, but cloud ops will fail. 
-            # Or we can raise. Given the usage, maybe better to warn?
-            # Existing code passed None which caused AzureBlobStorage to have None connection_string.
-            # My updated AzureBlobStorage raises ValueError on None.
-            # So we should probably handle it gracefully here if we want the app to start without cloud.
-            self.azure_storage = None
-        else:
-            try:
-                self.azure_storage = AzureBlobStorage(conn_str)
-            except ValueError as e:
-                logging.error(f"Failed to initialize Azure Storage: {e}")
-                self.azure_storage = None
+        self.cloud = BackendStorage()
 
     def _download_from_cloud_sync(self, url: str, dest_path: str) -> bool:
-        response = requests.get(url, stream=True)
-        response.raise_for_status()
-
         os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-
-        with open(dest_path, "wb") as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-
+        temporary = dest_path + ".part"
+        try:
+            with requests.get(url, stream=True, timeout=(30, 120)) as response:
+                response.raise_for_status()
+                with open(temporary, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=65536):
+                        f.write(chunk)
+            os.replace(temporary, dest_path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
         return True
 
     def _copy_file_sync(self, source: str, dest: str) -> bool:
@@ -70,8 +59,8 @@ class StorageManager:
             return {"type": "nas", "path": recording.nas_audio}
         
         # Check cloud third
-        if recording.audio_url and recording.audio_url.startswith('https://'):
-            return {"type": "cloud", "path": recording.audio_url}
+        if getattr(recording, "audio_object_key", None) or recording.audio_url:
+            return {"type": "cloud", "path": await self.cloud.download_url(recording.id)}
         
         return None
     
@@ -88,7 +77,7 @@ class StorageManager:
             count += 1
             
         # Check cloud
-        if recording.audio_url and recording.audio_url.startswith('https://'):
+        if getattr(recording, "audio_object_key", None) or recording.audio_url:
             count += 1
             
         return count
@@ -181,57 +170,29 @@ class StorageManager:
                 return {"success": False, "error": f"Failed to copy to NAS: {e}"}
     
     async def toggle_cloud_storage(self, recording) -> Dict[str, Any]:
-        """Toggle cloud storage for a recording"""
-        if not self.azure_storage:
-            return {"success": False, "error": "Azure Storage not configured"}
-
-        has_cloud = recording.audio_url and recording.audio_url.startswith('https://')
-        
-        if has_cloud:
-            # Check if this is the only storage location
-            if self.count_storage_locations(recording) <= 1:
-                return {"success": False, "error": "Cannot delete the only remaining copy"}
-            
-            # Delete cloud file
-            try:
-                blob_name = storage_name(recording, recording.audio_url or CANONICAL_AUDIO_SUFFIX)
-                result = await self.azure_storage.delete_file(blob_name)
-                
-                if result['success']:
-                    await RecordingService.update_recording(recording.id, audio_url=None)
-                    return {"success": True, "action": "deleted", "message": "Deleted cloud file"}
-                else:
-                    return {"success": False, "error": f"Failed to delete cloud file: {result.get('error', 'Unknown error')}"}
-            except Exception as e:
-                return {"success": False, "error": f"Failed to delete cloud file: {e}"}
-        else:
-            # Upload from first available source to cloud
-            source_info = await self.get_first_available_source(recording)
-            if not source_info:
-                return {"success": False, "error": "No source file available to upload"}
-            
-            try:
-                # If source is cloud, we can't upload it to cloud (that would be pointless)
-                if source_info["type"] == "cloud":
-                    return {"success": False, "error": "Cannot upload cloud file to cloud"}
-                
-                result = await self.azure_storage.upload_file(
-                    source_info["path"],
-                    blob_name=storage_name(recording, source_info["path"])
-                )
-                
-                if result['success']:
-                    await RecordingService.update_recording(recording.id, audio_url=result['url'])
-                    return {"success": True, "action": "uploaded", "message": f"Uploaded to cloud from {source_info['type']}: {result['url']}"}
-                else:
-                    return {"success": False, "error": result.get('error', 'Upload failed')}
-            except Exception as e:
-                return {"success": False, "error": f"Failed to upload to cloud: {e}"}
+        """Cloud mutations and credentials belong to the backend."""
+        try:
+            if getattr(recording, "audio_object_key", None) or recording.audio_url:
+                if self.count_storage_locations(recording) <= 1:
+                    return {"success": False, "error": "Cannot delete the only remaining copy"}
+                await self.cloud.delete_audio(recording.id)
+                return {"success": True, "action": "deleted", "message": "Deleted B2 audio"}
+            source = await self.get_first_available_source(recording)
+            if not source or source["type"] == "cloud":
+                return {"success": False, "error": "No local or NAS audio to upload"}
+            return await self.cloud.upload(recording, source["path"])
+        except Exception as e:
+            return {"success": False, "error": str(e)}
     
     async def delete_from_all_storage(self, recording) -> Dict[str, Any]:
         """Delete recording from all storage locations"""
         deleted_locations = []
         errors = []
+        # Check authorization and finish cloud deletion before touching local copies.
+        try:
+            await self.cloud.delete_audio(recording.id)
+        except Exception as e:
+            return {"deleted_locations": [], "errors": [str(e)], "success": False}
         
         # Delete from local
         if recording.local_audio and os.path.exists(recording.local_audio):
@@ -249,23 +210,16 @@ class StorageManager:
             except Exception as e:
                 errors.append(f"Failed to delete NAS file: {e}")
         
-        # Delete from cloud
-        if recording.audio_url and recording.audio_url.startswith('https://'):
-            if self.azure_storage:
-                try:
-                    blob_name = storage_name(recording, recording.audio_url or CANONICAL_AUDIO_SUFFIX)
-                    result = await self.azure_storage.delete_file(blob_name)
-                    if result['success']:
-                        deleted_locations.append("cloud")
-                    else:
-                        errors.append(f"Failed to delete cloud file: {result.get('error', 'Unknown error')}")
-                except Exception as e:
-                    errors.append(f"Failed to delete cloud file: {e}")
-            else:
-                errors.append("Azure Storage not configured")
+        # Backend deletion also tombstones completed uploads so retries cannot recreate them.
+        if not errors:
+            try:
+                await self.cloud.delete_recording(recording.id)
+                deleted_locations.append("backend")
+            except Exception as e:
+                errors.append(f"Failed to delete recording: {e}")
         
         return {
             "deleted_locations": deleted_locations,
             "errors": errors,
-            "success": len(deleted_locations) > 0
+            "success": not errors
         }

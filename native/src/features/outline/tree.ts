@@ -1232,7 +1232,7 @@ export function openBelow(state: OutlineState): OutlineState {
   }
 
   const focusedNode = nodes[focusedIndex];
-  const insertAsChild = hasDirectChildren(nodes, focusedNode.id);
+  const insertAsChild = hasDirectChildren(nodes, focusedNode.id) && !state.collapsedNodeIds?.includes(focusedNode.id);
   const insertAt = insertAsChild ? focusedIndex + 1 : getSubtreeEnd(nodes, focusedIndex);
   const newNode = createSiblingNode(insertAsChild ? focusedNode.id : focusedNode.parentId);
   const nextState = replaceActivePage(state, (page) => ({
@@ -1295,7 +1295,7 @@ export function splitNodeAtCursor(state: OutlineState, selectionStart: number, s
   const end = Math.max(start, Math.min(selectionEnd, draft.length));
   const before = draft.slice(0, start);
   const after = draft.slice(end);
-  const insertAsChild = hasDirectChildren(nodes, currentNode.id);
+  const insertAsChild = hasDirectChildren(nodes, currentNode.id) && !state.collapsedNodeIds?.includes(currentNode.id);
   const newNode = createSiblingNode(insertAsChild ? currentNode.id : currentNode.parentId);
   const insertAt = insertAsChild ? focusedIndex + 1 : getSubtreeEnd(nodes, focusedIndex);
   const nextState = replaceActivePage(state, (page) => {

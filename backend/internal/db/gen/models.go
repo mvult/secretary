@@ -370,17 +370,32 @@ type QbafRun struct {
 }
 
 type Recording struct {
-	ID         int32
-	CreatedAt  pgtype.Timestamptz
-	Name       pgtype.Text
-	AudioUrl   pgtype.Text
-	Transcript pgtype.Text
-	Summary    pgtype.Text
-	LocalAudio pgtype.Text
-	NasAudio   pgtype.Text
-	Duration   pgtype.Int4
-	Notes      pgtype.Text
-	Archived   pgtype.Bool
+	ID             int32
+	CreatedAt      pgtype.Timestamptz
+	Name           pgtype.Text
+	AudioUrl       pgtype.Text
+	AudioObjectKey pgtype.Text
+	Transcript     pgtype.Text
+	Summary        pgtype.Text
+	LocalAudio     pgtype.Text
+	NasAudio       pgtype.Text
+	Duration       pgtype.Int4
+	Notes          pgtype.Text
+	Archived       pgtype.Bool
+}
+
+type RecordingAudioUpload struct {
+	ID                 pgtype.UUID
+	UserID             int32
+	RequestRecordingID int32
+	Name               string
+	Duration           int32
+	SizeBytes          int64
+	ContentType        string
+	ObjectKey          string
+	RecordingID        pgtype.Int4
+	State              string
+	CreatedAt          pgtype.Timestamptz
 }
 
 type Relation struct {

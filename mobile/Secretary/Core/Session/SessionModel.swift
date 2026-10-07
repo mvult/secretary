@@ -12,6 +12,7 @@ public final class SessionModel {
     public private(set) var backendURL: String
     public let notes: NotesModel
     public let todos: TodosModel
+    public var validatedCredentials: Credentials? { status == .ready ? activeCredentials : nil }
 
     private let api: any SessionAPI
     private let credentials: any CredentialStore

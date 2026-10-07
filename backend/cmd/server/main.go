@@ -61,6 +61,9 @@ func main() {
 	}
 
 	srv := server.New(pool, []byte(jwtSecret), time.Duration(ttlHours)*time.Hour)
+	if err := srv.ConfigureAudioStorage(os.Getenv("B2_ENDPOINT"), os.Getenv("B2_REGION"), os.Getenv("B2_BUCKET"), os.Getenv("B2_KEY_ID"), os.Getenv("B2_APPLICATION_KEY")); err != nil {
+		log.Fatal(err)
+	}
 	if err := srv.ConfigureAI(
 		os.Getenv("OPENAI_API_KEY"),
 		os.Getenv("OPENAI_BASE_URL"),

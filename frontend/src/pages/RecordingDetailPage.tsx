@@ -38,7 +38,7 @@ export function RecordingDetailPage() {
     }
   });
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['recording', id],
     queryFn: async () => {
       if (!recordingId) throw new Error('Invalid ID');
@@ -230,10 +230,11 @@ export function RecordingDetailPage() {
       {rec.hasAudio && rec.audioUrl ? (
         <Card withBorder shadow="sm" p="md" mb="xl" radius="md">
           <Text fw={500} mb="sm">Audio Recording</Text>
-          <audio controls style={{ width: '100%' }}>
-            <source src={rec.audioUrl} type="audio/mpeg" />
+          <audio key={rec.audioUrl} controls style={{ width: '100%' }}>
+            <source src={rec.audioUrl} />
             Your browser does not support the audio element.
           </audio>
+          <Button variant="subtle" size="xs" onClick={() => void refetch()}>Refresh audio link</Button>
         </Card>
       ) : (
         <Alert icon={<AlertCircle size={16} />} title="Audio Missing" color="blue" mb="xl">

@@ -3,6 +3,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlsplit
 
 
 AAC_BITRATE = "64k"
@@ -43,7 +44,8 @@ def content_type_for_audio(path: str) -> str:
 
 
 def storage_name(recording, source_path: Optional[str] = None) -> str:
-    suffix = Path(source_path or "").suffix.lower() or CANONICAL_AUDIO_SUFFIX
+    source = source_path or ""
+    suffix = Path(urlsplit(source).path if "://" in source else source).suffix.lower() or CANONICAL_AUDIO_SUFFIX
     safe_name = "_".join(str(recording.name).split())
     return f"{recording.id}_{safe_name}{suffix}"
 
