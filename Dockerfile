@@ -3,7 +3,7 @@
 # -----------------------------------------------------------------------------
 # Stage 1: Base Generator (Tools)
 # -----------------------------------------------------------------------------
-FROM golang:1.25-alpine AS generator
+FROM golang:1.26-alpine AS generator
 WORKDIR /workspace
 
 # Install Go tools
@@ -61,7 +61,7 @@ RUN VITE_API_URL="/" bun run build
 # -----------------------------------------------------------------------------
 # Stage 3: Backend Builder
 # -----------------------------------------------------------------------------
-FROM golang:1.25-alpine AS backend_builder
+FROM golang:1.26-alpine AS backend_builder
 WORKDIR /app/backend
 
 RUN apk add --no-cache gcc musl-dev

@@ -3,6 +3,7 @@ import { getCurrentPage, getJournalPage, getJournalPages } from './features/outl
 import { useOutlineState } from './features/outline/state';
 import { useSessionSync } from './features/session/useSessionSync';
 import { useSearchView } from './features/search/useSearchView';
+import { useWhatsAppUpdateNotification } from './features/settings/useWhatsAppUpdateNotification';
 import { useDocumentLinkPicker } from './features/document-links/useDocumentLinkPicker';
 import { useTodos } from './features/todos/useTodos';
 import { useAIThreads } from './features/ai/useAIThreads';
@@ -49,6 +50,7 @@ function App() {
   const editorFontScaleStyle = { '--editor-font-scale': session.editorFontScale } as CSSProperties;
 
   const search = useSearchView(navigationState, session);
+  useWhatsAppUpdateNotification(session.backendUrl, session.authToken);
   const documentLinks = useDocumentLinkPicker(navigationState);
 
   const todos = useTodos({

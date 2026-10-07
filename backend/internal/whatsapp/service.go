@@ -18,6 +18,7 @@ import (
 	db "github.com/mvult/secretary/backend/internal/db/gen"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/store/sqlstore"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -47,15 +48,16 @@ type Service struct {
 }
 
 type Status struct {
-	Connected   bool   `json:"connected"`
-	LoggedIn    bool   `json:"logged_in"`
-	JID         string `json:"jid,omitempty"`
-	Pairing     bool   `json:"pairing"`
-	HasQR       bool   `json:"has_qr"`
-	LastError   string `json:"last_error,omitempty"`
-	SessionDB   string `json:"session_db"`
-	LastEvent   string `json:"last_event,omitempty"`
-	LastEventAt string `json:"last_event_at,omitempty"`
+	LibraryUpdate *LibraryUpdate `json:"library_update,omitempty"`
+	Connected     bool           `json:"connected"`
+	LoggedIn      bool           `json:"logged_in"`
+	JID           string         `json:"jid,omitempty"`
+	Pairing       bool           `json:"pairing"`
+	HasQR         bool           `json:"has_qr"`
+	LastError     string         `json:"last_error,omitempty"`
+	SessionDB     string         `json:"session_db"`
+	LastEvent     string         `json:"last_event,omitempty"`
+	LastEventAt   string         `json:"last_event_at,omitempty"`
 }
 
 func New(queries Queries, sessionDBPath string, onMessage MessageHandler) *Service {
@@ -81,10 +83,7 @@ func (s *Service) Start(ctx context.Context) error {
 		container.Close()
 		return err
 	}
-	client := whatsmeow.NewClient(device, waLog.Stdout("WhatsApp", "INFO", false))
-	client.EnableAutoReconnect = true
-	client.InitialAutoReconnect = true
-	client.AddEventHandler(s.handleEvent)
+	client := s.newClient(device)
 
 	s.mu.Lock()
 	s.container = container
@@ -105,6 +104,7 @@ func (s *Service) Start(ctx context.Context) error {
 		return err
 	}
 
+	go s.watchLibraryUpdates(ctx)
 	go func() {
 		<-ctx.Done()
 		s.Stop()
@@ -175,10 +175,7 @@ func (s *Service) Reconnect(ctx context.Context) error {
 		// QR-channel cleanup can disconnect its client asynchronously. Use a
 		// fresh client so an expired channel cannot interrupt the new attempt.
 		client.RemoveEventHandlers()
-		client = whatsmeow.NewClient(client.Store, waLog.Stdout("WhatsApp", "INFO", false))
-		client.EnableAutoReconnect = true
-		client.InitialAutoReconnect = true
-		client.AddEventHandler(s.handleEvent)
+		client = s.newClient(client.Store)
 		s.mu.Lock()
 		s.client = client
 		s.mu.Unlock()
@@ -226,6 +223,14 @@ func (s *Service) currentClient() *whatsmeow.Client {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.client
+}
+
+func (s *Service) newClient(device *store.Device) *whatsmeow.Client {
+	client := whatsmeow.NewClient(device, waLog.Stdout("WhatsApp", "INFO", false))
+	client.EnableAutoReconnect = true
+	client.InitialAutoReconnect = true
+	client.AddEventHandler(s.handleEvent)
+	return client
 }
 
 // Pairing outlives the reconnect HTTP request and ends with the service.

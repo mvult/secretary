@@ -172,6 +172,7 @@ export interface PomodoroUnlockApproval {
 }
 
 export interface WhatsAppStatus {
+  library_update?: { current: string; latest: string; available: boolean };
   connected: boolean;
   logged_in: boolean;
   jid: string;
@@ -521,6 +522,9 @@ async function putJson<TResponse>(baseUrl: string, path: string, body: unknown, 
 
 function normalizeWhatsAppStatus(value: any): WhatsAppStatus {
   return {
+    library_update: typeof value?.library_update?.current === 'string' && typeof value?.library_update?.latest === 'string'
+      ? { current: value.library_update.current, latest: value.library_update.latest, available: value.library_update.available === true }
+      : undefined,
     connected: Boolean(value?.connected),
     logged_in: Boolean(value?.logged_in),
     jid: typeof value?.jid === 'string' ? value.jid : '',
