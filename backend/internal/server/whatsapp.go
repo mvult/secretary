@@ -21,6 +21,11 @@ import (
 
 const defaultWhatsAppImportanceInstructions = "Mark a WhatsApp message as important if it likely needs my timely attention, asks me to do something, contains a commitment, includes urgent personal or work context, mentions scheduling, money, travel, family logistics, health, or anything that would be costly to miss. Mark casual chatter, reactions, memes, FYIs, and low-stakes group noise as not important."
 
+func (s *Server) ConfigureMessageTriage(apiKey, model string) {
+	s.messageTriageAPIKey = strings.TrimSpace(apiKey)
+	s.messageTriageModel = strings.TrimSpace(model)
+}
+
 func (s *Server) StartWhatsApp(ctx context.Context, sessionDBPath string) error {
 	if strings.TrimSpace(sessionDBPath) == "" {
 		sessionDBPath = os.Getenv("WHATSAPP_SESSION_DB")
@@ -210,11 +215,11 @@ func (s *Server) classifyWhatsAppMessage(ctx context.Context, message db.Whatsap
 		})
 		return
 	}
-	if strings.TrimSpace(s.aiAPIKey) == "" {
+	if s.messageTriageAPIKey == "" {
 		_, _ = s.queries.UpdateWhatsAppMessageClassification(ctx, db.UpdateWhatsAppMessageClassificationParams{
 			ID:                   message.ID,
 			ClassificationStatus: "error",
-			ClassificationError:  pgtype.Text{String: "OPENAI_API_KEY is not configured", Valid: true},
+			ClassificationError:  pgtype.Text{String: "OPENROUTER_API_KEY is not configured", Valid: true},
 		})
 		return
 	}
@@ -232,7 +237,7 @@ func (s *Server) classifyWhatsAppMessage(ctx context.Context, message db.Whatsap
 		_, _ = s.queries.UpdateWhatsAppMessageClassification(ctx, db.UpdateWhatsAppMessageClassificationParams{
 			ID:                   message.ID,
 			ClassificationStatus: "error",
-			ClassificationModel:  pgtype.Text{String: s.aiModelOrDefault(), Valid: true},
+			ClassificationModel:  pgtype.Text{String: s.messageTriageModelOrDefault(), Valid: true},
 			ClassificationError:  pgtype.Text{String: err.Error(), Valid: true},
 		})
 		return
@@ -242,7 +247,7 @@ func (s *Server) classifyWhatsAppMessage(ctx context.Context, message db.Whatsap
 		ClassificationStatus:    "classified",
 		ClassificationImportant: pgtype.Bool{Bool: result.Important, Valid: true},
 		ClassificationReason:    pgtype.Text{String: strings.TrimSpace(result.Reason), Valid: strings.TrimSpace(result.Reason) != ""},
-		ClassificationModel:     pgtype.Text{String: s.aiModelOrDefault(), Valid: true},
+		ClassificationModel:     pgtype.Text{String: s.messageTriageModelOrDefault(), Valid: true},
 	})
 	if err != nil {
 		log.Printf("whatsapp classification update failed: message_id=%d err=%v", message.ID, err)
@@ -258,7 +263,7 @@ func (s *Server) classifyWhatsAppText(ctx context.Context, instructions string, 
 	prompt := "You classify incoming WhatsApp messages for local notifications. Use these user instructions:\n" + instructions + "\nReturn only JSON with keys important and reason."
 	user := fmt.Sprintf("Sender: %s\nChat: %s\nMessage:\n%s", textValue(message.SenderName), message.ChatJid, strings.TrimSpace(message.Text.String))
 	body, err := json.Marshal(map[string]any{
-		"model": s.aiModelOrDefault(),
+		"model": s.messageTriageModelOrDefault(),
 		"messages": []map[string]string{
 			{"role": "system", "content": prompt},
 			{"role": "user", "content": user},
@@ -267,11 +272,11 @@ func (s *Server) classifyWhatsAppText(ctx context.Context, instructions string, 
 	if err != nil {
 		return whatsAppClassificationResult{}, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, openAIChatCompletionsURL(s.aiBaseURL), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return whatsAppClassificationResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+s.aiAPIKey)
+	req.Header.Set("Authorization", "Bearer "+s.messageTriageAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := (&http.Client{Timeout: 45 * time.Second}).Do(req)
 	if err != nil {
@@ -283,7 +288,7 @@ func (s *Server) classifyWhatsAppText(ctx context.Context, instructions string, 
 		return whatsAppClassificationResult{}, err
 	}
 	if resp.StatusCode >= 400 {
-		return whatsAppClassificationResult{}, fmt.Errorf("openai request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return whatsAppClassificationResult{}, fmt.Errorf("openrouter request failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 	var parsed struct {
 		Choices []struct {
@@ -330,11 +335,11 @@ func (s *Server) getWhatsAppImportanceInstructions(ctx context.Context) (string,
 	return settings.ImportanceInstructions, nil
 }
 
-func (s *Server) aiModelOrDefault() string {
-	if strings.TrimSpace(s.aiModel) != "" {
-		return strings.TrimSpace(s.aiModel)
+func (s *Server) messageTriageModelOrDefault() string {
+	if s.messageTriageModel != "" {
+		return s.messageTriageModel
 	}
-	return "gpt-4o-mini"
+	return "~openai/gpt-luna-latest"
 }
 
 func openAIChatCompletionsURL(baseURL string) string {

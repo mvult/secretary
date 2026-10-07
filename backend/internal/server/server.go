@@ -36,16 +36,18 @@ type contextKey string
 const userIdKey contextKey = "user_id"
 
 type Server struct {
-	db        *pgxpool.Pool
-	queries   *db.Queries
-	jwtSecret []byte
-	tokenTTL  time.Duration
-	aiRunner  agent.Runner
-	aiAPIKey  string
-	aiBaseURL string
-	aiModel   string
-	whatsapp  *whatsappsvc.Service
-	audio     audioStore
+	db                  *pgxpool.Pool
+	queries             *db.Queries
+	jwtSecret           []byte
+	tokenTTL            time.Duration
+	aiRunner            agent.Runner
+	aiAPIKey            string
+	aiBaseURL           string
+	aiModel             string
+	messageTriageAPIKey string
+	messageTriageModel  string
+	whatsapp            *whatsappsvc.Service
+	audio               audioStore
 
 	s400Mu       sync.Mutex
 	s400Sessions map[string]s400ScaleSession

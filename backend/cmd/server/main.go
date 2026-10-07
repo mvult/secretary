@@ -74,6 +74,7 @@ func main() {
 	); err != nil {
 		log.Printf("ai disabled: %v", err)
 	}
+	srv.ConfigureMessageTriage(os.Getenv("OPENROUTER_API_KEY"), os.Getenv("MESSAGE_TRIAGE_MODEL"))
 	if err := srv.StartWhatsApp(ctx, os.Getenv("WHATSAPP_SESSION_DB")); err != nil {
 		log.Printf("whatsapp disabled: %v", err)
 	}

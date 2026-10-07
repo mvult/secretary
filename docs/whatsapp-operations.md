@@ -12,6 +12,14 @@ Scan using WhatsApp's **Linked devices → Link a device**. Restart the backend
 and confirm it reconnects without scanning again. A shared Postgres database
 does not transfer pairing credentials between backends.
 
+## Message triage
+
+Set `OPENROUTER_API_KEY` on the backend for incoming-message classification.
+`MESSAGE_TRIAGE_MODEL` selects the OpenRouter model and defaults to
+`~openai/gpt-luna-latest` when unset or blank. Triage requests go to
+`https://openrouter.ai/api/v1/chat/completions`. Configure these before deploying;
+messages already marked as classification errors do not automatically retry.
+
 ## Staying current
 
 - The backend checks Go's module proxy for a newer WhatsMeow version at startup
